@@ -61,12 +61,12 @@ const SCOPE_GATE_PROMPT = `You are a strict scope classifier gate in front of a 
 (a) questions about ONE ecommerce store's own read-only data: revenue, orders, customers, products, regions, shipping/order status;
 (b) meta questions about the chatbot/dashboard itself and what it can do -- e.g. "what can you help with", "db info", "database info", "what data do you have", "what tables do you have access to", "how does this work", greetings like "hi"/"hello", or simple thanks/acknowledgements. These are IN SCOPE too, even though they are not themselves a data query -- the chatbot answers them by describing its own capabilities and the general shape of the data (never raw SQL or credentials).
 
-Classify ONLY the single current user message below. Judge it entirely on its own -- you are not shown the prior conversation, so there is nothing to accidentally reuse or repeat.
+You will be shown a short excerpt of the recent conversation for context, then the current user message to classify. Use that history ONLY to judge topic continuity -- does the current message plausibly continue the same in-scope conversation (e.g. "generate graph" or "show that as a chart" right after a data answer, "what about last quarter", "and for Europe?"), or does it clearly switch to something unrelated (an athlete, celebrity, other company, general trivia)? You are not writing an answer and must not reuse any numbers from the history -- you are only deciding in-scope vs out-of-scope for the CURRENT message.
 
-IN SCOPE: (a) and (b) above, plus a genuine follow-up that is clearly still about this store's data (e.g. "and last quarter?", "what about Europe?").
-OUT OF SCOPE: a name, word, or short phrase clearly about something else entirely -- an athlete, celebrity, other company, general trivia/knowledge unrelated to this store, personal/medical/legal/financial advice, or anything with no plausible connection to this dashboard or its data.
+IN SCOPE: (a) and (b) above, plus any message that is a plausible continuation of the recent in-scope conversation -- including short action requests like "generate graph", "show it as a chart", "make that a report", "export it" that refer back to data just discussed.
+OUT OF SCOPE: a message that clearly introduces something unrelated to this store's data or this chatbot -- an athlete, celebrity, other company, general trivia/knowledge, personal/medical/legal/financial advice -- even if it follows an in-scope message.
 
-When in doubt about a bare, ambiguous, or single-word message, ask yourself: could this plausibly be about this store's data or about the chatbot itself? If yes, IN SCOPE. Only mark OUT OF SCOPE when the message clearly names or asks about something unrelated (a real person, place, or topic that has nothing to do with this dashboard).`;
+When in doubt about a bare, ambiguous, or short message, ask: given the recent conversation, could this plausibly be continuing this store's data conversation or the chatbot itself? If yes, IN SCOPE. Only mark OUT OF SCOPE when the message clearly names or asks about something unrelated.`;
 
 let cachedScopeModel = null;
 
@@ -80,11 +80,15 @@ function getScopeModel() {
   return cachedScopeModel;
 }
 
-async function checkScope(message) {
+async function checkScope(message, history = []) {
   const scopeModel = getScopeModel();
+  const recentTurns = history.slice(-4);
+  const historyText = recentTurns.length
+    ? recentTurns.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${String(m.content).slice(0, 300)}`).join('\n')
+    : '(no prior messages in this conversation)';
   const result = await scopeModel.invoke([
     new SystemMessage(SCOPE_GATE_PROMPT),
-    new HumanMessage(`Current user message: ${JSON.stringify(message)}`),
+    new HumanMessage(`Recent conversation (context only -- do not reuse any numbers from it):\n${historyText}\n\nCurrent user message to classify: ${JSON.stringify(message)}`),
   ]);
   console.log('[agent] scope gate result:', JSON.stringify(result));
   return result;
@@ -108,7 +112,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   }
 
   console.log('[agent] runBiAgent starting, checking scope...');
-  const scope = await checkScope(message);
+  const scope = await checkScope(message, history);
   if (!scope.inScope) {
     console.log('[agent] scope gate declined -- short-circuiting before the agent/tools run.');
     return {
