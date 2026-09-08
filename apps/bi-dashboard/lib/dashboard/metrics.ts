@@ -35,14 +35,15 @@ export type DashboardFilters = {
 };
 
 export type ChatResponse = {
-  intent: 'mutate_current_page' | 'create_new_page';
+  intent: 'answer' | 'mutate_current_page' | 'create_new_page';
   title: string;
   narrative: string;
   filters: {
     days: number;
     region: string | null;
   };
-  data: DashboardData;
+  tablesUsed: string[];
+  data: DashboardData | null;
 };
 
 export async function getHomeDashboardData(

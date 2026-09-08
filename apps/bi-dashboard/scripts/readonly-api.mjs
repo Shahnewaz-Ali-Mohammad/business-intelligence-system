@@ -12,6 +12,7 @@ const dbConfig = {
 };
 
 const colors = ['#0f9f9a', '#2563eb', '#7c3aed', '#f59e0b', '#94a3b8'];
+const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
 function toNumber(value) {
   return Number(value ?? 0);
@@ -161,6 +162,24 @@ const ALLOWED_TOPICS = [
   'status',
   'shipping',
 ];
+
+// Which real tables actually back each topic's answer -- surfaced to the UI so
+// the user can see exactly what the reply is grounded in, never guessed by the
+// model itself.
+const TOPIC_TABLES = {
+  revenue: ['orders'],
+  orders: ['orders'],
+  customers: ['users', 'orders'],
+  products: ['order_items'],
+  regions: ['orders'],
+  status: ['orders', 'order_status_history'],
+  shipping: ['orders'],
+  dashboard: ['orders', 'users', 'order_items', 'order_status_history'],
+};
+
+function tablesForTopic(topic) {
+  return TOPIC_TABLES[topic] ?? TOPIC_TABLES.dashboard;
+}
 
 async function findOrdersCustomerColumn(connection) {
   const rows = await readOnlyQuery(
@@ -744,12 +763,367 @@ function detectTopic(message) {
   return ALLOWED_TOPICS.find((topic) => lower.includes(topic)) ?? 'dashboard';
 }
 
+function isCasualChat(message) {
+  const normalized = message
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .trim();
+  return [
+    'hi',
+    'hello',
+    'hey',
+    'yo',
+    'thanks',
+    'thank you',
+    'ok',
+    'okay',
+  ].includes(normalized);
+}
+
 function detectIntent(message) {
   const lower = message.toLowerCase();
-  const mutateWords = ['filter', 'now', 'only', 'same', 'this', 'that', 'last ', 'region'];
-  return mutateWords.some((word) => lower.includes(word))
-    ? 'mutate_current_page'
-    : 'create_new_page';
+  if (isCasualChat(message)) return 'answer';
+
+  const answerWords = [
+    'what is',
+    'what does',
+    'explain',
+    'define',
+    'why',
+    'how is',
+    'how do',
+    'how many',
+    'how much',
+    'tell me',
+    'summarize',
+    'what are',
+    'which',
+  ];
+  if (answerWords.some((word) => lower.includes(word))) return 'answer';
+
+  const createWords = [
+    'create',
+    'generate',
+    'build',
+    'make',
+    'show chart',
+    'show graph',
+    'new page',
+    'new report',
+    'new dashboard',
+    'breakdown',
+    'visualize',
+    'plot',
+  ];
+  if (createWords.some((word) => lower.includes(word))) return 'create_new_page';
+
+  const mutateWords = ['filter', 'switch', 'change', 'update', 'only', 'last ', 'region'];
+  if (mutateWords.some((word) => lower.includes(word))) return 'mutate_current_page';
+
+  return 'answer';
+}
+
+function fallbackPlan(message, pageState) {
+  const fallbackDays = Number(pageState.days ?? 30);
+  return {
+    intent: detectIntent(message),
+    topic: detectTopic(message),
+    days: parseDays(message, fallbackDays),
+    region: parseRegion(message, pageState),
+  };
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : null;
+  }
+}
+
+async function planWithOpenAI(message, pageState) {
+  if (!process.env.OPENAI_API_KEY) return fallbackPlan(message, pageState);
+
+  const fallback = fallbackPlan(message, pageState);
+  const availableRegions = Array.isArray(pageState.availableRegions)
+    ? pageState.availableRegions.map((region) => String(region).toUpperCase())
+    : [];
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: openAiModel,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You classify BI dashboard user requests. Return only JSON. Never write SQL. Allowed intents: answer, mutate_current_page, create_new_page. Use answer for greetings, casual chat, definitions, explanations, simple factual questions, summaries, and "what does X mean". Use create_new_page only when the user clearly asks to create/generate/build/show a new chart, graph, report, dashboard, page, visualization, or breakdown. Use mutate_current_page only for direct filter/refinement requests such as changing date range or region. Allowed topics: revenue, orders, customers, products, regions, status, shipping, dashboard. Region must be null or one of the available region codes. Days must be one of 7, 30, 90, 365 unless the user explicitly asks a number from 1 to 365.',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              message,
+              currentPageState: {
+                days: pageState.days ?? 30,
+                region: pageState.region ?? null,
+                availableRegions,
+                kpis: pageState.kpis ?? [],
+                chartSources: pageState.chartSources ?? {},
+              },
+              requiredJsonShape: {
+                intent: 'answer | mutate_current_page | create_new_page',
+                topic: 'revenue | orders | customers | products | regions | status | shipping | dashboard',
+                days: 'number',
+                region: 'string | null',
+              },
+            }),
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) return fallback;
+
+    const payload = await response.json();
+    const content = payload.choices?.[0]?.message?.content ?? '';
+    const plan = safeJsonParse(content) ?? fallback;
+    if (fallback.intent === 'answer') {
+      return fallback;
+    }
+    const intent = ['answer', 'mutate_current_page', 'create_new_page'].includes(plan.intent)
+      ? plan.intent
+      : fallback.intent;
+    const topic = ALLOWED_TOPICS.includes(plan.topic) ? plan.topic : fallback.topic;
+    const parsedDays = Number(plan.days);
+    const days =
+      Number.isInteger(parsedDays) && parsedDays > 0 && parsedDays <= 365
+        ? parsedDays
+        : fallback.days;
+    const region =
+      plan.region === null || plan.region === undefined
+        ? null
+        : availableRegions.includes(String(plan.region).toUpperCase())
+          ? String(plan.region).toUpperCase()
+          : fallback.region;
+
+    return { intent, topic, days, region };
+  } catch (error) {
+    console.error('OpenAI planning failed, using deterministic fallback:', error.message);
+    return fallback;
+  }
+}
+
+function answerFromComputedData(message, plan, data) {
+  const lower = message.toLowerCase();
+  const revenue = data.kpis.find((kpi) => kpi.label === 'Revenue')?.value ?? 'unknown revenue';
+  const orders = data.kpis.find((kpi) => kpi.label === 'Orders')?.value ?? 'unknown orders';
+  const customers =
+    data.kpis.find((kpi) => kpi.label === 'Active Customers')?.value ?? 'unknown customers';
+  const aov = data.kpis.find((kpi) => kpi.label === 'Average Order Value')?.value ?? 'unknown AOV';
+  const scope = `${plan.region ?? 'all regions'} over ${plan.days} days`;
+
+  if (isCasualChat(message)) {
+    return 'Hi. I can answer questions from the ecommerce database, explain the KPI numbers, or create a new analysis view when you ask for a chart, breakdown, or report.';
+  }
+  if (lower.includes('changed_at')) {
+    return 'changed_at is the timestamp for when a record changed state. In order_status_history, it means when an order moved into a status such as pending, paid, cancelled, or delivered.';
+  }
+  if (lower.includes('average order value') || lower.includes('aov')) {
+    return `Average Order Value is revenue divided by orders. For ${scope}, AOV is ${aov}, calculated from ${revenue} and ${orders} orders.`;
+  }
+  if (lower.includes('revenue')) {
+    return `Revenue for ${scope} is ${revenue}. This comes from captured payment/order totals in the read-only ecommerce database.`;
+  }
+  if (lower.includes('customer')) {
+    return `The users table currently has ${customers} active customers. Repeat-customer details come from linked order history where the schema supports it.`;
+  }
+  if (lower.includes('status')) {
+    const statusText = data.channelRevenue
+      .map((row) => `${row.name}: ${row.value}`)
+      .join(', ');
+    return `Order status counts for ${scope}: ${statusText}.`;
+  }
+  if (lower.includes('product')) {
+    const asksLowest = /\b(lowest|worst|least|bottom|smallest|weakest)\b/.test(lower);
+    if (asksLowest && data.topProducts.length) {
+      const worst = data.topProducts[data.topProducts.length - 1];
+      return `The lowest-performing product (all-time) is ${worst[0]} at ${worst[1]}. This comes from order_items revenue rollups, not scoped to ${plan.days} days.`;
+    }
+    const products = data.topProducts
+      .slice(0, 3)
+      .map((row) => `${row[0]} (${row[1]})`)
+      .join(', ');
+    return `Top products (all-time): ${products}. These values come from order_items revenue rollups and are not scoped to ${plan.days} days.`;
+  }
+  if (lower.includes('region')) {
+    const regions = data.regionRevenue
+      .slice(0, 5)
+      .map((row) => `${row.region}: ${compactMoney.format(toNumber(row.revenue))}`)
+      .join(', ');
+    if (lower.includes('how many')) {
+      return `There are ${data.regionRevenue.length} regions in the current DB result: ${data.regionRevenue.map((row) => row.region).join(', ')}.`;
+    }
+
+    // Superlative questions ("which region has the lowest/highest sales")
+    // must answer directly, not just dump the whole breakdown.
+    const asksLowest = /\b(lowest|worst|least|bottom|smallest|weakest)\b/.test(lower);
+    const asksHighest = /\b(highest|best|top|most|biggest|largest|leading)\b/.test(lower);
+    if ((asksLowest || asksHighest) && data.regionRevenue.length) {
+      const sorted = [...data.regionRevenue].sort((a, b) => toNumber(a.revenue) - toNumber(b.revenue));
+      const target = asksLowest ? sorted[0] : sorted[sorted.length - 1];
+      const label = asksLowest ? 'lowest' : 'highest';
+      return `The ${label} sales region for ${scope} is ${target.region}, at ${compactMoney.format(toNumber(target.revenue))}. Full breakdown: ${regions}.`;
+    }
+
+    return `Revenue by region for ${scope}: ${regions}.`;
+  }
+  return `For ${scope}, revenue is ${revenue}, orders are ${orders}, active customers are ${customers}, and average order value is ${aov}.`;
+}
+
+// Topic-specific, grounded report text. Each branch only reads the sub-slice of
+// `data` that topic actually maps to, so "products" never talks about regions and
+// vice versa -- this used to collapse to one generic paragraph for every topic,
+// which is the main reason chat replies felt inaccurate/generic.
+function reportFromComputedData(plan, data) {
+  const scope = `${plan.region ?? 'all regions'}, ${plan.days} day window`;
+  const findKpi = (label) => data.kpis.find((kpi) => kpi.label === label);
+  const revenueKpi = findKpi('Revenue');
+  const ordersKpi = findKpi('Orders');
+  const aovKpi = findKpi('Average Order Value');
+  const customersKpi = findKpi('Active Customers');
+
+  switch (plan.topic) {
+    case 'revenue': {
+      if (!revenueKpi) return `No revenue data was returned for ${scope}.`;
+      return `Revenue report for ${scope}: total revenue is ${revenueKpi.value}. ${revenueKpi.detail}. ${revenueKpi.footer} Source: orders.grand_total, captured payments only.`;
+    }
+
+    case 'orders': {
+      if (!ordersKpi) return `No order data was returned for ${scope}.`;
+      return `Order volume report for ${scope}: ${ordersKpi.value} orders placed. ${ordersKpi.detail}. ${ordersKpi.footer} Source: orders table row count.`;
+    }
+
+    case 'customers': {
+      const mixSentence = data.customerMix
+        ? `${data.customerMix.newPct}% of active-window customers are new and ${data.customerMix.returningPct}% are returning.`
+        : 'New-vs-returning split is not available on this schema.';
+      const topCustomerSentence =
+        data.topCustomersByOrders.length > 0
+          ? `Top repeat customer: ${data.topCustomersByOrders[0].name} with ${data.topCustomersByOrders[0].orders} orders.`
+          : 'No repeat-customer rows were found (no customer-linking column detected, or no repeat orders).';
+      return `Customer report for ${scope}: ${customersKpi?.value ?? 'unknown'} active customers. ${mixSentence} ${topCustomerSentence} Source: users.is_active joined to orders.`;
+    }
+
+    case 'products': {
+      if (data.topProducts.length === 0) return `No product revenue rows were returned for ${scope}.`;
+      const lines = data.topProducts
+        .slice(0, 5)
+        .map((row) => `${row[0]}: ${row[1]} revenue (${row[2]} share, ${row[3]} units)`)
+        .join('; ');
+      return `Product report (all-time, not scoped to ${plan.days} days -- order_items has no verified date column): ${lines}. Source: order_items.product_name + line_total.`;
+    }
+
+    case 'regions': {
+      if (data.regionRevenue.length === 0) return `No regional revenue rows were returned for ${scope}.`;
+      const lines = data.regionRevenue
+        .slice(0, 5)
+        .map((row) => `${row.region}: ${compactMoney.format(toNumber(row.revenue))}`)
+        .join(', ');
+      return `Regional revenue report for ${scope}: ${lines}. Source: orders.ship_country_code + grand_total.`;
+    }
+
+    case 'status': {
+      if (data.channelRevenue.length === 0) return `No order-status rows were returned for ${scope}.`;
+      const total = data.channelRevenue.reduce((sum, row) => sum + row.value, 0);
+      const lines = data.channelRevenue
+        .map((row) => `${row.name}: ${row.value}${total ? ` (${Math.round((row.value / total) * 1000) / 10}%)` : ''}`)
+        .join(', ');
+      return `Order status report for ${scope}: ${lines}. Source: orders.status.`;
+    }
+
+    case 'shipping': {
+      if (data.regionRevenue.length === 0) return `No shipping-region rows were returned for ${scope}.`;
+      const lines = data.regionRevenue
+        .slice(0, 5)
+        .map((row) => `${row.region}: ${compactMoney.format(toNumber(row.revenue))}`)
+        .join(', ');
+      return `Shipping-region breakdown for ${scope}: ${lines}. Source: orders.ship_country_code.`;
+    }
+
+    default: {
+      const topRegion = data.regionRevenue[0];
+      const topProduct = data.topProducts[0];
+      const regionSentence = topRegion
+        ? `${topRegion.region} is the top region at ${compactMoney.format(toNumber(topRegion.revenue))}.`
+        : 'No regional revenue rows were returned for this filter.';
+      const productSentence = topProduct
+        ? `${topProduct[0]} is the top product at ${topProduct[1]} revenue.`
+        : 'No product revenue rows were returned for this filter.';
+      return `Dashboard overview for ${scope}. Revenue is ${revenueKpi?.value ?? 'unknown'}, orders total ${ordersKpi?.value ?? 'unknown'}, and AOV is ${aovKpi?.value ?? 'unknown'}. ${regionSentence} ${productSentence} Source: orders, order_items, users.`;
+    }
+  }
+}
+
+async function writeNarrativeWithOpenAI(message, plan, data, deterministicAnswer, tablesUsed) {
+  if (!process.env.OPENAI_API_KEY) return deterministicAnswer;
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: openAiModel,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Write a concise BI assistant reply for a business analytics app. Use only the provided computed values. Never invent numbers, tables, columns, causes, trends, or recommendations that are not supported by the provided values. If you reference which data this came from, use only the table names listed in tablesUsed -- never a table name that is not in that list. If the values are insufficient, say what is available and what is not available. Do not mention SQL. Keep it plain, specific, and useful.',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              userMessage: message,
+              plan,
+              computedValues: {
+                dateRange: data.dateRange,
+                activeFilter: data.activeFilter,
+                kpis: data.kpis.map((kpi) => ({
+                  label: kpi.label,
+                  value: kpi.value,
+                  detail: kpi.detail,
+                  context: kpi.context,
+                })),
+                topRegions: data.regionRevenue,
+                statusMix: data.channelRevenue.map(({ name, value }) => ({ name, value })),
+                topProducts: data.topProducts.slice(0, 3),
+                tablesUsed,
+                deterministicAnswer,
+              },
+            }),
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) return deterministicAnswer;
+    const payload = await response.json();
+    return payload.choices?.[0]?.message?.content?.trim() || deterministicAnswer;
+  } catch (error) {
+    console.error('OpenAI narrative failed, using deterministic answer:', error.message);
+    return deterministicAnswer;
+  }
 }
 
 async function handleChatMessage(message, pageState) {
@@ -757,34 +1131,21 @@ async function handleChatMessage(message, pageState) {
     throw new Error('Message is empty.');
   }
 
-  const fallbackDays = Number(pageState.days ?? 30);
-  const days = parseDays(message, fallbackDays);
-  const region = parseRegion(message, pageState);
-  const topic = detectTopic(message);
-  const intent = detectIntent(message);
+  const plan = await planWithOpenAI(message, pageState);
+  const { days, region, topic, intent } = plan;
   const data = await dashboardData({ windowDays: days, region });
-  const revenue = data.kpis.find((kpi) => kpi.label === 'Revenue')?.value ?? 'unknown revenue';
-  const orders = data.kpis.find((kpi) => kpi.label === 'Orders')?.value ?? 'unknown orders';
-  const customers =
-    data.kpis.find((kpi) => kpi.label === 'Active Customers')?.value ?? 'unknown customers';
-  const scope = `${region ?? 'all regions'}, ${days} day window`;
 
-  const topicNarrative = {
-    revenue: `Revenue for ${scope} is ${revenue}, based on captured payments and order totals.`,
-    orders: `Orders for ${scope} total ${orders}, with the status mix shown in the donut chart.`,
-    customers: `There are ${customers} active customers in the users table; customer detail is shown from linked order history where available.`,
-    products: `The product table has been refreshed from order_items and ranks products by revenue.`,
-    regions: `The region chart has been refreshed from ship_country_code and grand_total.`,
-    status: `Order status distribution has been refreshed from the orders.status field.`,
-    shipping: `Shipping-related performance is represented through order region and status data in this demo schema.`,
-    dashboard: `I refreshed the dashboard for ${scope}. Revenue is ${revenue} and orders total ${orders}.`,
-  };
+  const deterministicAnswer =
+    intent === 'answer' ? answerFromComputedData(message, plan, data) : reportFromComputedData(plan, data);
+  const tablesUsed = tablesForTopic(topic);
+  const narrative = await writeNarrativeWithOpenAI(message, plan, data, deterministicAnswer, tablesUsed);
 
   return {
     intent,
     title: topic === 'dashboard' ? 'Dashboard Update' : `${topic[0].toUpperCase()}${topic.slice(1)} View`,
-    narrative: topicNarrative[topic] ?? topicNarrative.dashboard,
+    narrative,
     filters: { days, region },
-    data,
+    tablesUsed,
+    data: intent === 'answer' ? null : data,
   };
 }
