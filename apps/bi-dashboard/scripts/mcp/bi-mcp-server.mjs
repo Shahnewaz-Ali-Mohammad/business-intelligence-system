@@ -24,7 +24,10 @@ Backs topics: revenue, orders, regions, status, shipping.
 ## users
 Customer accounts. Columns used: is_active, and a display-name column
 detected at runtime (full_name/name/display_name/customer_name/username).
-Backs topics: customers.
+Backs topics: customers. The "customers by order count" ranking supports a
+genuine most/least query direction -- use customerSort: "least" to get the
+real bottom-N customers by order count, never derive "lowest" by reversing
+a "most" result, since those are two different sets of rows.
 
 ## order_items
 Line items per order (product, revenue, units). Backs topics: products.
@@ -86,10 +89,20 @@ export function createBiMcpServer() {
           .string()
           .nullable()
           .describe('Region/country code to filter to (e.g. "US"), or null for all regions.'),
+        customerSort: z
+          .enum(['most', 'least'])
+          .nullable()
+          .describe(
+            'Ranking direction for the customers-by-order-count breakdown. "most" (default) for top customers by orders, "least" for the real bottom customers by orders -- these run genuinely different queries, so always set "least" when the user asks for the lowest/fewest/bottom customers by orders. Null/omit defaults to "most".',
+          ),
       },
     },
-    async ({ days, region }) => {
-      const data = await dashboardData({ windowDays: days, region: region || null });
+    async ({ days, region, customerSort }) => {
+      const data = await dashboardData({
+        windowDays: days,
+        region: region || null,
+        customerSort: customerSort || 'most',
+      });
       return {
         content: [{ type: 'text', text: JSON.stringify(summarizeForTool(data)) }],
         structuredContent: summarizeForTool(data),

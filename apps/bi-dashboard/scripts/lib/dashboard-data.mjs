@@ -333,10 +333,14 @@ async function computeRepeatCustomers(connection) {
   }
 }
 
-// Top 10 customers ranked by total number of orders placed (all-time), for a
-// horizontal bar ranking. Falls back to an empty list (never throws) if we
-// can't confidently resolve the customer link / name columns.
-async function computeTopCustomersByOrders(connection) {
+// Customers ranked by total number of orders placed (all-time), for a
+// horizontal bar ranking. direction: 'DESC' (top/most, default) or 'ASC'
+// (bottom/least) -- these are genuinely different SQL queries, never derived
+// by reversing the other's results, since the bottom-N customers by order
+// count are a completely different set of rows than the top-N. Falls back
+// to an empty list (never throws) if we can't confidently resolve the
+// customer link / name columns.
+async function computeTopCustomersByOrders(connection, direction = 'DESC', limit = 10) {
   try {
     const fkCol = await findOrdersCustomerColumn(connection);
     if (!fkCol) return [];
@@ -350,6 +354,9 @@ async function computeTopCustomersByOrders(connection) {
         ? `TRIM(CONCAT(u.${nameInfo.columns[0]}, ' ', u.${nameInfo.columns[1]}))`
         : `u.${nameInfo.column}`;
 
+    const safeDirection = direction === 'ASC' ? 'ASC' : 'DESC';
+    const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 50 ? limit : 10;
+
     const rows = await readOnlyQuery(
       connection,
       `
@@ -359,8 +366,8 @@ async function computeTopCustomersByOrders(connection) {
         FROM orders o
         JOIN users u ON u.${usersPk} = o.${fkCol}
         GROUP BY o.${fkCol}, ${nameExpr}
-        ORDER BY order_count DESC
-        LIMIT 10
+        ORDER BY order_count ${safeDirection}
+        LIMIT ${safeLimit}
       `,
     );
 
@@ -390,7 +397,7 @@ async function readOnlyQuery(connection, sql, params = []) {
   return rows;
 }
 
-async function dashboardData({ windowDays = 30, region = null } = {}) {
+async function dashboardData({ windowDays = 30, region = null, customerSort = 'most' } = {}) {
   const connection = await mysql.createConnection(dbConfig);
 
   try {
@@ -514,7 +521,10 @@ async function dashboardData({ windowDays = 30, region = null } = {}) {
       ? `${customerMix.newPct}% new / ${customerMix.returningPct}% returning (last ${WINDOW_DAYS} days)`
       : 'New vs returning not available for this schema';
     const repeatCustomers = await computeRepeatCustomers(connection);
-    const topCustomersByOrders = await computeTopCustomersByOrders(connection);
+    const topCustomersByOrders = await computeTopCustomersByOrders(
+      connection,
+      customerSort === 'least' ? 'ASC' : 'DESC',
+    );
 
     return {
       connected: true,
