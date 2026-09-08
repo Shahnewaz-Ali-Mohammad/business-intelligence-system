@@ -91,42 +91,52 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
     [initialData.regionRevenue],
   );
 
-  // Establish (or load) the current conversation once we know who's signed in.
+  // Load an existing conversation when the URL names one. A NEW conversation
+  // is intentionally NOT created here -- creating it eagerly on page load
+  // used to leave empty "New conversation" rows in Sessions before the user
+  // ever typed anything. A session row is only created lazily, in
+  // handleSubmit, the moment the user actually sends a first message.
   useEffect(() => {
-    if (authLoading) return;
-    const setupKey = `${user?.id ?? 'guest'}:${requestedSessionId ?? 'new'}`;
+    if (authLoading || !user || !requestedSessionId) return;
+    const setupKey = `${user.id}:${requestedSessionId}`;
     if (sessionSetupRef.current === setupKey) return;
     sessionSetupRef.current = setupKey;
 
-    if (!user) {
-      return;
-    }
+    fetch(`/api/chat-sessions/${requestedSessionId}`)
+      .then((res) => res.json())
+      .then((body: { session: { id: number; title: string } | null; messages: Array<{ role: 'user' | 'assistant'; content: string; tables_used: string[] | null }> }) => {
+        if (!body.session) return;
+        setSessionId(body.session.id);
+        setSessionTitle(body.session.title);
+        if (body.messages.length) {
+          setMessages(
+            body.messages.map((m) => ({ role: m.role, text: m.content, tablesUsed: m.tables_used ?? undefined })),
+          );
+        }
+      })
+      .catch(() => {});
+  }, [authLoading, user, requestedSessionId]);
 
-    if (requestedSessionId) {
-      fetch(`/api/chat-sessions/${requestedSessionId}`)
-        .then((res) => res.json())
-        .then((body: { session: { id: number; title: string } | null; messages: Array<{ role: 'user' | 'assistant'; content: string; tables_used: string[] | null }> }) => {
-          if (!body.session) return;
-          setSessionId(body.session.id);
-          setSessionTitle(body.session.title);
-          if (body.messages.length) {
-            setMessages(
-              body.messages.map((m) => ({ role: m.role, text: m.content, tablesUsed: m.tables_used ?? undefined })),
-            );
-          }
-        })
-        .catch(() => {});
-    } else {
-      fetch('/api/chat-sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then((res) => res.json())
-        .then((body: { id: number; title: string }) => {
-          setSessionId(body.id);
-          setSessionTitle(body.title);
-          router.replace(`/chat?session=${body.id}`, { scroll: false });
-        })
-        .catch(() => {});
+  // Lazily creates a session row for this conversation on its very first
+  // message, so opening /chat never writes an empty "New conversation" row.
+  async function ensureSession(firstMessage: string): Promise<number | null> {
+    if (!user) return null;
+    if (sessionId) return sessionId;
+    try {
+      const res = await fetch('/api/chat-sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: firstMessage.slice(0, 80) }),
+      });
+      const body = (await res.json()) as { id: number; title: string };
+      setSessionId(body.id);
+      setSessionTitle(body.title);
+      router.replace(`/chat?session=${body.id}`, { scroll: false });
+      return body.id;
+    } catch {
+      return null;
     }
-  }, [authLoading, user, requestedSessionId, router]);
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -149,11 +159,9 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
     setInput('');
     setLoading(true);
     setMessages((prev) => [...prev, { role: 'user', text: message }]);
-    if (user && sessionId) {
-      saveMessage(sessionId, 'user', message);
-      if (sessionTitle === 'New conversation' || !sessionTitle) {
-        setSessionTitle(message.slice(0, 80));
-      }
+    const activeSessionId = await ensureSession(message);
+    if (user && activeSessionId) {
+      saveMessage(activeSessionId, 'user', message);
     }
 
     try {
@@ -164,6 +172,10 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message,
+            // Recent turns so the agent has real conversation memory --
+            // it can resolve follow-ups like "what about last quarter"
+            // instead of treating every message as a blank slate.
+            history: messages.slice(-12).map((m) => ({ role: m.role, content: m.text })),
             page_state: {
               page: 'chat',
               days: artifact?.days ?? 30,
@@ -186,7 +198,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
         ...prev,
         { role: 'assistant', text: result.narrative, tablesUsed: result.tablesUsed },
       ]);
-      if (user && sessionId) saveMessage(sessionId, 'assistant', result.narrative, result.tablesUsed);
+      if (user && activeSessionId) saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed);
 
       if (result.data && result.intent === 'create_new_page') {
         const nextArtifact: Artifact = {

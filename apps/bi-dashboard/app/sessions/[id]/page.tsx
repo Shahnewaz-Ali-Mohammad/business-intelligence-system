@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowRight, Database, Sparkles, User } from 'lucide-react';
+import { ArrowRight, ArrowUp, Database, Sparkles, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 
@@ -17,20 +17,39 @@ type ChatMessageRow = {
 
 type SessionRow = { id: number; title: string; created_at: string; updated_at: string };
 
+const PAGE_SIZE = 10; // 5 exchanges per page (question + answer each)
+
 export default function SessionDetailPage() {
   const params = useParams<{ id: string }>();
   const [session, setSession] = useState<SessionRow | null | undefined>(undefined);
   const [messages, setMessages] = useState<ChatMessageRow[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/chat-sessions/${params.id}`)
+    fetch(`/api/chat-sessions/${params.id}?limit=${PAGE_SIZE}`)
       .then((res) => res.json())
-      .then((body: { session: SessionRow | null; messages: ChatMessageRow[] }) => {
+      .then((body: { session: SessionRow | null; messages: ChatMessageRow[]; hasMore: boolean }) => {
         setSession(body.session);
         setMessages(body.messages ?? []);
+        setHasMore(body.hasMore ?? false);
       })
       .catch(() => setSession(null));
   }, [params.id]);
+
+  async function loadOlder() {
+    if (!messages.length || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const oldestId = messages[0].id;
+      const res = await fetch(`/api/chat-sessions/${params.id}?limit=${PAGE_SIZE}&beforeId=${oldestId}`);
+      const body = (await res.json()) as { messages: ChatMessageRow[]; hasMore: boolean };
+      setMessages((prev) => [...(body.messages ?? []), ...prev]);
+      setHasMore(body.hasMore ?? false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   // Pair each user message with the assistant reply that immediately follows it,
   // so the transcript reads as a list of exchanges rather than a flat log.
@@ -67,7 +86,7 @@ export default function SessionDetailPage() {
     <WorkspacePage
       active="Sessions"
       title={session.title}
-      subtitle={`${exchanges.length} exchange${exchanges.length === 1 ? '' : 's'} · started ${new Date(session.created_at).toLocaleString()}`}
+      subtitle={`Started ${new Date(session.created_at).toLocaleString()}`}
       action={
         <Link href={`/chat?session=${session.id}`}>
           <Button className="gap-2 bg-blue-600 hover:bg-blue-700">
@@ -77,10 +96,19 @@ export default function SessionDetailPage() {
         </Link>
       }
     >
-      <div className="mx-auto max-w-3xl space-y-6">
+      <div className="mx-auto max-h-[75vh] max-w-3xl space-y-6 overflow-y-auto pr-1">
+        {hasMore ? (
+          <div className="flex justify-center">
+            <Button variant="outline" size="sm" className="gap-2" onClick={loadOlder} disabled={loadingMore}>
+              <ArrowUp size={14} />
+              {loadingMore ? 'Loading...' : 'Load older messages'}
+            </Button>
+          </div>
+        ) : null}
+
         {exchanges.map((exchange, index) => (
           <section
-            key={index}
+            key={exchange.question?.id ?? exchange.answer?.id ?? index}
             className="space-y-3 rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)]"
           >
             {exchange.question ? (

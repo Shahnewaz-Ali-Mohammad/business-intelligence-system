@@ -5,6 +5,7 @@ import { AuthProvider } from '@/components/auth/auth-provider';
 export const metadata: Metadata = {
   title: 'Business Intelligence System',
   description: 'Read-only conversational business intelligence dashboard.',
+  icons: { icon: '/favicon.svg' },
 };
 
 export default function RootLayout({
@@ -14,7 +15,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>
+      <body suppressHydrationWarning>
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
