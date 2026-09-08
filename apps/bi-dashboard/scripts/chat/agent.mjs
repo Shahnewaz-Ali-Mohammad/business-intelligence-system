@@ -117,6 +117,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
     console.log('[agent] scope gate declined -- short-circuiting before the agent/tools run.');
     return {
       intent: 'answer',
+      topic: 'dashboard',
       title: 'Out of Scope',
       narrative:
         scope.declineReason && scope.declineReason.trim()
@@ -186,6 +187,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
 
   return {
     intent,
+    topic,
     title:
       typeof structured?.title === 'string' && structured.title.trim()
         ? structured.title.trim().slice(0, 120)

@@ -6,6 +6,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { BarChart3, Database, FileSpreadsheet, LogIn, Plus, Send, Sparkles, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { RegionRevenueChart } from '@/components/dashboard/charts/region-revenue-chart';
+import { StatusDonutChart } from '@/components/dashboard/charts/status-donut-chart';
+import { TopEntitiesBarChart } from '@/components/dashboard/charts/top-entities-bar-chart';
 import { useAuth } from '@/components/auth/auth-provider';
 import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
 
@@ -18,6 +20,7 @@ type Message = {
 type Artifact = {
   title: string;
   narrative: string;
+  topic: string;
   data: DashboardData;
   days: number;
   region: string | null;
@@ -28,6 +31,42 @@ const WELCOME_MESSAGE: Message = {
   role: 'assistant',
   text: 'Hi. Ask about revenue, orders, regions, products, or request a report from the ecommerce DB.',
 };
+
+// Picks which generated chart to show based on the topic the chatbot
+// actually answered about, instead of always defaulting to region revenue --
+// so "give me top customers" -> "generate a graph" renders a customers
+// chart, not an unrelated one.
+function ArtifactChart({ artifact }: { artifact: Artifact }) {
+  const { topic, data } = artifact;
+
+  if (topic === 'customers') {
+    return (
+      <TopEntitiesBarChart
+        title="Top Customers by Orders"
+        subtitle="users.id + orders (last window)"
+        entries={data.topCustomersByOrders.map((row) => ({ name: row.name, value: row.orders }))}
+        valueFormatter={(value) => `${value.toLocaleString('en-US')} orders`}
+      />
+    );
+  }
+
+  if (topic === 'products') {
+    return (
+      <TopEntitiesBarChart
+        title="Top Products by Revenue"
+        subtitle={data.chartSources.products}
+        entries={data.topProductsChart.map((row) => ({ name: row.name, value: row.revenue }))}
+        valueFormatter={(value) => `$${value.toLocaleString('en-US')}`}
+      />
+    );
+  }
+
+  if (topic === 'status' || topic === 'shipping') {
+    return <StatusDonutChart data={data} />;
+  }
+
+  return <RegionRevenueChart data={data} />;
+}
 
 function downloadCsv(filename: string, rows: string[][]) {
   const csv = rows
@@ -204,6 +243,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
         const nextArtifact: Artifact = {
           title: result.title,
           narrative: result.narrative,
+          topic: result.topic ?? 'dashboard',
           data: result.data,
           days: result.filters.days,
           region: result.filters.region,
@@ -376,7 +416,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
                   </Button>
                 </div>
               </div>
-              <RegionRevenueChart data={artifact.data} />
+              <ArtifactChart artifact={artifact} />
             </div>
           ) : (
             <div className="space-y-2">

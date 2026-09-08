@@ -23,6 +23,7 @@ export type DashboardData = {
   regionRevenue: { region: string; revenue: number }[];
   channelRevenue: { name: string; value: number; fill: string }[];
   topProducts: string[][];
+  topProductsChart: { name: string; revenue: number }[];
   anomalies: string[][];
   pinnedPages: PageLink[];
   sessionHistory: PageLink[];
@@ -36,6 +37,7 @@ export type DashboardFilters = {
 
 export type ChatResponse = {
   intent: 'answer' | 'mutate_current_page' | 'create_new_page';
+  topic?: string;
   title: string;
   narrative: string;
   filters: {

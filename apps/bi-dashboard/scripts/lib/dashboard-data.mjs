@@ -627,6 +627,10 @@ async function dashboardData({ windowDays = 30, region = null } = {}) {
         value: Number(row.value),
         fill: colors[index] ?? '#64748b',
       })),
+      topProductsChart: productRows.slice(0, 8).map((row) => ({
+        name: row.product,
+        revenue: toNumber(row.revenue),
+      })),
       topProducts: productRows.map((row) => [
         row.product,
         compactMoney.format(toNumber(row.revenue)),

@@ -615,6 +615,7 @@ function buildIntelligentResult(parsed, data, toolArgsUsed) {
 
   return {
     intent,
+    topic,
     title,
     narrative,
     filters: toolArgsUsed,
@@ -724,6 +725,7 @@ async function handleChatMessageDeterministic(message, pageState) {
 
   return {
     intent,
+    topic,
     title: topic === 'dashboard' ? 'Dashboard Update' : `${topic[0].toUpperCase()}${topic.slice(1)} View`,
     narrative,
     filters: { days, region },
