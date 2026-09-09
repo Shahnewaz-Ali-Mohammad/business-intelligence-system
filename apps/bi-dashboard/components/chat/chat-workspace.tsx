@@ -156,8 +156,11 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
     }
 
     try {
+      // Goes through this app's own /api/chat route, not the internal
+      // backend directly -- that route enforces sign-in and rate limiting
+      // before it ever reaches the backend. See app/api/chat/route.ts.
       const response = await fetch(
-        process.env.NEXT_PUBLIC_CHAT_API_URL ?? 'http://localhost:4100/api/chat',
+        '/api/chat',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -177,7 +180,16 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
 
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(body || 'Chat request failed');
+        // The API returns { error: "..." } as JSON -- surface that message
+        // directly instead of the raw JSON blob when we can parse it.
+        let message = body || 'Chat request failed';
+        try {
+          const parsed = JSON.parse(body) as { error?: string };
+          if (parsed.error) message = parsed.error;
+        } catch {
+          // body wasn't JSON -- fall back to the raw text above.
+        }
+        throw new Error(message);
       }
 
       const result = (await response.json()) as ChatResponse;

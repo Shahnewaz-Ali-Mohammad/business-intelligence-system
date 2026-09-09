@@ -4,17 +4,30 @@ import { runBiAgent } from './chat/agent.mjs';
 
 const port = Number(process.env.API_PORT ?? 4100);
 
+// This server has no auth of its own -- authentication and rate limiting
+// happen in the Next.js app's /api/chat route (app/api/chat/route.ts),
+// which is the only intended caller, over a plain server-to-server fetch.
+// Binding to 127.0.0.1 means this port is never reachable from outside the
+// machine even if something misconfigures a firewall/port-forward -- the
+// wide-open CORS header that used to be here was for a direct
+// browser-to-this-port call that no longer happens, so it's removed rather
+// than left as a stale, unused attack surface.
+const BIND_HOST = process.env.API_HOST ?? '127.0.0.1';
+
+// Bounds how long a single request can tie up this server -- a stuck OpenAI
+// or DB call used to be able to hang a request (and its DB connection)
+// indefinitely.
+const REQUEST_TIMEOUT_MS = 40_000;
+
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Request timed out.')), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 const server = http.createServer(async (request, response) => {
-  response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (request.method === 'OPTIONS') {
-    response.writeHead(204);
-    response.end();
-    return;
-  }
-
   const requestUrl = new URL(request.url, `http://localhost:${port}`);
 
   if (requestUrl.pathname === '/api/chat' && request.method === 'POST') {
@@ -33,18 +46,18 @@ const server = http.createServer(async (request, response) => {
               .slice(-12)
           : [];
         console.log(`[chat] incoming message: ${JSON.stringify(message)}`);
-        const result = await handleChatMessage(message, pageState, history);
+        const result = await withTimeout(handleChatMessage(message, pageState, history), REQUEST_TIMEOUT_MS);
         console.log(`[chat] responded via pipeline, intent=${result.intent}, narrative="${result.narrative.slice(0, 120)}"`);
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify(result));
       } catch (error) {
+        // Full detail goes to the server log only -- the caller (this
+        // app's own /api/chat proxy) already turns any non-200 response
+        // into a generic message before it reaches a browser, but this
+        // server shouldn't be the one deciding what's safe to expose.
         console.error('[chat] request failed entirely:', error);
         response.writeHead(400, { 'Content-Type': 'application/json' });
-        response.end(
-          JSON.stringify({
-            error: error instanceof Error ? error.message : 'Could not handle chat request',
-          }),
-        );
+        response.end(JSON.stringify({ error: 'Could not handle chat request.' }));
       }
     });
     return;
@@ -66,21 +79,18 @@ const server = http.createServer(async (request, response) => {
   const region = rawRegion && /^[A-Za-z]{2,10}$/.test(rawRegion) ? rawRegion.toUpperCase() : null;
 
   try {
-    const data = await dashboardData({ windowDays, region });
+    const data = await withTimeout(dashboardData({ windowDays, region }), REQUEST_TIMEOUT_MS);
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(data));
   } catch (error) {
+    console.error('[dashboard] request failed:', error);
     response.writeHead(500, { 'Content-Type': 'application/json' });
-    response.end(
-      JSON.stringify({
-        error: error instanceof Error ? error.message : 'Database read failed',
-      }),
-    );
+    response.end(JSON.stringify({ error: 'Database read failed.' }));
   }
 });
 
-server.listen(port, () => {
-  console.log(`Read-only BI API listening at http://localhost:${port}/api/dashboard`);
+server.listen(port, BIND_HOST, () => {
+  console.log(`Read-only BI API listening at http://${BIND_HOST}:${port}/api/dashboard (not reachable from outside this machine)`);
 });
 
 // Public entry point: the real LangGraph agent, and only the real agent.

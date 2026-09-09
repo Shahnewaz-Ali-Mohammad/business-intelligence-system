@@ -58,8 +58,9 @@ export function DashboardShell({ data: initialData }: { data: DashboardData }) {
     if (frozen) return;
     setLoading(true);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_READONLY_API_URL ?? 'http://localhost:4100/api/dashboard';
-      const url = new URL(apiUrl);
+      // Goes through this app's own /api/dashboard-data route, not the
+      // internal backend directly -- see app/api/dashboard-data/route.ts.
+      const url = new URL('/api/dashboard-data', window.location.origin);
       url.searchParams.set('days', String(nextDays));
       if (nextRegion) url.searchParams.set('region', nextRegion);
 
