@@ -428,6 +428,47 @@ function attachExtras(row, extraMetricNames) {
   return extras;
 }
 
+// Computes the same top-line totals (revenue, order count, AOV) for the
+// window immediately BEFORE the current one -- e.g. current window is the
+// last 30 days, this returns the 30 days before that, region-scoped the
+// same way as the main request. This is what "vs last month", "vs last
+// week", "compare to the previous period" questions need: a single query
+// against the real prior window, never two independent trailing-N-days
+// calls (which both measure from "now" and can't express a distinct
+// earlier period at all) and never a number estimated/guessed by the model.
+async function computePreviousPeriod(connection, { windowDays, windowCutoff, regionClause, regionParam }) {
+  if (!windowCutoff) return null;
+  const rows = await readOnlyQuery(
+    connection,
+    `
+      SELECT
+        COALESCE(SUM(grand_total), 0) AS revenue,
+        COUNT(*) AS order_count,
+        DATE_FORMAT(DATE_SUB(?, INTERVAL ? DAY), '%b %e') AS prevStartLabel,
+        DATE_FORMAT(DATE_SUB(?, INTERVAL 1 DAY), '%b %e') AS prevEndLabel
+      FROM orders
+      WHERE DATE(ordered_at) >= DATE_SUB(?, INTERVAL ? DAY)
+        AND DATE(ordered_at) < ?
+        ${regionClause}
+    `,
+    [windowCutoff, windowDays, windowCutoff, windowCutoff, windowDays, windowCutoff, ...regionParam],
+  );
+  const row = rows[0] ?? {};
+  const revenue = toNumber(row.revenue);
+  const orderCount = Number(row.order_count ?? 0);
+  return {
+    revenue,
+    orderCount,
+    avgOrderValue: orderCount ? revenue / orderCount : 0,
+    label:
+      row.prevStartLabel && row.prevEndLabel
+        ? row.prevStartLabel.trim() === row.prevEndLabel.trim()
+          ? row.prevStartLabel.trim()
+          : `${row.prevStartLabel.trim()} - ${row.prevEndLabel.trim()}`
+        : 'Previous period',
+  };
+}
+
 async function computeMetricBreakdown(
   connection,
   { metric = 'revenue', extraMetrics = [], groupBy = 'region', sortDirection = 'most', limit = 10, windowCutoff, regionClause, regionParam },
@@ -580,6 +621,7 @@ async function dashboardData({
   region = null,
   customerSort = 'most',
   metricQueries = [],
+  comparePreviousPeriod = false,
 } = {}) {
   const connection = await mysql.createConnection(dbConfig);
 
@@ -707,6 +749,14 @@ async function dashboardData({
     const totalRevenue = trendRevenue.reduce((sum, value) => sum + value, 0);
     const totalOrders = trendOrders.reduce((sum, value) => sum + value, 0);
     const avgOrderValue = totalOrders ? totalRevenue / totalOrders : 0;
+    // Same label used for the top-line dateRange field below -- shared
+    // here so periodComparison.current.label always matches it exactly.
+    const dateRangeLabelForComparison =
+      windowCutoffLabel && windowEndLabel
+        ? windowCutoffLabel === windowEndLabel
+          ? windowCutoffLabel
+          : `${windowCutoffLabel} - ${windowEndLabel}`
+        : (trendRows[0]?.day ?? 'No orders');
     const topRegion = regionRows[0]?.region ?? 'All regions';
     const activeFilterLabel = region ?? 'All regions';
     const xStart = trendRows[0]?.day ?? 'Start';
@@ -734,6 +784,9 @@ async function dashboardData({
     // is what happened when this used to be two separate queries merged by
     // name afterward.
     let metricBreakdown = null;
+    const previousPeriod = comparePreviousPeriod
+      ? await computePreviousPeriod(connection, { windowDays: WINDOW_DAYS, windowCutoff, regionClause, regionParam })
+      : null;
     if (metricQueries.length) {
       const [primary, ...rest] = metricQueries;
       const primaryResult = await computeMetricBreakdown(connection, {
@@ -934,6 +987,12 @@ async function dashboardData({
         (row) => `Orders_${row.export_month}_${row.total_orders}_records`,
       ),
       metricBreakdown,
+      periodComparison: previousPeriod
+        ? {
+            current: { label: dateRangeLabelForComparison, revenue: totalRevenue, orderCount: totalOrders, avgOrderValue },
+            previous: previousPeriod,
+          }
+        : null,
     };
   } finally {
     await connection.end();

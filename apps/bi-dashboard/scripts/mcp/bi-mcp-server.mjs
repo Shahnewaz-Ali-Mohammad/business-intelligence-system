@@ -59,6 +59,10 @@ function summarizeForTool(data) {
     // (metric + groupBy) -- the real, freshly-queried rows for that specific
     // request, e.g. revenue by status, order count by customer.
     metricBreakdown: data.metricBreakdown ?? null,
+    // Present only when comparePreviousPeriod was requested -- the CURRENT
+    // window's totals and the immediately preceding window's totals, from
+    // one real query each, for 'vs last month'/'vs last week' questions.
+    periodComparison: data.periodComparison ?? null,
   };
 }
 
@@ -129,9 +133,15 @@ export function createBiMcpServer() {
           .max(50)
           .nullable()
           .describe('Max rows to return for the metric+groupBy breakdown. Defaults to 10.'),
+        comparePreviousPeriod: z
+          .boolean()
+          .nullable()
+          .describe(
+            'Set true for "vs last month"/"vs last week"/"compare to the previous period" style questions -- runs one extra real query for the window immediately BEFORE the current `days` window (same length, same region filter) and returns both windows\' totals as periodComparison. Never try to answer a period-over-period question by calling this tool twice with different `days` values -- both calls measure trailing days from today, so they cannot express a distinct earlier period at all and will produce the SAME numbers twice. Null/omit for a normal single-period question.',
+          ),
       },
     },
-    async ({ days, region, customerSort, metric, groupBy, extraMetrics, sortDirection, limit }) => {
+    async ({ days, region, customerSort, metric, groupBy, extraMetrics, sortDirection, limit, comparePreviousPeriod }) => {
       const data = await dashboardData({
         windowDays: days,
         region: region || null,
@@ -140,6 +150,7 @@ export function createBiMcpServer() {
           metric && groupBy
             ? [{ metric, extraMetrics: extraMetrics ?? [], groupBy, sortDirection: sortDirection || 'most', limit: limit || 10 }]
             : [],
+        comparePreviousPeriod: Boolean(comparePreviousPeriod),
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(summarizeForTool(data)) }],

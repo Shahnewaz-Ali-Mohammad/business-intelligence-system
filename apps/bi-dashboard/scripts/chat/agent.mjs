@@ -47,6 +47,8 @@ Scope: you help with THIS business's read-only ecommerce data -- revenue, orders
 
 Beyond the standard dashboard bundle, query_semantic_layer also supports a flexible "metric by dimension" breakdown -- pass metric ("revenue" | "order_count" | "avg_order_value" | "units") together with groupBy ("region" | "product" | "customer" | "status" | "day") for questions that don't fit the fixed bundle, e.g. "revenue by status", "order count per customer", "units sold by product", "daily revenue trend". groupBy:"customer" genuinely JOINS orders with users -- use it for any real per-customer breakdown instead of guessing. Use sortDirection ("most"/"least") and limit for ranking questions. Always use this instead of inventing numbers or approximating from the fixed bundle when the user's question names a metric/dimension combination the fixed bundle doesn't cover.
 
+CRITICAL -- for period-over-period questions ("this month vs last month", "vs last week", "compare to the previous period", "how does this compare to the prior 30 days"): set comparePreviousPeriod: true on the query_semantic_layer call instead of trying to call the tool twice with different "days" values. Both calls would measure trailing days from TODAY, not from two different historical windows, so two separate calls cannot actually answer this and would return the same numbers twice. comparePreviousPeriod runs one real extra query for the immediately preceding window and returns both periods' totals as periodComparison -- use ONLY those numbers, never estimate a prior period yourself. This only covers total revenue, order count, and average order value for the two windows as a whole -- it is not a per-region or per-product breakdown comparison; if the user wants a specific dimension compared across two periods, that is not supported yet and you should ask_clarification or say plainly what you can compare instead.
+
 CRITICAL -- when the user wants MORE THAN ONE number per entity (e.g. "revenue and number of orders for each customer", "units AND revenue per product"): put the extra metric(s) in extraMetrics on the SAME query_semantic_layer call, never as a second separate call. Two separate calls are independently sorted and limited and can return different entities in a different order -- you cannot safely merge their results yourself, and doing so has produced wrong answers before (mixing up which number belongs to which entity, or inventing "unspecified" for entities the second query didn't happen to include). If a follow-up message asks to add another number to a list you just showed ("give me their order count too", "and how many orders each"), that means: re-run the SAME breakdown (same groupBy, same entities/sort as before) with the new metric added to extraMetrics -- not a fresh, differently-sorted query for a different top-N set.
 
 Guardrails:
@@ -383,6 +385,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // trimmed JSON handed to the model) for report/artifact rendering.
   let usedArgs = { days: Number(pageState.days ?? 30), region: pageState.region ?? null };
   let customerSortUsed = 'most';
+  let comparePreviousPeriodUsed = false;
   // The agent can legitimately call query_semantic_layer more than once in
   // a single turn (e.g. "units sold AND revenue for top products" needs one
   // call per metric, since each metric+groupBy call returns only one metric
@@ -401,6 +404,9 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
       };
       if (call.args.customerSort === 'least' || call.args.customerSort === 'most') {
         customerSortUsed = call.args.customerSort;
+      }
+      if (call.args.comparePreviousPeriod === true) {
+        comparePreviousPeriodUsed = true;
       }
       if (call.args.metric && call.args.groupBy) {
         const query = {
@@ -432,6 +438,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
           region: usedArgs.region,
           customerSort: customerSortUsed,
           metricQueries: metricQueriesUsed,
+          comparePreviousPeriod: comparePreviousPeriodUsed,
         });
 
   return {
