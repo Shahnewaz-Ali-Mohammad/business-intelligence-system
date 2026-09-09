@@ -22,7 +22,7 @@ const ResponseSchema = z.object({
   intent: z
     .enum(['answer', 'create_new_page', 'ask_clarification'])
     .describe(
-      'answer for direct questions/explanations/casual chat; create_new_page only when the user clearly asked to build/generate/show/visualize a chart, graph, report, or dashboard view; ask_clarification when the request is genuinely ambiguous or missing information you need to answer correctly -- in that case do NOT call query_semantic_layer or guess a default, put your question to the user in narrative instead.',
+      'answer for direct questions/explanations/casual chat with no report/chart requested; create_new_page whenever the user is asking for a report, chart, graph, visualization, or dashboard view -- however they phrase it. This includes directive phrasing ("generate/build/show/visualize a report") AND equally common phrasing like "I need a report for X", "I want a chart of X", "give me a report on X", "can I get a graph of X", "do you have a report for X" -- all of these are asking for a report just as much as "generate a report" is. Naming the deliverable (report/chart/graph/dashboard) at all, in any phrasing, means create_new_page. Only use answer when no such deliverable is named at all -- a plain factual question like "what was revenue last month" with no mention of a report/chart/graph. ask_clarification when the request is genuinely ambiguous or missing information you need to answer correctly -- in that case do NOT call query_semantic_layer or guess a default, put your question to the user in narrative instead.',
     ),
   topic: z.enum([...ALLOWED_TOPICS, 'dashboard']),
   chartType: z
@@ -51,8 +51,13 @@ Guardrails:
 - Use the conversation history to understand follow-ups ("what about last quarter", "and for the US only") the way a person would, without the user having to repeat context.
 - CRITICAL: every new user message is its own fresh question. Decide scope from THIS message alone -- never reuse, rephrase, or repeat the narrative, numbers, or tablesUsed from a previous turn just because a prior turn was on-topic. A topic switch (e.g. a follow-up about a football player, a celebrity, the weather, or anything else unrelated to this ecommerce data) is always out of scope, even mid-conversation.
 - When declining an out-of-scope message: do NOT call query_semantic_layer, do NOT invent or reuse any numbers, keep narrative to one short decline-and-redirect sentence, set tablesUsed to an empty array, and set topic to "dashboard".
+- The word "report"/"chart"/"graph"/"dashboard" appearing anywhere in the user's message, in ANY phrasing ("I need a report for...", "can you give me a graph of...", "generate a report on...", "show me a chart of..."), means intent MUST be create_new_page, not answer -- phrasing like "I need"/"I want"/"can I get" is just as much a request as an imperative verb. Do not downgrade these to a plain text answer.
 - When the user asks for a specific chart format ("pie chart", "line chart", "donut", "bar chart"), honor exactly that format in chartType -- never silently substitute a different chart type than what was asked for.
 - If the request is genuinely ambiguous or missing something you need to answer correctly or usefully -- e.g. "compare them" with no clear referents, "show me the report" with no topic named and nothing to infer from recent history, a metric+dimension combination that could mean two different things -- set intent to "ask_clarification" and put ONE short, specific question in narrative (e.g. "Which two would you like compared -- regions, products, or time periods?"). Do NOT call query_semantic_layer and do NOT guess a default in this case. Only ask when you genuinely cannot proceed correctly without it -- don't ask for confirmation on things you can reasonably infer from the message or recent conversation (a bare "generate a graph" right after a data answer is NOT ambiguous, it clearly means chart that data).
+
+Example -- report request phrased as a need, not a command:
+User: "look i need a report for order status in last 10 days"
+Assistant: intent: "create_new_page" (the user named "report" -- this MUST be create_new_page even though the phrasing is "I need" rather than "generate"), topic: "status", chartType: "bar" (no format named), calls query_semantic_layer, narrative summarizes the real numbers, tablesUsed reflects the real tables used.
 
 Example -- out-of-scope follow-up:
 User: "which region has the lowest revenue?"
