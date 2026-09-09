@@ -443,8 +443,21 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   const intent = askedClarification ? 'answer' : (wantsReport.wantsReport ? 'create_new_page' : 'answer');
   const topic = structured?.topic ?? 'dashboard';
   const chartType = structured?.chartType && structured.chartType !== 'none' ? structured.chartType : 'bar';
+  // A real metric+groupBy breakdown ran this turn even when intent stayed
+  // "answer" -- e.g. a correction/follow-up ("i meant X") that never says
+  // the word "report" or "chart", so the report-gate classifier reads it as
+  // a plain question, not a request to see a page. Previously that meant
+  // `data` was always null for "answer" turns, so a report/chart already on
+  // screen from an earlier turn in the same conversation never got
+  // refreshed -- the visible chart and table kept showing an OLDER
+  // breakdown (different customers, different column count) while the
+  // narrative text answered the NEW, corrected question. A real breakdown
+  // that was actually just computed is always worth returning so the UI
+  // can keep whatever it's showing in sync with it, regardless of which
+  // label the report gate put on this turn.
+  const hasFreshBreakdown = metricQueriesUsed.length > 0;
   const data =
-    intent === 'answer'
+    intent === 'answer' && !hasFreshBreakdown
       ? null
       : await dashboardData({
           windowDays: usedArgs.days,

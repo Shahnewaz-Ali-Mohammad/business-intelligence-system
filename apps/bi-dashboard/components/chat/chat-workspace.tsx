@@ -199,7 +199,18 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
       ]);
       if (user && activeSessionId) saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed);
 
-      if (result.data && result.intent === 'create_new_page') {
+      // A turn can come back with real, freshly-queried breakdown data even
+      // when the report gate didn't call this a "create a report" request --
+      // e.g. a correction like "i meant X" that answers a question about a
+      // report already on screen, without using the word report/chart. If a
+      // report panel is already showing, keep it in sync with whatever data
+      // the assistant most recently and genuinely looked up, instead of
+      // leaving it stuck on an older, now-mismatched breakdown (different
+      // rows, different column count) while the text answer next to it is
+      // current. Only an explicit create_new_page ever opens a NEW panel
+      // that wasn't showing before -- a plain answer never spontaneously
+      // pops one up.
+      if (result.data && (result.intent === 'create_new_page' || artifact)) {
         setArtifact({
           title: result.title,
           narrative: result.narrative,
