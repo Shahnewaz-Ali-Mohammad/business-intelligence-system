@@ -27,6 +27,42 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json({ report });
 }
 
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ updated: false, reason: 'not logged in' }, { status: 401 });
+
+  const { id } = await params;
+  try {
+    const { title, narrative, topic, chartType, filters, tablesUsed, data } = await req.json();
+    if (typeof title !== 'string' || typeof narrative !== 'string' || !data) {
+      return NextResponse.json({ error: 'title, narrative, and data are required.' }, { status: 400 });
+    }
+
+    const db = getAppDb();
+    const [result] = await db.execute(
+      'UPDATE generated_reports SET title = ?, narrative = ?, topic = ?, chart_type = ?, filters = ?, tables_used = ?, data = ? WHERE id = ? AND user_id = ?',
+      [
+        title,
+        narrative,
+        typeof topic === 'string' ? topic : null,
+        typeof chartType === 'string' ? chartType : null,
+        filters ? JSON.stringify(filters) : null,
+        tablesUsed ? JSON.stringify(tablesUsed) : null,
+        JSON.stringify(data),
+        id,
+        user.id,
+      ],
+    );
+    const affected = (result as { affectedRows: number }).affectedRows;
+    if (!affected) return NextResponse.json({ updated: false }, { status: 404 });
+
+    return NextResponse.json({ updated: true });
+  } catch (error) {
+    console.error('report update failed:', error);
+    return NextResponse.json({ error: 'Could not update report.' }, { status: 500 });
+  }
+}
+
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ deleted: false, reason: 'not logged in' }, { status: 401 });

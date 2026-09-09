@@ -6,6 +6,7 @@ import { Download, FileSpreadsheet, LogIn } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { useAuth } from '@/components/auth/auth-provider';
+import { base64ToBlob, triggerDownload } from '@/lib/download';
 
 type ExportRow = {
   id: number;
@@ -19,18 +20,6 @@ const MIME_TYPES: Record<string, string> = {
   csv: 'text/csv;charset=utf-8;',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
-
-function triggerDownload(filename: string, content: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
 
 export default function ExportsPage() {
   const { user, loading: authLoading } = useAuth();
@@ -52,7 +41,11 @@ export default function ExportsPage() {
       const body: { export: { file_name: string; format: string; file_content: string } | null } = await res.json();
       if (!body.export) return;
       const mimeType = MIME_TYPES[body.export.format] ?? 'application/octet-stream';
-      triggerDownload(body.export.file_name, body.export.file_content, mimeType);
+      const blob =
+        body.export.format === 'xlsx'
+          ? base64ToBlob(body.export.file_content, mimeType)
+          : new Blob([body.export.file_content], { type: mimeType });
+      triggerDownload(body.export.file_name, blob);
     } finally {
       setDownloadingId(null);
     }

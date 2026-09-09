@@ -2,10 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Download, FileSpreadsheet, Trash2 } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Download, FileSpreadsheet, LayoutGrid, Table2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
+import { ReportChatEditor, type AppliedReportFields } from '@/components/reports/report-chat-editor';
+import { getReportTable } from '@/lib/dashboard/report-table';
+import { rowsToCsv, triggerDownload } from '@/lib/download';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
 type ReportRow = {
@@ -20,20 +24,18 @@ type ReportRow = {
   created_at: string;
 };
 
-function rowsToCsv(rows: (string | number)[][]): string {
-  return rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+function buildXlsxBase64(headers: string[], rows: (string | number)[][]): string {
+  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
+  return XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
 }
 
-function triggerDownload(filename: string, content: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mimeType });
 }
 
 function logExport(reportId: number, fileName: string, format: string, fileContent: string) {
@@ -49,6 +51,7 @@ export default function ReportDetailPage() {
   const router = useRouter();
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
+  const [view, setView] = useState<'chart' | 'table'>('chart');
 
   useEffect(() => {
     fetch(`/api/reports/${params.id}`)
@@ -67,6 +70,10 @@ export default function ReportDetailPage() {
     } finally {
       setDeleting(false);
     }
+  }
+
+  function handleApplied(fields: AppliedReportFields) {
+    setReport((prev) => (prev ? { ...prev, ...fields } : prev));
   }
 
   if (report === undefined) {
@@ -88,6 +95,24 @@ export default function ReportDetailPage() {
   }
 
   const data = report.data;
+  const table = getReportTable(report.topic, data);
+
+  function handleExportCsv() {
+    const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.csv`;
+    const csv = rowsToCsv([table.headers, ...table.rows]);
+    triggerDownload(fileName, new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    logExport(report!.id, fileName, 'csv', csv);
+  }
+
+  function handleExportExcel() {
+    const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
+    const base64 = buildXlsxBase64(table.headers, table.rows);
+    triggerDownload(
+      fileName,
+      base64ToBlob(base64, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    );
+    logExport(report!.id, fileName, 'xlsx', base64);
+  }
 
   return (
     <WorkspacePage
@@ -97,21 +122,13 @@ export default function ReportDetailPage() {
       scroll
       action={
         <div className="hidden gap-2 md:flex">
-          <Button
-            variant="outline"
-            className="gap-2"
-            onClick={() => {
-              const fileName = `${report.title.toLowerCase().replace(/\s+/g, '-')}.csv`;
-              const csv = rowsToCsv([
-                ['Metric', 'Value', 'Detail'],
-                ...data.kpis.map((kpi) => [kpi.label, kpi.value, kpi.detail]),
-              ]);
-              triggerDownload(fileName, csv, 'text/csv;charset=utf-8;');
-              logExport(report.id, fileName, 'csv', csv);
-            }}
-          >
+          <Button variant="outline" className="gap-2" onClick={handleExportCsv}>
             <FileSpreadsheet size={16} />
             Export CSV
+          </Button>
+          <Button variant="outline" className="gap-2" onClick={handleExportExcel}>
+            <FileSpreadsheet size={16} />
+            Export Excel
           </Button>
           <Button variant="outline" className="gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
             <Trash2 size={16} />
@@ -126,7 +143,69 @@ export default function ReportDetailPage() {
             <h2 className="text-base font-bold text-blue-950">Insight Summary</h2>
             <p className="mt-2 whitespace-pre-line text-sm leading-6 text-blue-900">{report.narrative}</p>
           </section>
-          <ArtifactChartPicker title={report.title} topic={report.topic} chartType={report.chart_type} data={data} />
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setView('chart')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                view === 'chart' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <LayoutGrid size={14} />
+              Chart
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('table')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                view === 'table' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <Table2 size={14} />
+              Table
+            </button>
+          </div>
+
+          {view === 'chart' ? (
+            <ArtifactChartPicker title={report.title} topic={report.topic} chartType={report.chart_type} data={data} />
+          ) : (
+            <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      {table.headers.map((header) => (
+                        <th key={header} className="px-5 py-3 font-semibold">
+                          {header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {table.rows.map((row, i) => (
+                      <tr key={i}>
+                        {row.map((cell, j) => (
+                          <td key={j} className="px-5 py-3 text-slate-700">
+                            {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          <ReportChatEditor
+            reportId={report.id}
+            currentTopic={report.topic}
+            currentDays={report.filters?.days ?? 30}
+            currentRegion={report.filters?.region ?? null}
+            currentData={data}
+            onApplied={handleApplied}
+          />
         </div>
 
         <aside className="space-y-4">
@@ -145,18 +224,26 @@ export default function ReportDetailPage() {
             {report.tables_used && report.tables_used.length ? (
               <div className="mt-4 flex flex-wrap gap-1.5 border-t border-slate-100 pt-3">
                 <Download size={12} className="text-slate-400" />
-                {report.tables_used.map((table) => (
+                {report.tables_used.map((tableName) => (
                   <span
-                    key={table}
+                    key={tableName}
                     className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600"
                   >
-                    {table}
+                    {tableName}
                   </span>
                 ))}
               </div>
             ) : null}
           </section>
-          <div className="md:hidden">
+          <div className="flex flex-col gap-2 md:hidden">
+            <Button variant="outline" className="w-full gap-2" onClick={handleExportCsv}>
+              <FileSpreadsheet size={16} />
+              Export CSV
+            </Button>
+            <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel}>
+              <FileSpreadsheet size={16} />
+              Export Excel
+            </Button>
             <Button variant="outline" className="w-full gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
               <Trash2 size={16} />
               {deleting ? 'Deleting...' : 'Delete Report'}
