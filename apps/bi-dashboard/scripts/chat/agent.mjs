@@ -427,7 +427,20 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
     ? structured.tablesUsed.filter((table) => ALLOWED_TABLES.includes(table))
     : [];
 
-  const intent = wantsReport.wantsReport ? 'create_new_page' : 'answer';
+  // The draft agent's own intent (answer | ask_clarification) and the
+  // separate report-gate classifier (wantsReport) are independent signals
+  // that can disagree -- e.g. "give me a report on whichever's bigger,
+  // regions or products" reads as report-seeking to the report gate, but
+  // the draft agent correctly set intent: "ask_clarification" and never
+  // called the tool at all. Previously wantsReport alone decided the final
+  // intent, so that case silently created a full report page (built from
+  // whatever default/unscoped data happened to be lying around, since no
+  // tool call ever ran) with the clarifying QUESTION as its narrative --
+  // the user would see a page they never asked for instead of being asked
+  // the question. A clarifying question must always win: it always renders
+  // as plain text with no data fetch, no matter what the report gate says.
+  const askedClarification = structured?.intent === 'ask_clarification';
+  const intent = askedClarification ? 'answer' : (wantsReport.wantsReport ? 'create_new_page' : 'answer');
   const topic = structured?.topic ?? 'dashboard';
   const chartType = structured?.chartType && structured.chartType !== 'none' ? structured.chartType : 'bar';
   const data =
