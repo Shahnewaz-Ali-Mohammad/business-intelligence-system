@@ -416,9 +416,29 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
           sortDirection: call.args.sortDirection === 'least' ? 'least' : 'most',
           limit: Number.isInteger(call.args.limit) ? call.args.limit : 10,
         };
-        // Dedup identical (metric, groupBy) calls -- keep the first.
-        const alreadyHave = metricQueriesUsed.some((q) => q.metric === query.metric && q.groupBy === query.groupBy);
-        if (!alreadyHave) metricQueriesUsed.push(query);
+        // Keep the LAST call for a given (metric, groupBy) pair, never the
+        // first. When the draft -> critique graph retries, the agent can
+        // legitimately call this tool again for the SAME breakdown with
+        // corrected args (a different limit, sort, or extraMetrics) before
+        // landing on the final, approved narrative -- and because LangGraph
+        // threads the full running message history through each retry, the
+        // FIRST (superseded, critique-flagged) call's tool_calls message is
+        // still sitting in that history alongside the retry's. The retry's
+        // call is always the one that actually backs what the model ended
+        // up saying. Keeping the first one here meant the rendered
+        // chart/table/export could be rebuilt from a draft the model itself
+        // abandoned -- fewer rows, a different sort, even different
+        // customers entirely -- while the text reply the user reads was
+        // already the corrected, approved version. That's exactly the
+        // chart/table-vs-reply mismatch reported: same root cause as the
+        // per-turn staleness fixed earlier, but happening WITHIN a single
+        // turn instead of across turns.
+        const existingIndex = metricQueriesUsed.findIndex((q) => q.metric === query.metric && q.groupBy === query.groupBy);
+        if (existingIndex >= 0) {
+          metricQueriesUsed[existingIndex] = query;
+        } else {
+          metricQueriesUsed.push(query);
+        }
       }
     }
   }
