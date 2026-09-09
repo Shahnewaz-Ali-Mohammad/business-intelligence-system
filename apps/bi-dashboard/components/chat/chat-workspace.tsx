@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { RegionRevenueChart } from '@/components/dashboard/charts/region-revenue-chart';
 import { StatusDonutChart } from '@/components/dashboard/charts/status-donut-chart';
 import { TopEntitiesBarChart } from '@/components/dashboard/charts/top-entities-bar-chart';
+import { GenericMetricChart } from '@/components/dashboard/charts/generic-metric-chart';
 import { useAuth } from '@/components/auth/auth-provider';
 import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
 
@@ -21,6 +22,7 @@ type Artifact = {
   title: string;
   narrative: string;
   topic: string;
+  chartType: 'bar' | 'line' | 'pie' | 'donut' | 'none';
   data: DashboardData;
   days: number;
   region: string | null;
@@ -37,7 +39,22 @@ const WELCOME_MESSAGE: Message = {
 // so "give me top customers" -> "generate a graph" renders a customers
 // chart, not an unrelated one.
 function ArtifactChart({ artifact }: { artifact: Artifact }) {
-  const { topic, data } = artifact;
+  const { topic, data, chartType } = artifact;
+
+  // A flexible metric-by-dimension breakdown (possibly join-derived, e.g.
+  // customer) takes priority, rendered in whatever format was requested --
+  // this is what lets "generate a pie chart for this" actually draw a pie
+  // instead of always the same fixed chart.
+  if (data.metricBreakdown && data.metricBreakdown.rows.length) {
+    return (
+      <GenericMetricChart
+        title={artifact.title}
+        subtitle={`Tables used: ${data.metricBreakdown.tablesUsed.join(', ') || 'orders'}`}
+        entries={data.metricBreakdown.rows}
+        chartType={chartType === 'none' ? 'bar' : chartType}
+      />
+    );
+  }
 
   if (topic === 'customers') {
     return (
@@ -244,6 +261,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
           title: result.title,
           narrative: result.narrative,
           topic: result.topic ?? 'dashboard',
+          chartType: result.chartType ?? 'bar',
           data: result.data,
           days: result.filters.days,
           region: result.filters.region,

@@ -55,6 +55,10 @@ function summarizeForTool(data) {
     customerMix: data.customerMix,
     repeatCustomers: data.repeatCustomers,
     topCustomersByOrders: data.topCustomersByOrders,
+    // Present only when the caller asked for a flexible "X by Y" breakdown
+    // (metric + groupBy) -- the real, freshly-queried rows for that specific
+    // request, e.g. revenue by status, order count by customer.
+    metricBreakdown: data.metricBreakdown ?? null,
   };
 }
 
@@ -95,13 +99,37 @@ export function createBiMcpServer() {
           .describe(
             'Ranking direction for the customers-by-order-count breakdown. "most" (default) for top customers by orders, "least" for the real bottom customers by orders -- these run genuinely different queries, so always set "least" when the user asks for the lowest/fewest/bottom customers by orders. Null/omit defaults to "most".',
           ),
+        metric: z
+          .enum(['revenue', 'order_count', 'avg_order_value', 'units'])
+          .nullable()
+          .describe(
+            'Set this together with groupBy for a flexible "metric by dimension" breakdown -- e.g. metric:"revenue", groupBy:"status" for revenue by order status; metric:"order_count", groupBy:"customer" for order count by customer (this genuinely JOINs orders with users). "units" is only valid with groupBy:"product". Null/omit if you only need the standard dashboard bundle above.',
+          ),
+        groupBy: z
+          .enum(['region', 'product', 'customer', 'status', 'day'])
+          .nullable()
+          .describe(
+            'The dimension to group the metric by. "customer" joins orders with users (a real table join, not a canned list). "product" queries order_items (all-time, no day window). "day" gives a chronological trend. Must be set together with metric to get a metricBreakdown result.',
+          ),
+        sortDirection: z
+          .enum(['most', 'least'])
+          .nullable()
+          .describe('For the metric+groupBy breakdown only: "most" (default) for the highest values first, "least" for the lowest values first -- runs a genuinely different query, never derived by reversing the other.'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .nullable()
+          .describe('Max rows to return for the metric+groupBy breakdown. Defaults to 10.'),
       },
     },
-    async ({ days, region, customerSort }) => {
+    async ({ days, region, customerSort, metric, groupBy, sortDirection, limit }) => {
       const data = await dashboardData({
         windowDays: days,
         region: region || null,
         customerSort: customerSort || 'most',
+        metricQuery: metric && groupBy ? { metric, groupBy, sortDirection: sortDirection || 'most', limit: limit || 10 } : null,
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(summarizeForTool(data)) }],

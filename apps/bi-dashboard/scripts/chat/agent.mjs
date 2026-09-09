@@ -21,6 +21,11 @@ const ALLOWED_TABLES = ['orders', 'users', 'order_items', 'order_status_history'
 const ResponseSchema = z.object({
   intent: z.enum(['answer', 'create_new_page']).describe('answer for direct questions/explanations/casual chat; create_new_page only when the user clearly asked to build/generate/show/visualize a chart, graph, report, or dashboard view.'),
   topic: z.enum([...ALLOWED_TOPICS, 'dashboard']),
+  chartType: z
+    .enum(['bar', 'line', 'pie', 'donut', 'none'])
+    .describe(
+      'The chart format to render, IF the user asked for one. Match what they actually asked for -- "pie chart" -> pie, "line chart"/"trend"/"over time" -> line, "donut" -> donut, a plain "graph"/"chart"/"visualize" with no format named -> bar. "none" if intent is "answer" and no chart was requested.',
+    ),
   title: z.string().describe('Short title for this reply, used as a report/page title when intent is create_new_page.'),
   narrative: z.string().describe('1-4 sharp, conversational analyst sentences, leading directly with the answer. Uses ONLY values that came back from query_semantic_layer.'),
   tablesUsed: z.array(z.enum(ALLOWED_TABLES)).describe('Only the real tables that genuinely back this answer.'),
@@ -29,6 +34,8 @@ const ResponseSchema = z.object({
 const GUARDRAIL_SYSTEM_PROMPT = `You are the analytical engine behind a live BI dashboard chat -- a sharp, conversational senior business analyst, similar in tone to a helpful AI assistant, not a robotic report generator.
 
 Scope: you help with THIS business's read-only ecommerce data -- revenue, orders, customers, products, regions, shipping status. You have no built-in knowledge of these numbers; the ONLY way to get real data is the query_semantic_layer tool. You MUST call it before answering anything about revenue, orders, customers, products, regions, or status. Never invent, estimate, or recall a number that isn't in a tool result.
+
+Beyond the standard dashboard bundle, query_semantic_layer also supports a flexible "metric by dimension" breakdown -- pass metric ("revenue" | "order_count" | "avg_order_value" | "units") together with groupBy ("region" | "product" | "customer" | "status" | "day") for questions that don't fit the fixed bundle, e.g. "revenue by status", "order count per customer", "units sold by product", "daily revenue trend". groupBy:"customer" genuinely JOINS orders with users -- use it for any real per-customer breakdown instead of guessing. Use sortDirection ("most"/"least") and limit for ranking questions. Always use this instead of inventing numbers or approximating from the fixed bundle when the user's question names a metric/dimension combination the fixed bundle doesn't cover.
 
 Guardrails:
 - If asked something outside this dashboard's scope (general knowledge unrelated to this data, other companies, personal/medical/legal/financial advice, anything not about this ecommerce data), politely decline in one sentence and redirect to what you can actually help with. Do not attempt to answer it anyway.
@@ -40,6 +47,7 @@ Guardrails:
 - Use the conversation history to understand follow-ups ("what about last quarter", "and for the US only") the way a person would, without the user having to repeat context.
 - CRITICAL: every new user message is its own fresh question. Decide scope from THIS message alone -- never reuse, rephrase, or repeat the narrative, numbers, or tablesUsed from a previous turn just because a prior turn was on-topic. A topic switch (e.g. a follow-up about a football player, a celebrity, the weather, or anything else unrelated to this ecommerce data) is always out of scope, even mid-conversation.
 - When declining an out-of-scope message: do NOT call query_semantic_layer, do NOT invent or reuse any numbers, keep narrative to one short decline-and-redirect sentence, set tablesUsed to an empty array, and set topic to "dashboard".
+- When the user asks for a specific chart format ("pie chart", "line chart", "donut", "bar chart"), honor exactly that format in chartType -- never silently substitute a different chart type than what was asked for.
 
 Example -- out-of-scope follow-up:
 User: "which region has the lowest revenue?"
@@ -119,6 +127,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
     return {
       intent: 'answer',
       topic: 'dashboard',
+      chartType: 'none',
       title: 'Out of Scope',
       narrative:
         scope.declineReason && scope.declineReason.trim()
@@ -165,6 +174,8 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // tool call, so we can pull the FULL chart-ready dataset (not just the
   // trimmed JSON handed to the model) for report/artifact rendering.
   let usedArgs = { days: Number(pageState.days ?? 30), region: pageState.region ?? null };
+  let customerSortUsed = 'most';
+  let metricQueryUsed = null;
   for (const msg of result.messages ?? []) {
     const calls = msg?.tool_calls;
     if (Array.isArray(calls)) {
@@ -174,6 +185,17 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
           days: Number.isInteger(call.args.days) ? call.args.days : usedArgs.days,
           region: call.args.region ?? null,
         };
+        if (call.args.customerSort === 'least' || call.args.customerSort === 'most') {
+          customerSortUsed = call.args.customerSort;
+        }
+        if (call.args.metric && call.args.groupBy) {
+          metricQueryUsed = {
+            metric: call.args.metric,
+            groupBy: call.args.groupBy,
+            sortDirection: call.args.sortDirection === 'least' ? 'least' : 'most',
+            limit: Number.isInteger(call.args.limit) ? call.args.limit : 10,
+          };
+        }
       }
     }
   }
@@ -184,11 +206,21 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
 
   const intent = structured?.intent === 'create_new_page' ? 'create_new_page' : 'answer';
   const topic = structured?.topic ?? 'dashboard';
-  const data = intent === 'answer' ? null : await dashboardData({ windowDays: usedArgs.days, region: usedArgs.region });
+  const chartType = structured?.chartType && structured.chartType !== 'none' ? structured.chartType : 'bar';
+  const data =
+    intent === 'answer'
+      ? null
+      : await dashboardData({
+          windowDays: usedArgs.days,
+          region: usedArgs.region,
+          customerSort: customerSortUsed,
+          metricQuery: metricQueryUsed,
+        });
 
   return {
     intent,
     topic,
+    chartType,
     title:
       typeof structured?.title === 'string' && structured.title.trim()
         ? structured.title.trim().slice(0, 120)

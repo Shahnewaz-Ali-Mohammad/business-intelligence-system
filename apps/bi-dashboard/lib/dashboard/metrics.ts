@@ -24,6 +24,7 @@ export type DashboardData = {
   channelRevenue: { name: string; value: number; fill: string }[];
   topProducts: string[][];
   topProductsChart: { name: string; revenue: number }[];
+  metricBreakdown: { rows: { name: string; value: number }[]; tablesUsed: string[] } | null;
   anomalies: string[][];
   pinnedPages: PageLink[];
   sessionHistory: PageLink[];
@@ -38,6 +39,7 @@ export type DashboardFilters = {
 export type ChatResponse = {
   intent: 'answer' | 'mutate_current_page' | 'create_new_page';
   topic?: string;
+  chartType?: 'bar' | 'line' | 'pie' | 'donut' | 'none';
   title: string;
   narrative: string;
   filters: {

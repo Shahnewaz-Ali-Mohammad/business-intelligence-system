@@ -381,6 +381,135 @@ async function computeTopCustomersByOrders(connection, direction = 'DESC', limit
   }
 }
 
+// A flexible, whitelisted metric-breakdown query builder. This is what lets
+// the chatbot answer arbitrary "X by Y" questions (revenue by status, order
+// count by customer, units by product, etc.) and genuinely join tables
+// (orders + users for customer breakdowns) instead of only ever returning
+// the same fixed dashboard bundle. The LLM never writes SQL -- it can only
+// pick from these enum-validated metric/groupBy/sortDirection/limit values,
+// which map to a small set of pre-written, parameterized queries. Every
+// query here is still read-only and capped by LIMIT.
+const METRIC_EXPR = {
+  orders: {
+    revenue: 'COALESCE(SUM(o.grand_total), 0)',
+    order_count: 'COUNT(*)',
+    avg_order_value: 'COALESCE(AVG(o.grand_total), 0)',
+  },
+  order_items: {
+    revenue: 'COALESCE(SUM(oi.line_total), 0)',
+    units: 'COALESCE(SUM(oi.qty), 0)',
+    order_count: 'COUNT(DISTINCT oi.order_id)',
+  },
+};
+
+async function computeMetricBreakdown(
+  connection,
+  { metric = 'revenue', groupBy = 'region', sortDirection = 'most', limit = 10, windowCutoff, regionClause, regionParam },
+) {
+  const safeDirection = sortDirection === 'least' ? 'ASC' : 'DESC';
+  const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 50 ? limit : 10;
+
+  try {
+    if (groupBy === 'region') {
+      const expr = METRIC_EXPR.orders[metric] ?? METRIC_EXPR.orders.revenue;
+      const rows = await readOnlyQuery(
+        connection,
+        `
+          SELECT COALESCE(ship_country_code, 'Other') AS name, ${expr.replace(/o\./g, '')} AS value
+          FROM orders o
+          WHERE DATE(ordered_at) >= ? ${regionClause}
+          GROUP BY COALESCE(ship_country_code, 'Other')
+          ORDER BY value ${safeDirection}
+          LIMIT ${safeLimit}
+        `,
+        [windowCutoff, ...regionParam],
+      );
+      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['orders'] };
+    }
+
+    if (groupBy === 'status') {
+      const expr = METRIC_EXPR.orders[metric] ?? METRIC_EXPR.orders.order_count;
+      const rows = await readOnlyQuery(
+        connection,
+        `
+          SELECT status AS name, ${expr.replace(/o\./g, '')} AS value
+          FROM orders o
+          WHERE DATE(ordered_at) >= ? ${regionClause}
+          GROUP BY status
+          ORDER BY value ${safeDirection}
+          LIMIT ${safeLimit}
+        `,
+        [windowCutoff, ...regionParam],
+      );
+      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['orders'] };
+    }
+
+    if (groupBy === 'day') {
+      const rows = await readOnlyQuery(
+        connection,
+        `
+          SELECT DATE_FORMAT(ordered_at, '%b %e') AS name, COALESCE(SUM(grand_total), 0) AS value
+          FROM orders
+          WHERE DATE(ordered_at) >= ? ${regionClause}
+          GROUP BY DATE(ordered_at), DATE_FORMAT(ordered_at, '%b %e')
+          ORDER BY DATE(ordered_at) ASC
+          LIMIT ${safeLimit}
+        `,
+        [windowCutoff, ...regionParam],
+      );
+      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['orders'] };
+    }
+
+    if (groupBy === 'product') {
+      const expr = METRIC_EXPR.order_items[metric] ?? METRIC_EXPR.order_items.revenue;
+      const rows = await readOnlyQuery(
+        connection,
+        `
+          SELECT oi.product_name AS name, ${expr} AS value
+          FROM order_items oi
+          GROUP BY oi.product_name
+          ORDER BY value ${safeDirection}
+          LIMIT ${safeLimit}
+        `,
+      );
+      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['order_items'] };
+    }
+
+    if (groupBy === 'customer') {
+      const fkCol = await findOrdersCustomerColumn(connection);
+      const usersPk = await findPrimaryKeyColumn(connection, 'users');
+      const nameInfo = await findUsersDisplayName(connection);
+      if (!fkCol || !usersPk || !nameInfo) return { rows: [], tablesUsed: ['orders', 'users'] };
+
+      const nameExpr =
+        nameInfo.type === 'combo'
+          ? `TRIM(CONCAT(u.${nameInfo.columns[0]}, ' ', u.${nameInfo.columns[1]}))`
+          : `u.${nameInfo.column}`;
+      const expr = (METRIC_EXPR.orders[metric] ?? METRIC_EXPR.orders.order_count).replace(/o\./g, 'o.');
+
+      const rows = await readOnlyQuery(
+        connection,
+        `
+          SELECT ${nameExpr} AS name, ${expr} AS value
+          FROM orders o
+          JOIN users u ON u.${usersPk} = o.${fkCol}
+          WHERE DATE(o.ordered_at) >= ? ${regionClause}
+          GROUP BY o.${fkCol}, ${nameExpr}
+          ORDER BY value ${safeDirection}
+          LIMIT ${safeLimit}
+        `,
+        [windowCutoff, ...regionParam],
+      );
+      return { rows: rows.map((r) => ({ name: r.name || 'Unknown customer', value: toNumber(r.value) })), tablesUsed: ['orders', 'users'] };
+    }
+
+    return { rows: [], tablesUsed: [] };
+  } catch (error) {
+    console.error('metric breakdown query failed, falling back to empty list:', error.message);
+    return { rows: [], tablesUsed: [] };
+  }
+}
+
 const compactMoney = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -397,7 +526,12 @@ async function readOnlyQuery(connection, sql, params = []) {
   return rows;
 }
 
-async function dashboardData({ windowDays = 30, region = null, customerSort = 'most' } = {}) {
+async function dashboardData({
+  windowDays = 30,
+  region = null,
+  customerSort = 'most',
+  metricQuery = null,
+} = {}) {
   const connection = await mysql.createConnection(dbConfig);
 
   try {
@@ -525,6 +659,22 @@ async function dashboardData({ windowDays = 30, region = null, customerSort = 'm
       connection,
       customerSort === 'least' ? 'ASC' : 'DESC',
     );
+
+    // Optional flexible "X by Y" breakdown (join-capable) requested by the
+    // MCP tool -- e.g. revenue by status, order count by customer. Kept
+    // separate from the fixed dashboard bundle above so existing charts and
+    // KPIs are unaffected when this isn't requested.
+    const metricBreakdown = metricQuery
+      ? await computeMetricBreakdown(connection, {
+          metric: metricQuery.metric,
+          groupBy: metricQuery.groupBy,
+          sortDirection: metricQuery.sortDirection,
+          limit: metricQuery.limit,
+          windowCutoff,
+          regionClause,
+          regionParam,
+        })
+      : null;
 
     return {
       connected: true,
@@ -663,6 +813,7 @@ async function dashboardData({ windowDays = 30, region = null, customerSort = 'm
       exportsList: exportRows.map(
         (row) => `Orders_${row.export_month}_${row.total_orders}_records`,
       ),
+      metricBreakdown,
     };
   } finally {
     await connection.end();
