@@ -1,12 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
-import { Download, FileSpreadsheet } from 'lucide-react';
+import { useParams, useRouter } from 'next/navigation';
+import { Download, FileSpreadsheet, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
-import { TopProductsTable } from '@/components/dashboard/tables/top-products-table';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
 type ReportRow = {
@@ -36,9 +35,19 @@ function downloadCsv(filename: string, rows: (string | number)[][]) {
   URL.revokeObjectURL(url);
 }
 
+function logExport(reportId: number, fileName: string, format: string) {
+  fetch('/api/exports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reportId, fileName, format }),
+  }).catch(() => {});
+}
+
 export default function ReportDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     fetch(`/api/reports/${params.id}`)
@@ -46,6 +55,18 @@ export default function ReportDetailPage() {
       .then((body: { report: ReportRow | null }) => setReport(body.report))
       .catch(() => setReport(null));
   }, [params.id]);
+
+  async function handleDelete() {
+    if (!report) return;
+    if (!confirm('Delete this report? This cannot be undone.')) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/reports/${report.id}`, { method: 'DELETE' });
+      if (res.ok) router.push('/reports');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   if (report === undefined) {
     return (
@@ -78,15 +99,21 @@ export default function ReportDetailPage() {
           <Button
             variant="outline"
             className="gap-2"
-            onClick={() =>
-              downloadCsv(`${report.title.toLowerCase().replace(/\s+/g, '-')}.csv`, [
+            onClick={() => {
+              const fileName = `${report.title.toLowerCase().replace(/\s+/g, '-')}.csv`;
+              downloadCsv(fileName, [
                 ['Metric', 'Value', 'Detail'],
                 ...data.kpis.map((kpi) => [kpi.label, kpi.value, kpi.detail]),
-              ])
-            }
+              ]);
+              logExport(report.id, fileName, 'csv');
+            }}
           >
             <FileSpreadsheet size={16} />
             Export CSV
+          </Button>
+          <Button variant="outline" className="gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
+            <Trash2 size={16} />
+            {deleting ? 'Deleting...' : 'Delete'}
           </Button>
         </div>
       }
@@ -98,7 +125,6 @@ export default function ReportDetailPage() {
             <p className="mt-2 whitespace-pre-line text-sm leading-6 text-blue-900">{report.narrative}</p>
           </section>
           <ArtifactChartPicker title={report.title} topic={report.topic} chartType={report.chart_type} data={data} />
-          <TopProductsTable data={data} />
         </div>
 
         <aside className="space-y-4">
@@ -128,6 +154,12 @@ export default function ReportDetailPage() {
               </div>
             ) : null}
           </section>
+          <div className="md:hidden">
+            <Button variant="outline" className="w-full gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
+              <Trash2 size={16} />
+              {deleting ? 'Deleting...' : 'Delete Report'}
+            </Button>
+          </div>
         </aside>
       </div>
     </WorkspacePage>

@@ -141,3 +141,25 @@ SET @sql_add_chart_type = IF(@has_chart_type_col = 0,
 PREPARE stmt FROM @sql_add_chart_type;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
+
+
+-- ============================================================================
+-- Migration: track real report exports (downloads) instead of showing a
+-- fixed, fake list on the Exports page. Every time a user actually clicks
+-- "Export CSV"/"Export Excel" on a report, one row is logged here; the
+-- Exports page reads this table and shows nothing until a real export
+-- has happened. Safe to re-run: uses IF NOT EXISTS everywhere.
+-- ============================================================================
+USE bi_app;
+
+CREATE TABLE IF NOT EXISTS report_exports (
+  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id     INT UNSIGNED NOT NULL,
+  report_id   INT UNSIGNED NULL,
+  file_name   VARCHAR(255) NOT NULL,
+  format      VARCHAR(10) NOT NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (report_id) REFERENCES generated_reports(id) ON DELETE SET NULL,
+  INDEX idx_user_created (user_id, created_at)
+) ENGINE=InnoDB;

@@ -4,38 +4,27 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
 
-export async function GET() {
+const PAGE_SIZE = 5;
+
+export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ reports: [] });
+  if (!user) return NextResponse.json({ reports: [], total: 0 });
+
+  const page = Math.max(1, Number(req.nextUrl.searchParams.get('page')) || 1);
+  const offset = (page - 1) * PAGE_SIZE;
 
   const db = getAppDb();
-  const [rows] = await db.execute(
-    'SELECT id, title, narrative, topic, chart_type, filters, tables_used, data, created_at FROM generated_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT 100',
-    [user.id],
+  const [countRows] = await db.execute('SELECT COUNT(*) AS total FROM generated_reports WHERE user_id = ?', [
+    user.id,
+  ]);
+  const total = Number((countRows as Array<{ total: number }>)[0]?.total ?? 0);
+
+  const [rows] = await db.query(
+    'SELECT id, title, narrative, topic, chart_type, created_at FROM generated_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    [user.id, PAGE_SIZE, offset],
   );
 
-  // MariaDB stores JSON columns as plain TEXT, so mysql2 does not auto-parse
-  // them -- normalize here so the client always gets real objects/arrays.
-  const reports = (rows as Array<Record<string, unknown>>).map((row) => ({
-    ...row,
-    filters: parseJsonColumn(row.filters),
-    tables_used: parseJsonColumn(row.tables_used),
-    data: parseJsonColumn(row.data),
-  }));
-
-  return NextResponse.json({ reports });
-}
-
-function parseJsonColumn(value: unknown): unknown {
-  if (value == null || typeof value === 'object') return value;
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-  return value;
+  return NextResponse.json({ reports: rows, total, page, pageSize: PAGE_SIZE });
 }
 
 export async function POST(req: NextRequest) {

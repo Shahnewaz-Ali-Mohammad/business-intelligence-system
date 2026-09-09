@@ -27,6 +27,19 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json({ report });
 }
 
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ deleted: false, reason: 'not logged in' }, { status: 401 });
+
+  const { id } = await params;
+  const db = getAppDb();
+  const [result] = await db.execute('DELETE FROM generated_reports WHERE id = ? AND user_id = ?', [id, user.id]);
+  const affected = (result as { affectedRows: number }).affectedRows;
+  if (!affected) return NextResponse.json({ deleted: false }, { status: 404 });
+
+  return NextResponse.json({ deleted: true });
+}
+
 function parseJsonColumn(value: unknown): unknown {
   if (value == null || typeof value === 'object') return value;
   if (typeof value === 'string') {
