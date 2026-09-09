@@ -8,6 +8,7 @@
 // (chat UI, saved reports, "tables used" chips) keeps its existing contract.
 import { ChatOpenAI } from '@langchain/openai';
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
+import { StateGraph, Annotation, START, END } from '@langchain/langgraph';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMcpTools } from '@langchain/mcp-adapters';
@@ -156,6 +157,130 @@ async function checkWantsReport(message, history = []) {
   return result;
 }
 
+const CritiqueSchema = z.object({
+  grounded: z
+    .boolean()
+    .describe(
+      'true if every specific number, date, or figure stated in the narrative actually appears in the provided tool results (minor rounding/formatting differences are fine). false if the narrative states ANY number, date, or figure that cannot be found in the tool results -- including a number from a different breakdown than the one actually queried.',
+    ),
+  issues: z
+    .array(z.string())
+    .describe('If grounded is false, one short entry per unverifiable claim, quoting the specific number/figure and what is wrong with it. Empty array if grounded is true.'),
+});
+
+const CRITIQUE_PROMPT = `You are a strict fact-checker sitting between a BI chatbot and the user. You will be shown the raw tool result data the chatbot actually queried, and the narrative it drafted in response. Your only job: does every specific number, date, or figure in the narrative genuinely appear in the tool results? Do not re-derive or approve numbers you can't actually find in the data. Flag anything invented, hallucinated, stale from a previous turn, or pulled from a different breakdown than the one shown.`;
+
+let cachedCritiqueModel = null;
+
+function getCritiqueModel() {
+  if (cachedCritiqueModel) return cachedCritiqueModel;
+  cachedCritiqueModel = new ChatOpenAI({
+    model: process.env.OPENAI_SCOPE_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+    temperature: 0,
+    apiKey: process.env.OPENAI_API_KEY,
+  }).withStructuredOutput(CritiqueSchema);
+  return cachedCritiqueModel;
+}
+
+const MAX_DRAFT_RETRIES = 1;
+
+// A real LangGraph StateGraph (not just the prebuilt ReAct wrapper): the
+// agent's draft is fact-checked against its OWN tool results before it's
+// ever returned, and gets one chance to redraft if the check fails. This
+// catches ungrounded/mismatched narratives (e.g. citing a number from a
+// breakdown that wasn't actually the one charted) at the source, instead of
+// relying on someone spotting it later and patching that one case by hand.
+const GraphState = Annotation.Root({
+  messages: Annotation({
+    reducer: (current, update) => current.concat(update),
+    default: () => [],
+  }),
+  toolOutputs: Annotation({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
+  lastAgentMessages: Annotation({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
+  structured: Annotation({
+    reducer: (_current, update) => update,
+    default: () => null,
+  }),
+  critique: Annotation({
+    reducer: (_current, update) => update,
+    default: () => null,
+  }),
+  retries: Annotation({
+    reducer: (_current, update) => update,
+    default: () => 0,
+  }),
+});
+
+async function draftNode(state) {
+  const tools = await getAgentTools();
+  const model = new ChatOpenAI({
+    model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+    temperature: 0.2,
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+  const agent = createReactAgent({ llm: model, tools, responseFormat: ResponseSchema });
+  const result = await agent.invoke({ messages: state.messages });
+  const toolOutputs = (result.messages ?? [])
+    .filter((m) => m?.getType?.() === 'tool')
+    .map((m) => String(m.content).slice(0, 4000));
+  return {
+    structured: result.structuredResponse,
+    toolOutputs,
+    lastAgentMessages: result.messages ?? [],
+  };
+}
+
+async function critiqueNode(state) {
+  if (!state.structured?.narrative) {
+    return { critique: { grounded: true, issues: [] } };
+  }
+  const critiqueModel = getCritiqueModel();
+  const toolResultsText = state.toolOutputs.length ? state.toolOutputs.join('\n---\n') : '(no tool was called)';
+  const result = await critiqueModel.invoke([
+    new SystemMessage(CRITIQUE_PROMPT),
+    new HumanMessage(`Tool results:\n${toolResultsText}\n\nNarrative to check:\n${state.structured.narrative}`),
+  ]);
+  console.log('[agent] critique result:', JSON.stringify(result));
+
+  if (result.grounded === false) {
+    const nextRetries = state.retries + 1;
+    if (nextRetries <= MAX_DRAFT_RETRIES) {
+      const feedback = new SystemMessage(
+        `Your previous answer contained figures that could not be verified against the real tool results: ${result.issues.join('; ')}. Re-check the actual data (call query_semantic_layer again if needed) and rewrite your narrative using ONLY numbers that genuinely appear there.`,
+      );
+      return { critique: result, retries: nextRetries, messages: [feedback] };
+    }
+    return { critique: result, retries: nextRetries };
+  }
+  return { critique: result };
+}
+
+function routeAfterCritique(state) {
+  if (state.critique?.grounded !== false) return 'done';
+  if (state.retries > MAX_DRAFT_RETRIES) return 'done';
+  return 'retry';
+}
+
+let cachedBiGraph = null;
+
+function getBiGraph() {
+  if (cachedBiGraph) return cachedBiGraph;
+  cachedBiGraph = new StateGraph(GraphState)
+    .addNode('draft', draftNode)
+    .addNode('critique', critiqueNode)
+    .addEdge(START, 'draft')
+    .addEdge('draft', 'critique')
+    .addConditionalEdges('critique', routeAfterCritique, { retry: 'draft', done: END })
+    .compile();
+  return cachedBiGraph;
+}
+
 let cachedTools = null;
 
 async function getAgentTools() {
@@ -200,31 +325,28 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   const tools = await getAgentTools();
   console.log(`[agent] MCP tools loaded: ${tools.map((t) => t.name).join(', ')}`);
 
-  const model = new ChatOpenAI({
-    model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
-    temperature: 0.2,
-    apiKey: process.env.OPENAI_API_KEY,
-  });
-
-  const agent = createReactAgent({ llm: model, tools, responseFormat: ResponseSchema });
-
   const historyMessages = history
     .slice(-12)
     .map((m) => (m.role === 'user' ? new HumanMessage(m.content) : new AIMessage(m.content)));
 
   const contextNote = `Current page state: days=${pageState.days ?? 30}, region=${pageState.region ?? 'null'}, availableRegions=${JSON.stringify(pageState.availableRegions ?? [])}.`;
 
-  console.log('[agent] invoking LangGraph ReAct agent...');
-  const result = await agent.invoke({
+  console.log('[agent] invoking draft -> critique graph...');
+  const graphResult = await getBiGraph().invoke({
     messages: [
       new SystemMessage(`${GUARDRAIL_SYSTEM_PROMPT}\n\n${contextNote}`),
       ...historyMessages,
       new HumanMessage(message),
     ],
   });
-  console.log('[agent] agent.invoke completed, message count:', result.messages?.length);
+  console.log(
+    '[agent] graph completed. redraft attempts:', graphResult.retries,
+    'final grounded:', graphResult.critique?.grounded,
+    'message count:', graphResult.lastAgentMessages?.length,
+  );
 
-  const structured = result.structuredResponse;
+  const structured = graphResult.structured;
+  const agentMessages = graphResult.lastAgentMessages ?? [];
   console.log('[agent] structuredResponse:', JSON.stringify(structured));
 
   // Recover the (days, region) the agent actually queried with, from its own
@@ -239,7 +361,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // mean the narrative could describe two breakdowns while the rendered
   // table/chart only ever reflected whichever call happened to run last.
   const metricQueriesUsed = [];
-  for (const msg of result.messages ?? []) {
+  for (const msg of agentMessages) {
     const calls = msg?.tool_calls;
     if (!Array.isArray(calls)) continue;
     for (const call of calls) {
