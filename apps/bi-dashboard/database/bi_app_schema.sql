@@ -163,3 +163,22 @@ CREATE TABLE IF NOT EXISTS report_exports (
   FOREIGN KEY (report_id) REFERENCES generated_reports(id) ON DELETE SET NULL,
   INDEX idx_user_created (user_id, created_at)
 ) ENGINE=InnoDB;
+
+-- ============================================================================
+-- Migration: store the exported file's own content alongside the log entry,
+-- so a re-download from the Exports page always reproduces the exact file
+-- that was originally exported -- even if the source report is later
+-- edited or deleted. Safe to re-run: uses IF NOT EXISTS everywhere.
+-- ============================================================================
+USE bi_app;
+
+SET @has_file_content_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'report_exports' AND COLUMN_NAME = 'file_content'
+);
+SET @sql_add_file_content = IF(@has_file_content_col = 0,
+  'ALTER TABLE report_exports ADD COLUMN file_content LONGTEXT NULL AFTER format',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_file_content;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

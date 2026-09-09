@@ -20,11 +20,12 @@ type ReportRow = {
   created_at: string;
 };
 
-function downloadCsv(filename: string, rows: (string | number)[][]) {
-  const csv = rows
-    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+function rowsToCsv(rows: (string | number)[][]): string {
+  return rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+}
+
+function triggerDownload(filename: string, content: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -35,11 +36,11 @@ function downloadCsv(filename: string, rows: (string | number)[][]) {
   URL.revokeObjectURL(url);
 }
 
-function logExport(reportId: number, fileName: string, format: string) {
+function logExport(reportId: number, fileName: string, format: string, fileContent: string) {
   fetch('/api/exports', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reportId, fileName, format }),
+    body: JSON.stringify({ reportId, fileName, format, fileContent }),
   }).catch(() => {});
 }
 
@@ -101,11 +102,12 @@ export default function ReportDetailPage() {
             className="gap-2"
             onClick={() => {
               const fileName = `${report.title.toLowerCase().replace(/\s+/g, '-')}.csv`;
-              downloadCsv(fileName, [
+              const csv = rowsToCsv([
                 ['Metric', 'Value', 'Detail'],
                 ...data.kpis.map((kpi) => [kpi.label, kpi.value, kpi.detail]),
               ]);
-              logExport(report.id, fileName, 'csv');
+              triggerDownload(fileName, csv, 'text/csv;charset=utf-8;');
+              logExport(report.id, fileName, 'csv', csv);
             }}
           >
             <FileSpreadsheet size={16} />

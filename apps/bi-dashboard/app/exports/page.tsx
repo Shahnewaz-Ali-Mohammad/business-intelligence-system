@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Download, FileSpreadsheet, LogIn } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { useAuth } from '@/components/auth/auth-provider';
 
@@ -14,9 +15,27 @@ type ExportRow = {
   created_at: string;
 };
 
+const MIME_TYPES: Record<string, string> = {
+  csv: 'text/csv;charset=utf-8;',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+
+function triggerDownload(filename: string, content: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 export default function ExportsPage() {
   const { user, loading: authLoading } = useAuth();
   const [exports, setExports] = useState<ExportRow[] | null>(null);
+  const [downloadingId, setDownloadingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -25,6 +44,19 @@ export default function ExportsPage() {
       .then((body: { exports: ExportRow[] }) => setExports(body.exports))
       .catch(() => setExports([]));
   }, [authLoading, user]);
+
+  async function handleDownload(item: ExportRow) {
+    setDownloadingId(item.id);
+    try {
+      const res = await fetch(`/api/exports/${item.id}`);
+      const body: { export: { file_name: string; format: string; file_content: string } | null } = await res.json();
+      if (!body.export) return;
+      const mimeType = MIME_TYPES[body.export.format] ?? 'application/octet-stream';
+      triggerDownload(body.export.file_name, body.export.file_content, mimeType);
+    } finally {
+      setDownloadingId(null);
+    }
+  }
 
   return (
     <WorkspacePage active="Exports" title="Exports" subtitle="Download history for generated report files." scroll>
@@ -56,6 +88,16 @@ export default function ExportsPage() {
                   {item.format.toUpperCase()} · {new Date(item.created_at).toLocaleString()}
                 </p>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => handleDownload(item)}
+                disabled={downloadingId === item.id}
+              >
+                <Download size={15} />
+                {downloadingId === item.id ? 'Downloading...' : 'Download'}
+              </Button>
             </div>
           ))}
         </section>
