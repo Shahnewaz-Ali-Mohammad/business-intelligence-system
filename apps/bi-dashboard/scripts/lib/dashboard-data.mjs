@@ -623,9 +623,23 @@ async function dashboardData({
   metricQueries = [],
   comparePreviousPeriod = false,
 } = {}) {
-  const connection = await mysql.createConnection(dbConfig);
-
+  // The whole body -- including the connection attempt itself -- is inside
+  // this try now, not just the queries. Previously mysql.createConnection()
+  // ran OUTSIDE the try/finally: if the DB was down or unreachable, its raw
+  // driver error (connect ECONNREFUSED <host>:<port>, auth failure detail,
+  // etc.) propagated completely unmodified -- all the way up through the
+  // MCP tool call into the LLM's tool-result content, where the model could
+  // read and potentially repeat real infrastructure detail back to the user
+  // in its narrative, despite the guardrail prompt telling it never to
+  // reveal infrastructure. A prompt instruction can't reliably stop a model
+  // from relaying text it was directly handed as "the tool result" -- so
+  // the raw detail is stopped here, at the source, before the model ever
+  // sees it: logged in full server-side, replaced with one generic message
+  // for every caller (the MCP tool, the /api/dashboard route, the chat
+  // agent) to handle the same way a "no data yet" case would.
+  let connection;
   try {
+    connection = await mysql.createConnection(dbConfig);
     await connection.query('SET SESSION TRANSACTION READ ONLY');
 
     const WINDOW_DAYS = windowDays;
@@ -994,8 +1008,11 @@ async function dashboardData({
           }
         : null,
     };
+  } catch (error) {
+    console.error('[dashboardData] query failed:', error);
+    throw new Error('The data source is temporarily unavailable. Please try again in a moment.');
   } finally {
-    await connection.end();
+    if (connection) await connection.end();
   }
 }
 
