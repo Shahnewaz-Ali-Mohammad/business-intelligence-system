@@ -103,7 +103,14 @@ export function createBiMcpServer() {
           .enum(['revenue', 'order_count', 'avg_order_value', 'units'])
           .nullable()
           .describe(
-            'Set this together with groupBy for a flexible "metric by dimension" breakdown -- e.g. metric:"revenue", groupBy:"status" for revenue by order status; metric:"order_count", groupBy:"customer" for order count by customer (this genuinely JOINs orders with users). "units" is only valid with groupBy:"product". Null/omit if you only need the standard dashboard bundle above.',
+            'Set this together with groupBy for a flexible "metric by dimension" breakdown -- e.g. metric:"revenue", groupBy:"status" for revenue by order status; metric:"order_count", groupBy:"customer" for order count by customer (this genuinely JOINs orders with users). "units" is only valid with groupBy:"product". Null/omit if you only need the standard dashboard bundle above. This is also the metric the results are SORTED by.',
+          ),
+        extraMetrics: z
+          .array(z.enum(['revenue', 'order_count', 'avg_order_value', 'units']))
+          .max(2)
+          .nullable()
+          .describe(
+            'Use this whenever the user wants MORE THAN ONE number per entity -- e.g. "revenue AND order count per customer", "units AND revenue per product". Set metric to the one they care about most (also the sort), and list any additional metrics here. All of them are computed together in ONE query on the SAME rows, so they are guaranteed to line up. Do NOT call this tool twice with different metrics to get two numbers per entity -- two separate calls can return different, differently-sorted rows and the numbers will not correspond to each other. Null/omit for a single-metric breakdown.',
           ),
         groupBy: z
           .enum(['region', 'product', 'customer', 'status', 'day'])
@@ -124,12 +131,15 @@ export function createBiMcpServer() {
           .describe('Max rows to return for the metric+groupBy breakdown. Defaults to 10.'),
       },
     },
-    async ({ days, region, customerSort, metric, groupBy, sortDirection, limit }) => {
+    async ({ days, region, customerSort, metric, groupBy, extraMetrics, sortDirection, limit }) => {
       const data = await dashboardData({
         windowDays: days,
         region: region || null,
         customerSort: customerSort || 'most',
-        metricQueries: metric && groupBy ? [{ metric, groupBy, sortDirection: sortDirection || 'most', limit: limit || 10 }] : [],
+        metricQueries:
+          metric && groupBy
+            ? [{ metric, extraMetrics: extraMetrics ?? [], groupBy, sortDirection: sortDirection || 'most', limit: limit || 10 }]
+            : [],
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(summarizeForTool(data)) }],

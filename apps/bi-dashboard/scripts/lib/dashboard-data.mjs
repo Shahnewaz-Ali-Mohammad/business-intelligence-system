@@ -402,20 +402,46 @@ const METRIC_EXPR = {
   },
 };
 
+// Builds "<expr> AS value, <expr2> AS extra_0, <expr3> AS extra_1" -- extra
+// metrics computed in the SAME query as the primary one, on the SAME
+// grouped rows. This is what lets "revenue AND order count per customer"
+// come back as one consistent table instead of two separately-sorted,
+// separately-limited queries that can (and did) return different customer
+// sets in different orders, forcing the model to either drop numbers or
+// mismatch them across rows.
+function buildMetricSelectList(exprTable, metric, extraMetrics, fallbackMetric) {
+  const primaryExpr = exprTable[metric] ?? exprTable[fallbackMetric];
+  const validExtras = (extraMetrics ?? []).filter((m) => exprTable[m] && m !== metric).slice(0, 2);
+  const extraCols = validExtras.map((m, i) => `${exprTable[m]} AS extra_${i}`);
+  return {
+    selectSql: [`${primaryExpr} AS value`, ...extraCols].join(', '),
+    extraMetricNames: validExtras,
+  };
+}
+
+function attachExtras(row, extraMetricNames) {
+  if (!extraMetricNames.length) return {};
+  const extras = {};
+  extraMetricNames.forEach((metricName, i) => {
+    extras[metricName] = toNumber(row[`extra_${i}`]);
+  });
+  return extras;
+}
+
 async function computeMetricBreakdown(
   connection,
-  { metric = 'revenue', groupBy = 'region', sortDirection = 'most', limit = 10, windowCutoff, regionClause, regionParam },
+  { metric = 'revenue', extraMetrics = [], groupBy = 'region', sortDirection = 'most', limit = 10, windowCutoff, regionClause, regionParam },
 ) {
   const safeDirection = sortDirection === 'least' ? 'ASC' : 'DESC';
   const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 50 ? limit : 10;
 
   try {
     if (groupBy === 'region') {
-      const expr = METRIC_EXPR.orders[metric] ?? METRIC_EXPR.orders.revenue;
+      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'revenue');
       const rows = await readOnlyQuery(
         connection,
         `
-          SELECT COALESCE(ship_country_code, 'Other') AS name, ${expr.replace(/o\./g, '')} AS value
+          SELECT COALESCE(ship_country_code, 'Other') AS name, ${selectSql}
           FROM orders o
           WHERE DATE(ordered_at) >= ? ${regionClause}
           GROUP BY COALESCE(ship_country_code, 'Other')
@@ -424,15 +450,19 @@ async function computeMetricBreakdown(
         `,
         [windowCutoff, ...regionParam],
       );
-      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['orders'] };
+      return {
+        rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
+        extraMetricNames,
+        tablesUsed: ['orders'],
+      };
     }
 
     if (groupBy === 'status') {
-      const expr = METRIC_EXPR.orders[metric] ?? METRIC_EXPR.orders.order_count;
+      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'order_count');
       const rows = await readOnlyQuery(
         connection,
         `
-          SELECT status AS name, ${expr.replace(/o\./g, '')} AS value
+          SELECT status AS name, ${selectSql}
           FROM orders o
           WHERE DATE(ordered_at) >= ? ${regionClause}
           GROUP BY status
@@ -441,7 +471,11 @@ async function computeMetricBreakdown(
         `,
         [windowCutoff, ...regionParam],
       );
-      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['orders'] };
+      return {
+        rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
+        extraMetricNames,
+        tablesUsed: ['orders'],
+      };
     }
 
     if (groupBy === 'day') {
@@ -457,40 +491,44 @@ async function computeMetricBreakdown(
         `,
         [windowCutoff, ...regionParam],
       );
-      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['orders'] };
+      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: {} })), extraMetricNames: [], tablesUsed: ['orders'] };
     }
 
     if (groupBy === 'product') {
-      const expr = METRIC_EXPR.order_items[metric] ?? METRIC_EXPR.order_items.revenue;
+      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.order_items, metric, extraMetrics, 'revenue');
       const rows = await readOnlyQuery(
         connection,
         `
-          SELECT oi.product_name AS name, ${expr} AS value
+          SELECT oi.product_name AS name, ${selectSql}
           FROM order_items oi
           GROUP BY oi.product_name
           ORDER BY value ${safeDirection}
           LIMIT ${safeLimit}
         `,
       );
-      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value) })), tablesUsed: ['order_items'] };
+      return {
+        rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
+        extraMetricNames,
+        tablesUsed: ['order_items'],
+      };
     }
 
     if (groupBy === 'customer') {
       const fkCol = await findOrdersCustomerColumn(connection);
       const usersPk = await findPrimaryKeyColumn(connection, 'users');
       const nameInfo = await findUsersDisplayName(connection);
-      if (!fkCol || !usersPk || !nameInfo) return { rows: [], tablesUsed: ['orders', 'users'] };
+      if (!fkCol || !usersPk || !nameInfo) return { rows: [], extraMetricNames: [], tablesUsed: ['orders', 'users'] };
 
       const nameExpr =
         nameInfo.type === 'combo'
           ? `TRIM(CONCAT(u.${nameInfo.columns[0]}, ' ', u.${nameInfo.columns[1]}))`
           : `u.${nameInfo.column}`;
-      const expr = (METRIC_EXPR.orders[metric] ?? METRIC_EXPR.orders.order_count).replace(/o\./g, 'o.');
+      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'order_count');
 
       const rows = await readOnlyQuery(
         connection,
         `
-          SELECT ${nameExpr} AS name, ${expr} AS value
+          SELECT ${nameExpr} AS name, ${selectSql}
           FROM orders o
           JOIN users u ON u.${usersPk} = o.${fkCol}
           WHERE DATE(o.ordered_at) >= ? ${regionClause}
@@ -500,13 +538,17 @@ async function computeMetricBreakdown(
         `,
         [windowCutoff, ...regionParam],
       );
-      return { rows: rows.map((r) => ({ name: r.name || 'Unknown customer', value: toNumber(r.value) })), tablesUsed: ['orders', 'users'] };
+      return {
+        rows: rows.map((r) => ({ name: r.name || 'Unknown customer', value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
+        extraMetricNames,
+        tablesUsed: ['orders', 'users'],
+      };
     }
 
-    return { rows: [], tablesUsed: [] };
+    return { rows: [], extraMetricNames: [], tablesUsed: [] };
   } catch (error) {
     console.error('metric breakdown query failed, falling back to empty list:', error.message);
-    return { rows: [], tablesUsed: [] };
+    return { rows: [], extraMetricNames: [], tablesUsed: [] };
   }
 }
 
@@ -679,23 +721,24 @@ async function dashboardData({
       customerSort === 'least' ? 'ASC' : 'DESC',
     );
 
-    // Optional flexible "X by Y" breakdown(s) (join-capable) requested by
-    // the MCP tool -- e.g. revenue by status, order count by customer. Kept
-    // separate from the fixed dashboard bundle above so existing charts and
-    // KPIs are unaffected when this isn't requested.
+    // Optional flexible "X by Y" breakdown requested by the MCP tool --
+    // e.g. revenue by status, order count by customer. Kept separate from
+    // the fixed dashboard bundle above so existing charts/KPIs are
+    // unaffected when this isn't requested.
     //
-    // The agent may make more than one of these calls in a single report
-    // (e.g. "units sold AND revenue for top products" needs one call per
-    // metric -- each call only returns one metric per row). The FIRST call
-    // drives the chart (one series, unchanged). When later calls share the
-    // same groupBy, their values are merged in as extra named columns so a
-    // multi-metric narrative and the rendered table/export actually agree,
-    // instead of the table silently only ever showing the first metric.
+    // When the user wants more than one number per entity (e.g. revenue AND
+    // order count per customer), the tool call carries extraMetrics and
+    // computeMetricBreakdown computes ALL of them in ONE SQL query on the
+    // SAME grouped/sorted/limited rows -- this is what guarantees the
+    // numbers can't mismatch or come from two different customer sets, which
+    // is what happened when this used to be two separate queries merged by
+    // name afterward.
     let metricBreakdown = null;
     if (metricQueries.length) {
       const [primary, ...rest] = metricQueries;
       const primaryResult = await computeMetricBreakdown(connection, {
         metric: primary.metric,
+        extraMetrics: primary.extraMetrics ?? [],
         groupBy: primary.groupBy,
         sortDirection: primary.sortDirection,
         limit: primary.limit,
@@ -704,9 +747,22 @@ async function dashboardData({
         regionParam,
       });
 
-      const extraMetrics = [];
+      // Same-query extras (guaranteed row-aligned) become the primary
+      // source of extra columns.
+      const extraMetrics = primaryResult.extraMetricNames.map((metricName) => ({
+        metric: metricName,
+        label: METRIC_LABELS[metricName] ?? metricName,
+        valuesByName: Object.fromEntries(primaryResult.rows.map((r) => [r.name, r.extras[metricName]])),
+        tablesUsed: primaryResult.tablesUsed,
+      }));
+
+      // Backward-compat: if the agent still issues genuinely separate calls
+      // (rest) on the same dimension instead of using extraMetrics, merge
+      // them in too -- best-effort, not guaranteed row-aligned, and skipped
+      // for any metric already covered by the same-query extras above.
+      const alreadyCovered = new Set(primaryResult.extraMetricNames);
       for (const query of rest) {
-        if (query.groupBy !== primary.groupBy) continue; // different dimension -- can't merge into one table
+        if (query.groupBy !== primary.groupBy || alreadyCovered.has(query.metric) || query.metric === primary.metric) continue;
         const extraResult = await computeMetricBreakdown(connection, {
           metric: query.metric,
           groupBy: query.groupBy,
@@ -723,10 +779,11 @@ async function dashboardData({
           valuesByName,
           tablesUsed: extraResult.tablesUsed,
         });
+        alreadyCovered.add(query.metric);
       }
 
       metricBreakdown = {
-        ...primaryResult,
+        rows: primaryResult.rows.map((r) => ({ name: r.name, value: r.value })),
         primaryMetric: primary.metric,
         primaryLabel: METRIC_LABELS[primary.metric] ?? primary.metric,
         groupBy: primary.groupBy,

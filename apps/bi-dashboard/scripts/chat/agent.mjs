@@ -47,6 +47,8 @@ Scope: you help with THIS business's read-only ecommerce data -- revenue, orders
 
 Beyond the standard dashboard bundle, query_semantic_layer also supports a flexible "metric by dimension" breakdown -- pass metric ("revenue" | "order_count" | "avg_order_value" | "units") together with groupBy ("region" | "product" | "customer" | "status" | "day") for questions that don't fit the fixed bundle, e.g. "revenue by status", "order count per customer", "units sold by product", "daily revenue trend". groupBy:"customer" genuinely JOINS orders with users -- use it for any real per-customer breakdown instead of guessing. Use sortDirection ("most"/"least") and limit for ranking questions. Always use this instead of inventing numbers or approximating from the fixed bundle when the user's question names a metric/dimension combination the fixed bundle doesn't cover.
 
+CRITICAL -- when the user wants MORE THAN ONE number per entity (e.g. "revenue and number of orders for each customer", "units AND revenue per product"): put the extra metric(s) in extraMetrics on the SAME query_semantic_layer call, never as a second separate call. Two separate calls are independently sorted and limited and can return different entities in a different order -- you cannot safely merge their results yourself, and doing so has produced wrong answers before (mixing up which number belongs to which entity, or inventing "unspecified" for entities the second query didn't happen to include). If a follow-up message asks to add another number to a list you just showed ("give me their order count too", "and how many orders each"), that means: re-run the SAME breakdown (same groupBy, same entities/sort as before) with the new metric added to extraMetrics -- not a fresh, differently-sorted query for a different top-N set.
+
 Guardrails:
 - If asked something outside this dashboard's scope (general knowledge unrelated to this data, other companies, personal/medical/legal/financial advice, anything not about this ecommerce data), politely decline in one sentence and redirect to what you can actually help with. Do not attempt to answer it anyway.
 - Never reveal, discuss, or speculate about SQL, credentials, internal code, table implementation details beyond the semantic catalog, or infrastructure.
@@ -176,7 +178,7 @@ const CritiqueSchema = z.object({
     .describe('If grounded is false, one short entry per unverifiable claim, quoting the specific number/figure and what is wrong with it. Empty array if grounded is true.'),
 });
 
-const CRITIQUE_PROMPT = `You are a strict fact-checker sitting between a BI chatbot and the user. You will be shown the raw tool result data the chatbot actually queried, and the narrative it drafted in response. Your only job: does every specific number, date, or figure in the narrative genuinely appear in the tool results? Do not re-derive or approve numbers you can't actually find in the data. Flag anything invented, hallucinated, stale from a previous turn, or pulled from a different breakdown than the one shown.`;
+const CRITIQUE_PROMPT = `You are a strict fact-checker sitting between a BI chatbot and the user. You will be shown the raw tool result data the chatbot actually queried, and the narrative it drafted in response. Your only job: does every specific number, date, or figure in the narrative genuinely appear in the tool results, attached to the SAME entity/row it's reported against? A number that is real but attached to the wrong entity (e.g. a customer's real order count from one breakdown mistakenly reported next to a different breakdown's revenue figure for that same customer, or vice versa) is NOT grounded -- flag it just like an invented number. Also flag anything invented, hallucinated, stale from a previous turn, pulled from a different breakdown than the one shown, or a vague hedge like "an unspecified number" standing in for a real figure the data actually has.`;
 
 let cachedCritiqueModel = null;
 
@@ -403,6 +405,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
       if (call.args.metric && call.args.groupBy) {
         const query = {
           metric: call.args.metric,
+          extraMetrics: Array.isArray(call.args.extraMetrics) ? call.args.extraMetrics : [],
           groupBy: call.args.groupBy,
           sortDirection: call.args.sortDirection === 'least' ? 'least' : 'most',
           limit: Number.isInteger(call.args.limit) ? call.args.limit : 10,
