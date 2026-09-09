@@ -110,3 +110,34 @@ SET @sql_add_fk = IF(@has_fk = 0,
 PREPARE stmt FROM @sql_add_fk;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
+
+-- ============================================================================
+-- Migration: remember which topic/chart format a saved report was generated
+-- as, so re-opening a saved report renders the SAME chart it showed when it
+-- was generated (customers/products/status/pie/line/etc), instead of the
+-- report detail page always falling back to a fixed Revenue by Region +
+-- Revenue Over Time pair. Safe to re-run: uses IF NOT EXISTS everywhere.
+-- ============================================================================
+USE bi_app;
+
+SET @has_topic_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'topic'
+);
+SET @sql_add_topic = IF(@has_topic_col = 0,
+  'ALTER TABLE generated_reports ADD COLUMN topic VARCHAR(40) NULL AFTER narrative',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_topic;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @has_chart_type_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'chart_type'
+);
+SET @sql_add_chart_type = IF(@has_chart_type_col = 0,
+  'ALTER TABLE generated_reports ADD COLUMN chart_type VARCHAR(20) NULL AFTER topic',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_chart_type;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

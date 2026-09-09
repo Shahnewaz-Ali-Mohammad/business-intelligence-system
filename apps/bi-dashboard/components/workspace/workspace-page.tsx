@@ -6,12 +6,20 @@ export function WorkspacePage({
   title,
   subtitle,
   action,
+  scroll = false,
   children,
 }: {
   active: string;
   title: string;
   subtitle: string;
   action?: ReactNode;
+  // Most workspace pages (chat, dashboard) manage their own internal
+  // fixed-height scroll regions and rely on this outer container staying
+  // exactly viewport-height with no scrollbar of its own. Simple
+  // content-flow pages (Reports list/detail) don't -- their content can be
+  // taller than the viewport, so pass scroll to let THIS container scroll
+  // instead of clipping content at the bottom with nothing to reach it.
+  scroll?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -26,7 +34,7 @@ export function WorkspacePage({
             </div>
             {action}
           </header>
-          <div className="min-h-0 flex-1 overflow-hidden px-6 py-6">{children}</div>
+          <div className={`min-h-0 flex-1 px-6 py-6 ${scroll ? 'overflow-y-auto' : 'overflow-hidden'}`}>{children}</div>
         </section>
       </div>
     </main>

@@ -3,12 +3,9 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { BarChart3, Database, FileSpreadsheet, LogIn, Plus, Send, Sparkles, User } from 'lucide-react';
+import { BarChart3, Check, Database, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { RegionRevenueChart } from '@/components/dashboard/charts/region-revenue-chart';
-import { StatusDonutChart } from '@/components/dashboard/charts/status-donut-chart';
-import { TopEntitiesBarChart } from '@/components/dashboard/charts/top-entities-bar-chart';
-import { GenericMetricChart } from '@/components/dashboard/charts/generic-metric-chart';
+import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
 import { useAuth } from '@/components/auth/auth-provider';
 import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
 
@@ -33,57 +30,6 @@ const WELCOME_MESSAGE: Message = {
   role: 'assistant',
   text: 'Hi. Ask about revenue, orders, regions, products, or request a report from the ecommerce DB.',
 };
-
-// Picks which generated chart to show based on the topic the chatbot
-// actually answered about, instead of always defaulting to region revenue --
-// so "give me top customers" -> "generate a graph" renders a customers
-// chart, not an unrelated one.
-function ArtifactChart({ artifact }: { artifact: Artifact }) {
-  const { topic, data, chartType } = artifact;
-
-  // A flexible metric-by-dimension breakdown (possibly join-derived, e.g.
-  // customer) takes priority, rendered in whatever format was requested --
-  // this is what lets "generate a pie chart for this" actually draw a pie
-  // instead of always the same fixed chart.
-  if (data.metricBreakdown && data.metricBreakdown.rows.length) {
-    return (
-      <GenericMetricChart
-        title={artifact.title}
-        subtitle={`Tables used: ${data.metricBreakdown.tablesUsed.join(', ') || 'orders'}`}
-        entries={data.metricBreakdown.rows}
-        chartType={chartType === 'none' ? 'bar' : chartType}
-      />
-    );
-  }
-
-  if (topic === 'customers') {
-    return (
-      <TopEntitiesBarChart
-        title="Top Customers by Orders"
-        subtitle="users.id + orders (last window)"
-        entries={data.topCustomersByOrders.map((row) => ({ name: row.name, value: row.orders }))}
-        valueFormatter={(value) => `${value.toLocaleString('en-US')} orders`}
-      />
-    );
-  }
-
-  if (topic === 'products') {
-    return (
-      <TopEntitiesBarChart
-        title="Top Products by Revenue"
-        subtitle={data.chartSources.products}
-        entries={data.topProductsChart.map((row) => ({ name: row.name, value: row.revenue }))}
-        valueFormatter={(value) => `$${value.toLocaleString('en-US')}`}
-      />
-    );
-  }
-
-  if (topic === 'status' || topic === 'shipping') {
-    return <StatusDonutChart data={data} />;
-  }
-
-  return <RegionRevenueChart data={data} />;
-}
 
 function downloadCsv(filename: string, rows: string[][]) {
   const csv = rows
@@ -112,18 +58,29 @@ async function saveMessage(sessionId: number, role: 'user' | 'assistant', text: 
   }
 }
 
-function saveReport(artifact: Artifact) {
-  fetch('/api/reports', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      title: artifact.title,
-      narrative: artifact.narrative,
-      filters: { days: artifact.days, region: artifact.region },
-      tablesUsed: artifact.tablesUsed,
-      data: artifact.data,
-    }),
-  }).catch(() => {});
+// Saving is a deliberate, user-initiated action (the "Save Report" button in
+// the artifact panel) -- it no longer happens automatically every time a
+// chart is generated, so the Reports list only fills up with reports the
+// user actually chose to keep.
+async function saveReport(artifact: Artifact): Promise<boolean> {
+  try {
+    const response = await fetch('/api/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: artifact.title,
+        narrative: artifact.narrative,
+        topic: artifact.topic,
+        chartType: artifact.chartType,
+        filters: { days: artifact.days, region: artifact.region },
+        tablesUsed: artifact.tablesUsed,
+        data: artifact.data,
+      }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
@@ -136,6 +93,10 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
+  // Saving a generated artifact as a Report is now a manual, deliberate
+  // action -- this tracks the button's state for the CURRENT artifact only,
+  // and resets ('idle') whenever a new artifact is generated.
+  const [reportSaveState, setReportSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const sessionSetupRef = useRef<string | null>(null);
@@ -268,7 +229,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
           tablesUsed: result.tablesUsed,
         };
         setArtifact(nextArtifact);
-        if (user) saveReport(nextArtifact);
+        setReportSaveState('idle');
       }
     } catch (error) {
       const errorText =
@@ -279,6 +240,13 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleSaveReport() {
+    if (!artifact || !user) return;
+    setReportSaveState('saving');
+    const ok = await saveReport(artifact);
+    setReportSaveState(ok ? 'saved' : 'error');
   }
 
   function handleExportArtifact() {
@@ -422,19 +390,48 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
                 <p className="font-semibold">{artifact.title}</p>
                 <p className="mt-1 text-sm text-slate-500">{artifact.narrative}</p>
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Link
-                    href="/reports"
-                    className="inline-flex h-9 items-center justify-center rounded-lg bg-blue-600 px-3 text-sm font-medium text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
-                  >
-                    {user ? 'View Saved Reports' : 'Sign In To Save'}
-                  </Link>
+                  {user ? (
+                    <Button
+                      size="sm"
+                      className="gap-2"
+                      disabled={reportSaveState === 'saving' || reportSaveState === 'saved'}
+                      onClick={handleSaveReport}
+                    >
+                      {reportSaveState === 'saved' ? <Check size={14} /> : <Save size={14} />}
+                      {reportSaveState === 'saving'
+                        ? 'Saving...'
+                        : reportSaveState === 'saved'
+                          ? 'Saved'
+                          : reportSaveState === 'error'
+                            ? 'Save failed -- retry'
+                            : 'Save Report'}
+                    </Button>
+                  ) : (
+                    <Link
+                      href="/login"
+                      className="inline-flex h-9 items-center justify-center rounded-lg bg-blue-600 px-3 text-sm font-medium text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
+                    >
+                      Sign In To Save
+                    </Link>
+                  )}
+                  {user ? (
+                    <Link
+                      href="/reports"
+                      className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+                    >
+                      Saved Reports
+                    </Link>
+                  ) : null}
                   <Button variant="outline" size="sm" className="gap-2" onClick={handleExportArtifact}>
                     <FileSpreadsheet size={14} />
                     CSV
                   </Button>
                 </div>
+                {reportSaveState !== 'saved' ? (
+                  <p className="mt-2 text-xs text-slate-400">This chart is not saved yet -- click Save Report to keep it.</p>
+                ) : null}
               </div>
-              <ArtifactChart artifact={artifact} />
+              <ArtifactChartPicker title={artifact.title} topic={artifact.topic} chartType={artifact.chartType} data={artifact.data} />
             </div>
           ) : (
             <div className="space-y-2">

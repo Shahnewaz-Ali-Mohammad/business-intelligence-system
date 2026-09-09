@@ -26,7 +26,7 @@ export default function ReportsPage() {
   }, [authLoading, user]);
 
   return (
-    <WorkspacePage active="Reports" title="Reports" subtitle="Generated reports saved from chat sessions.">
+    <WorkspacePage active="Reports" title="Reports" subtitle="Generated reports saved from chat sessions." scroll>
       {!authLoading && !user ? (
         <div className="flex flex-col items-center gap-3 rounded-xl border border-slate-200/80 bg-white p-10 text-center shadow-sm">
           <LogIn size={22} className="text-slate-400" />

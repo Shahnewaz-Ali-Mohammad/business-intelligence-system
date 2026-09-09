@@ -10,7 +10,7 @@ export async function GET() {
 
   const db = getAppDb();
   const [rows] = await db.execute(
-    'SELECT id, title, narrative, filters, tables_used, data, created_at FROM generated_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT 100',
+    'SELECT id, title, narrative, topic, chart_type, filters, tables_used, data, created_at FROM generated_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT 100',
     [user.id],
   );
 
@@ -43,18 +43,20 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ saved: false, reason: 'not logged in' });
 
   try {
-    const { title, narrative, filters, tablesUsed, data } = await req.json();
+    const { title, narrative, topic, chartType, filters, tablesUsed, data } = await req.json();
     if (typeof title !== 'string' || typeof narrative !== 'string' || !data) {
       return NextResponse.json({ error: 'title, narrative, and data are required.' }, { status: 400 });
     }
 
     const db = getAppDb();
     const [result] = await db.execute(
-      'INSERT INTO generated_reports (user_id, title, narrative, filters, tables_used, data) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO generated_reports (user_id, title, narrative, topic, chart_type, filters, tables_used, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [
         user.id,
         title,
         narrative,
+        typeof topic === 'string' ? topic : null,
+        typeof chartType === 'string' ? chartType : null,
         filters ? JSON.stringify(filters) : null,
         tablesUsed ? JSON.stringify(tablesUsed) : null,
         JSON.stringify(data),

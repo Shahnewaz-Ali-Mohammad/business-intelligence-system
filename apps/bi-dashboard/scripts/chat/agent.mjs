@@ -19,7 +19,11 @@ import { dashboardData, ALLOWED_TOPICS } from '../lib/dashboard-data.mjs';
 const ALLOWED_TABLES = ['orders', 'users', 'order_items', 'order_status_history'];
 
 const ResponseSchema = z.object({
-  intent: z.enum(['answer', 'create_new_page']).describe('answer for direct questions/explanations/casual chat; create_new_page only when the user clearly asked to build/generate/show/visualize a chart, graph, report, or dashboard view.'),
+  intent: z
+    .enum(['answer', 'create_new_page', 'ask_clarification'])
+    .describe(
+      'answer for direct questions/explanations/casual chat; create_new_page only when the user clearly asked to build/generate/show/visualize a chart, graph, report, or dashboard view; ask_clarification when the request is genuinely ambiguous or missing information you need to answer correctly -- in that case do NOT call query_semantic_layer or guess a default, put your question to the user in narrative instead.',
+    ),
   topic: z.enum([...ALLOWED_TOPICS, 'dashboard']),
   chartType: z
     .enum(['bar', 'line', 'pie', 'donut', 'none'])
@@ -48,6 +52,7 @@ Guardrails:
 - CRITICAL: every new user message is its own fresh question. Decide scope from THIS message alone -- never reuse, rephrase, or repeat the narrative, numbers, or tablesUsed from a previous turn just because a prior turn was on-topic. A topic switch (e.g. a follow-up about a football player, a celebrity, the weather, or anything else unrelated to this ecommerce data) is always out of scope, even mid-conversation.
 - When declining an out-of-scope message: do NOT call query_semantic_layer, do NOT invent or reuse any numbers, keep narrative to one short decline-and-redirect sentence, set tablesUsed to an empty array, and set topic to "dashboard".
 - When the user asks for a specific chart format ("pie chart", "line chart", "donut", "bar chart"), honor exactly that format in chartType -- never silently substitute a different chart type than what was asked for.
+- If the request is genuinely ambiguous or missing something you need to answer correctly or usefully -- e.g. "compare them" with no clear referents, "show me the report" with no topic named and nothing to infer from recent history, a metric+dimension combination that could mean two different things -- set intent to "ask_clarification" and put ONE short, specific question in narrative (e.g. "Which two would you like compared -- regions, products, or time periods?"). Do NOT call query_semantic_layer and do NOT guess a default in this case. Only ask when you genuinely cannot proceed correctly without it -- don't ask for confirmation on things you can reasonably infer from the message or recent conversation (a bare "generate a graph" right after a data answer is NOT ambiguous, it clearly means chart that data).
 
 Example -- out-of-scope follow-up:
 User: "which region has the lowest revenue?"

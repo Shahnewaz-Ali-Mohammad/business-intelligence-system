@@ -5,8 +5,7 @@ import { useParams } from 'next/navigation';
 import { Download, FileSpreadsheet } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
-import { RegionRevenueChart } from '@/components/dashboard/charts/region-revenue-chart';
-import { RevenueTrendChart } from '@/components/dashboard/charts/revenue-trend-chart';
+import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
 import { TopProductsTable } from '@/components/dashboard/tables/top-products-table';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
@@ -14,6 +13,8 @@ type ReportRow = {
   id: number;
   title: string;
   narrative: string;
+  topic: string | null;
+  chart_type: 'bar' | 'line' | 'pie' | 'donut' | 'none' | null;
   filters: { days: number; region: string | null } | null;
   tables_used: string[] | null;
   data: DashboardData;
@@ -71,6 +72,7 @@ export default function ReportDetailPage() {
       active="Reports"
       title={report.title}
       subtitle={`Saved from the chat workspace on ${new Date(report.created_at).toLocaleString()}`}
+      scroll
       action={
         <div className="hidden gap-2 md:flex">
           <Button
@@ -95,10 +97,7 @@ export default function ReportDetailPage() {
             <h2 className="text-base font-bold text-blue-950">Insight Summary</h2>
             <p className="mt-2 whitespace-pre-line text-sm leading-6 text-blue-900">{report.narrative}</p>
           </section>
-          <div className="grid gap-5 xl:grid-cols-2">
-            <RegionRevenueChart data={data} />
-            <RevenueTrendChart data={data} />
-          </div>
+          <ArtifactChartPicker title={report.title} topic={report.topic} chartType={report.chart_type} data={data} />
           <TopProductsTable data={data} />
         </div>
 

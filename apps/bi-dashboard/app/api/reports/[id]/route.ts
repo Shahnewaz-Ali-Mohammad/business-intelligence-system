@@ -9,7 +9,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   const db = getAppDb();
   const [rows] = await db.execute(
-    'SELECT id, title, narrative, filters, tables_used, data, created_at FROM generated_reports WHERE id = ? AND user_id = ?',
+    'SELECT id, title, narrative, topic, chart_type, filters, tables_used, data, created_at FROM generated_reports WHERE id = ? AND user_id = ?',
     [id, user.id],
   );
   const list = rows as Array<Record<string, unknown>>;
