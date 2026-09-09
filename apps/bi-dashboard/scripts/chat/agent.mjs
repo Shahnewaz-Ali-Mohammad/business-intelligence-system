@@ -214,7 +214,21 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
     ? structured.tablesUsed.filter((table) => ALLOWED_TABLES.includes(table))
     : [];
 
-  const intent = structured?.intent === 'create_new_page' ? 'create_new_page' : 'answer';
+  // The model's own "intent" guess is unreliable across phrasing variants
+  // ("generate a report" vs "I need a report for X" vs "can I get a chart
+  // of X" all mean the same thing but the LLM doesn't always classify them
+  // the same way). Rather than keep tuning prompt wording, decide this
+  // deterministically: if the user's own message names a report/chart/graph/
+  // dashboard deliverable at all, treat it as create_new_page regardless of
+  // what the model classified -- the model still picks topic/chartType/
+  // narrative, only this one boolean is taken out of its hands.
+  const REPORT_REQUEST_PATTERN = /\b(report|chart|graph|dashboard|visuali[sz]e|plot)\b/i;
+  const userNamedDeliverable = REPORT_REQUEST_PATTERN.test(message);
+  const modelSaidCreatePage = structured?.intent === 'create_new_page';
+  const intent = modelSaidCreatePage || userNamedDeliverable ? 'create_new_page' : 'answer';
+  if (userNamedDeliverable && !modelSaidCreatePage) {
+    console.log('[agent] intent override: user message named a report/chart deliverable, forcing create_new_page (model said', structured?.intent, ')');
+  }
   const topic = structured?.topic ?? 'dashboard';
   const chartType = structured?.chartType && structured.chartType !== 'none' ? structured.chartType : 'bar';
   const data =
