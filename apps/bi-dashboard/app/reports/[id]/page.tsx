@@ -2,14 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import * as XLSX from 'xlsx';
 import { Download, FileSpreadsheet, LayoutGrid, Table2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
 import { ReportChatEditor, type AppliedReportFields } from '@/components/reports/report-chat-editor';
 import { getReportTable } from '@/lib/dashboard/report-table';
-import { rowsToCsv, triggerDownload } from '@/lib/download';
+import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
 type ReportRow = {
@@ -24,25 +23,11 @@ type ReportRow = {
   created_at: string;
 };
 
-function buildXlsxBase64(headers: string[], rows: (string | number)[][]): string {
-  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
-  return XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
-}
-
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mimeType });
-}
-
-function logExport(reportId: number, fileName: string, format: string, fileContent: string) {
+function logExport(reportId: number, fileName: string, fileContent: string) {
   fetch('/api/exports', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reportId, fileName, format, fileContent }),
+    body: JSON.stringify({ reportId, fileName, format: 'xlsx', fileContent }),
   }).catch(() => {});
 }
 
@@ -97,21 +82,11 @@ export default function ReportDetailPage() {
   const data = report.data;
   const table = getReportTable(report.topic, data);
 
-  function handleExportCsv() {
-    const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.csv`;
-    const csv = rowsToCsv([table.headers, ...table.rows]);
-    triggerDownload(fileName, new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-    logExport(report!.id, fileName, 'csv', csv);
-  }
-
   function handleExportExcel() {
     const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
     const base64 = buildXlsxBase64(table.headers, table.rows);
-    triggerDownload(
-      fileName,
-      base64ToBlob(base64, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
-    );
-    logExport(report!.id, fileName, 'xlsx', base64);
+    triggerDownload(fileName, base64ToBlob(base64, XLSX_MIME_TYPE));
+    logExport(report!.id, fileName, base64);
   }
 
   return (
@@ -122,10 +97,6 @@ export default function ReportDetailPage() {
       scroll
       action={
         <div className="hidden gap-2 md:flex">
-          <Button variant="outline" className="gap-2" onClick={handleExportCsv}>
-            <FileSpreadsheet size={16} />
-            Export CSV
-          </Button>
           <Button variant="outline" className="gap-2" onClick={handleExportExcel}>
             <FileSpreadsheet size={16} />
             Export Excel
@@ -236,10 +207,6 @@ export default function ReportDetailPage() {
             ) : null}
           </section>
           <div className="flex flex-col gap-2 md:hidden">
-            <Button variant="outline" className="w-full gap-2" onClick={handleExportCsv}>
-              <FileSpreadsheet size={16} />
-              Export CSV
-            </Button>
             <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel}>
               <FileSpreadsheet size={16} />
               Export Excel

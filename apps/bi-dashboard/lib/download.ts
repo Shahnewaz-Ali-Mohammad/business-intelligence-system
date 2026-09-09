@@ -1,10 +1,17 @@
 'use client';
 
-// Small browser-only download helpers shared by report export (CSV/Excel)
-// and the Exports page's re-download.
+// Small browser-only download helpers for exporting report data as Excel
+// (.xlsx) and for the Exports page's re-download. Excel-only, by design --
+// no CSV anywhere in this app.
+import * as XLSX from 'xlsx';
 
-export function rowsToCsv(rows: (string | number)[][]): string {
-  return rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+export const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+export function buildXlsxBase64(headers: string[], rows: (string | number)[][]): string {
+  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
+  return XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
 }
 
 export function triggerDownload(filename: string, blob: Blob) {

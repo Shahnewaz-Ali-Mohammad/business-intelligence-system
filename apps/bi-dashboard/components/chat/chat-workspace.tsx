@@ -7,6 +7,7 @@ import { BarChart3, Check, Database, FileSpreadsheet, LogIn, Plus, Save, Send, S
 import { Button } from '@/components/ui/button';
 import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
 import { useAuth } from '@/components/auth/auth-provider';
+import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
 
 type Message = {
@@ -31,20 +32,7 @@ const WELCOME_MESSAGE: Message = {
   text: 'Hi. Ask about revenue, orders, regions, products, or request a report from the ecommerce DB.',
 };
 
-function downloadCsv(filename: string, rows: string[][]) {
-  const csv = rows
-    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
+
 
 async function saveMessage(sessionId: number, role: 'user' | 'assistant', text: string, tablesUsed?: string[]) {
   try {
@@ -251,13 +239,12 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
 
   function handleExportArtifact() {
     const data = artifact?.data ?? initialData;
-    downloadCsv(`generated-report-${new Date().toISOString().slice(0, 10)}.csv`, [
+    const fileName = `generated-report-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const base64 = buildXlsxBase64(
       ['Metric', 'Value', 'Detail'],
-      ...data.kpis.map((kpi) => [kpi.label, kpi.value, kpi.detail]),
-      [],
-      ['Top Product', 'Revenue', 'Share', 'Units', 'AOV', 'Source'],
-      ...data.topProducts,
-    ]);
+      data.kpis.map((kpi) => [kpi.label, kpi.value, kpi.detail]),
+    );
+    triggerDownload(fileName, base64ToBlob(base64, XLSX_MIME_TYPE));
   }
 
   return (
@@ -424,7 +411,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
                   ) : null}
                   <Button variant="outline" size="sm" className="gap-2" onClick={handleExportArtifact}>
                     <FileSpreadsheet size={14} />
-                    CSV
+                    Excel
                   </Button>
                 </div>
                 {reportSaveState !== 'saved' ? (
