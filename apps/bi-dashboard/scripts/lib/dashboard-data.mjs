@@ -538,11 +538,23 @@ async function dashboardData({
     await connection.query('SET SESSION TRANSACTION READ ONLY');
 
     const WINDOW_DAYS = windowDays;
+    // Label the window from the actual requested range (cutoff -> latest
+    // order date), NOT from which days happen to have orders in them --
+    // GROUP BY DATE(ordered_at) below silently drops zero-order days, so
+    // deriving the label from that result set understates the window (e.g.
+    // "last 5 days" with no orders on the first 2 days used to render as
+    // "May 4 - May 6" instead of the true "May 2 - May 6").
     const [cutoffRows] = await connection.execute(
-      'SELECT DATE_SUB(DATE(MAX(ordered_at)), INTERVAL ? DAY) AS cutoff FROM orders',
-      [WINDOW_DAYS - 1],
+      `SELECT
+         DATE_SUB(DATE(MAX(ordered_at)), INTERVAL ? DAY) AS cutoff,
+         DATE_FORMAT(DATE_SUB(DATE(MAX(ordered_at)), INTERVAL ? DAY), '%b %e') AS cutoffLabel,
+         DATE_FORMAT(MAX(ordered_at), '%b %e') AS windowEndLabel
+       FROM orders`,
+      [WINDOW_DAYS - 1, WINDOW_DAYS - 1],
     );
     const windowCutoff = cutoffRows[0]?.cutoff ?? null;
+    const windowCutoffLabel = cutoffRows[0]?.cutoffLabel?.trim() ?? null;
+    const windowEndLabel = cutoffRows[0]?.windowEndLabel?.trim() ?? null;
     const regionClause = region ? 'AND ship_country_code = ?' : '';
     const regionParam = region ? [region] : [];
 
@@ -775,8 +787,10 @@ async function dashboardData({
         orders: Number(row.orders),
       })),
       dateRange:
-        trendRows.length > 1
-          ? `${trendRows[0].day} - ${trendRows[trendRows.length - 1].day}`
+        windowCutoffLabel && windowEndLabel
+          ? windowCutoffLabel === windowEndLabel
+            ? windowCutoffLabel
+            : `${windowCutoffLabel} - ${windowEndLabel}`
           : (trendRows[0]?.day ?? 'No orders'),
       regionRevenue: regionRows.map((row) => ({
         region: row.region ?? 'Other',
