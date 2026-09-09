@@ -47,6 +47,7 @@ export default function ReportDetailPage() {
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
   const [view, setView] = useState<'chart' | 'table'>('chart');
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     fetch(`/api/reports/${params.id}`)
@@ -92,11 +93,17 @@ export default function ReportDetailPage() {
   const data = report.data;
   const table = getReportTable(report.topic, data);
 
-  function handleExportExcel() {
-    const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
-    const base64 = buildXlsxBase64(table.headers, table.rows);
-    triggerDownload(fileName, base64ToBlob(base64, XLSX_MIME_TYPE));
-    logExport(report!.id, fileName, base64);
+  async function handleExportExcel() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
+      const base64 = buildXlsxBase64(table.headers, table.rows);
+      triggerDownload(fileName, base64ToBlob(base64, XLSX_MIME_TYPE));
+      await logExport(report!.id, fileName, base64);
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -107,9 +114,9 @@ export default function ReportDetailPage() {
       scroll
       action={
         <div className="hidden gap-2 md:flex">
-          <Button variant="outline" className="gap-2" onClick={handleExportExcel}>
+          <Button variant="outline" className="gap-2" onClick={handleExportExcel} disabled={exporting}>
             <FileSpreadsheet size={16} />
-            Export Excel
+            {exporting ? 'Exporting...' : 'Export Excel'}
           </Button>
           <Button variant="outline" className="gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
             <Trash2 size={16} />
@@ -217,9 +224,9 @@ export default function ReportDetailPage() {
             ) : null}
           </section>
           <div className="flex flex-col gap-2 md:hidden">
-            <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel}>
+            <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel} disabled={exporting}>
               <FileSpreadsheet size={16} />
-              Export Excel
+              {exporting ? 'Exporting...' : 'Export Excel'}
             </Button>
             <Button variant="outline" className="w-full gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
               <Trash2 size={16} />
