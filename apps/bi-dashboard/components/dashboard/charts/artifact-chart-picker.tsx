@@ -31,10 +31,19 @@ export function ArtifactChartPicker({
   const resolvedChartType = chartType && chartType !== 'none' ? chartType : 'bar';
 
   if (data.metricBreakdown && data.metricBreakdown.rows.length) {
+    const { tablesUsed, extraMetrics, primaryLabel } = data.metricBreakdown;
+    // The chart itself can only plot one series -- when the report asked
+    // for more than one metric (e.g. units AND revenue by product), the
+    // chart shows the primary one and the subtitle points at the Table view
+    // for the rest, instead of silently dropping them.
+    const subtitle =
+      extraMetrics && extraMetrics.length
+        ? `${primaryLabel ?? 'Value'} shown -- see Table view for ${extraMetrics.map((m) => m.label).join(', ')}`
+        : `Tables used: ${tablesUsed.join(', ') || 'orders'}`;
     return (
       <GenericMetricChart
         title={title}
-        subtitle={`Tables used: ${data.metricBreakdown.tablesUsed.join(', ') || 'orders'}`}
+        subtitle={subtitle}
         entries={data.metricBreakdown.rows}
         chartType={resolvedChartType}
       />

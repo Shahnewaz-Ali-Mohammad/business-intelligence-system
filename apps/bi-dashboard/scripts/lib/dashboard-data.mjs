@@ -526,11 +526,18 @@ async function readOnlyQuery(connection, sql, params = []) {
   return rows;
 }
 
+const METRIC_LABELS = {
+  revenue: 'Revenue',
+  units: 'Units',
+  order_count: 'Orders',
+  avg_order_value: 'Avg Order Value',
+};
+
 async function dashboardData({
   windowDays = 30,
   region = null,
   customerSort = 'most',
-  metricQuery = null,
+  metricQueries = [],
 } = {}) {
   const connection = await mysql.createConnection(dbConfig);
 
@@ -672,21 +679,63 @@ async function dashboardData({
       customerSort === 'least' ? 'ASC' : 'DESC',
     );
 
-    // Optional flexible "X by Y" breakdown (join-capable) requested by the
-    // MCP tool -- e.g. revenue by status, order count by customer. Kept
+    // Optional flexible "X by Y" breakdown(s) (join-capable) requested by
+    // the MCP tool -- e.g. revenue by status, order count by customer. Kept
     // separate from the fixed dashboard bundle above so existing charts and
     // KPIs are unaffected when this isn't requested.
-    const metricBreakdown = metricQuery
-      ? await computeMetricBreakdown(connection, {
-          metric: metricQuery.metric,
-          groupBy: metricQuery.groupBy,
-          sortDirection: metricQuery.sortDirection,
-          limit: metricQuery.limit,
+    //
+    // The agent may make more than one of these calls in a single report
+    // (e.g. "units sold AND revenue for top products" needs one call per
+    // metric -- each call only returns one metric per row). The FIRST call
+    // drives the chart (one series, unchanged). When later calls share the
+    // same groupBy, their values are merged in as extra named columns so a
+    // multi-metric narrative and the rendered table/export actually agree,
+    // instead of the table silently only ever showing the first metric.
+    let metricBreakdown = null;
+    if (metricQueries.length) {
+      const [primary, ...rest] = metricQueries;
+      const primaryResult = await computeMetricBreakdown(connection, {
+        metric: primary.metric,
+        groupBy: primary.groupBy,
+        sortDirection: primary.sortDirection,
+        limit: primary.limit,
+        windowCutoff,
+        regionClause,
+        regionParam,
+      });
+
+      const extraMetrics = [];
+      for (const query of rest) {
+        if (query.groupBy !== primary.groupBy) continue; // different dimension -- can't merge into one table
+        const extraResult = await computeMetricBreakdown(connection, {
+          metric: query.metric,
+          groupBy: query.groupBy,
+          sortDirection: query.sortDirection,
+          limit: 50, // pull enough rows to cover the primary's names even if sorted differently
           windowCutoff,
           regionClause,
           regionParam,
-        })
-      : null;
+        });
+        const valuesByName = Object.fromEntries(extraResult.rows.map((r) => [r.name, r.value]));
+        extraMetrics.push({
+          metric: query.metric,
+          label: METRIC_LABELS[query.metric] ?? query.metric,
+          valuesByName,
+          tablesUsed: extraResult.tablesUsed,
+        });
+      }
+
+      metricBreakdown = {
+        ...primaryResult,
+        primaryMetric: primary.metric,
+        primaryLabel: METRIC_LABELS[primary.metric] ?? primary.metric,
+        groupBy: primary.groupBy,
+        extraMetrics,
+        tablesUsed: [
+          ...new Set([...primaryResult.tablesUsed, ...extraMetrics.flatMap((m) => m.tablesUsed)]),
+        ],
+      };
+    }
 
     return {
       connected: true,

@@ -24,7 +24,14 @@ export type DashboardData = {
   channelRevenue: { name: string; value: number; fill: string }[];
   topProducts: string[][];
   topProductsChart: { name: string; revenue: number }[];
-  metricBreakdown: { rows: { name: string; value: number }[]; tablesUsed: string[] } | null;
+  metricBreakdown: {
+    rows: { name: string; value: number }[];
+    tablesUsed: string[];
+    primaryMetric?: string;
+    primaryLabel?: string;
+    groupBy?: string;
+    extraMetrics?: { metric: string; label: string; valuesByName: Record<string, number>; tablesUsed: string[] }[];
+  } | null;
   anomalies: string[][];
   pinnedPages: PageLink[];
   sessionHistory: PageLink[];

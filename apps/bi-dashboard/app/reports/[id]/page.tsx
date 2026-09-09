@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Download, FileSpreadsheet, LayoutGrid, Table2, Trash2 } from 'lucide-react';
+import { FileSpreadsheet, LayoutGrid, Table2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
@@ -120,106 +120,89 @@ export default function ReportDetailPage() {
         </div>
       }
     >
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="space-y-5">
-          <section className="rounded-xl border border-blue-100 bg-blue-50/70 p-5 shadow-sm">
-            <h2 className="text-base font-bold text-blue-950">Insight Summary</h2>
-            <p className="mt-2 whitespace-pre-line text-sm leading-6 text-blue-900">{report.narrative}</p>
-          </section>
+      <div className="space-y-5">
+        <section className="rounded-xl border border-blue-100 bg-blue-50/70 p-5 shadow-sm">
+          <h2 className="text-base font-bold text-blue-950">Insight Summary</h2>
+          <p className="mt-2 whitespace-pre-line text-sm leading-6 text-blue-900">{report.narrative}</p>
+          {report.tables_used && report.tables_used.length ? (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-blue-100/80 pt-3">
+              <span className="text-xs font-medium text-blue-900/60">Grounded in:</span>
+              {report.tables_used.map((tableName) => (
+                <span
+                  key={tableName}
+                  className="rounded-md border border-blue-200 bg-white/70 px-1.5 py-0.5 text-[11px] font-medium text-blue-900"
+                >
+                  {tableName}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </section>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setView('chart')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                view === 'chart' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              <LayoutGrid size={14} />
-              Chart
-            </button>
-            <button
-              type="button"
-              onClick={() => setView('table')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                view === 'table' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              <Table2 size={14} />
-              Table
-            </button>
-          </div>
-
-          {view === 'chart' ? (
-            <ArtifactChartPicker title={report.title} topic={report.topic} chartType={report.chart_type} data={data} />
-          ) : (
-            <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                    <tr>
-                      {table.headers.map((header) => (
-                        <th key={header} className="px-5 py-3 font-semibold">
-                          {header}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {table.rows.map((row, i) => (
-                      <tr key={i}>
-                        {row.map((cell, j) => (
-                          <td key={j} className="px-5 py-3 text-slate-700">
-                            {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setView('chart')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              view === 'chart' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <LayoutGrid size={14} />
+            Chart
+          </button>
+          <button
+            type="button"
+            onClick={() => setView('table')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              view === 'table' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <Table2 size={14} />
+            Table
+          </button>
         </div>
 
-        <aside className="space-y-4">
-          <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)]">
-            <h2 className="text-base font-bold">Session Context</h2>
-            <div className="mt-3 space-y-3 text-sm">
-              <div className="flex justify-between gap-3">
-                <span className="text-slate-500">Window</span>
-                <span className="font-medium">{report.filters?.days ?? 30} days</span>
-              </div>
-              <div className="flex justify-between gap-3">
-                <span className="text-slate-500">Region</span>
-                <span className="font-medium">{report.filters?.region ?? 'All regions'}</span>
-              </div>
+        {view === 'chart' ? (
+          <ArtifactChartPicker title={report.title} topic={report.topic} chartType={report.chart_type} data={data} />
+        ) : (
+          <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    {table.headers.map((header) => (
+                      <th key={header} className="px-5 py-3 font-semibold">
+                        {header}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {table.rows.map((row, i) => (
+                    <tr key={i}>
+                      {row.map((cell, j) => (
+                        <td key={j} className="px-5 py-3 text-slate-700">
+                          {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            {report.tables_used && report.tables_used.length ? (
-              <div className="mt-4 flex flex-wrap gap-1.5 border-t border-slate-100 pt-3">
-                <Download size={12} className="text-slate-400" />
-                {report.tables_used.map((tableName) => (
-                  <span
-                    key={tableName}
-                    className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600"
-                  >
-                    {tableName}
-                  </span>
-                ))}
-              </div>
-            ) : null}
           </section>
-          <div className="flex flex-col gap-2 md:hidden">
-            <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel} disabled={exporting}>
-              <FileSpreadsheet size={16} />
-              {exporting ? 'Exporting...' : 'Export Excel'}
-            </Button>
-            <Button variant="outline" className="w-full gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
-              <Trash2 size={16} />
-              {deleting ? 'Deleting...' : 'Delete Report'}
-            </Button>
-          </div>
-        </aside>
+        )}
+
+        <div className="flex flex-col gap-2 md:hidden">
+          <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel} disabled={exporting}>
+            <FileSpreadsheet size={16} />
+            {exporting ? 'Exporting...' : 'Export Excel'}
+          </Button>
+          <Button variant="outline" className="w-full gap-2 text-red-600 hover:bg-red-50" onClick={handleDelete} disabled={deleting}>
+            <Trash2 size={16} />
+            {deleting ? 'Deleting...' : 'Delete Report'}
+          </Button>
+        </div>
       </div>
     </WorkspacePage>
   );

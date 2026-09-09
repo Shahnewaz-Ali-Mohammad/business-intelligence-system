@@ -232,27 +232,35 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // trimmed JSON handed to the model) for report/artifact rendering.
   let usedArgs = { days: Number(pageState.days ?? 30), region: pageState.region ?? null };
   let customerSortUsed = 'most';
-  let metricQueryUsed = null;
+  // The agent can legitimately call query_semantic_layer more than once in
+  // a single turn (e.g. "units sold AND revenue for top products" needs one
+  // call per metric, since each metric+groupBy call returns only one metric
+  // per row). Collect ALL of them, not just the last -- overwriting used to
+  // mean the narrative could describe two breakdowns while the rendered
+  // table/chart only ever reflected whichever call happened to run last.
+  const metricQueriesUsed = [];
   for (const msg of result.messages ?? []) {
     const calls = msg?.tool_calls;
-    if (Array.isArray(calls)) {
-      const call = calls.find((c) => c.name === 'query_semantic_layer');
-      if (call?.args) {
-        usedArgs = {
-          days: Number.isInteger(call.args.days) ? call.args.days : usedArgs.days,
-          region: call.args.region ?? null,
+    if (!Array.isArray(calls)) continue;
+    for (const call of calls) {
+      if (call.name !== 'query_semantic_layer' || !call.args) continue;
+      usedArgs = {
+        days: Number.isInteger(call.args.days) ? call.args.days : usedArgs.days,
+        region: call.args.region ?? null,
+      };
+      if (call.args.customerSort === 'least' || call.args.customerSort === 'most') {
+        customerSortUsed = call.args.customerSort;
+      }
+      if (call.args.metric && call.args.groupBy) {
+        const query = {
+          metric: call.args.metric,
+          groupBy: call.args.groupBy,
+          sortDirection: call.args.sortDirection === 'least' ? 'least' : 'most',
+          limit: Number.isInteger(call.args.limit) ? call.args.limit : 10,
         };
-        if (call.args.customerSort === 'least' || call.args.customerSort === 'most') {
-          customerSortUsed = call.args.customerSort;
-        }
-        if (call.args.metric && call.args.groupBy) {
-          metricQueryUsed = {
-            metric: call.args.metric,
-            groupBy: call.args.groupBy,
-            sortDirection: call.args.sortDirection === 'least' ? 'least' : 'most',
-            limit: Number.isInteger(call.args.limit) ? call.args.limit : 10,
-          };
-        }
+        // Dedup identical (metric, groupBy) calls -- keep the first.
+        const alreadyHave = metricQueriesUsed.some((q) => q.metric === query.metric && q.groupBy === query.groupBy);
+        if (!alreadyHave) metricQueriesUsed.push(query);
       }
     }
   }
@@ -271,7 +279,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
           windowDays: usedArgs.days,
           region: usedArgs.region,
           customerSort: customerSortUsed,
-          metricQuery: metricQueryUsed,
+          metricQueries: metricQueriesUsed,
         });
 
   return {

@@ -16,9 +16,25 @@ export function getReportTable(
   chartType?: string | null,
 ): ReportTable {
   if (data.metricBreakdown && data.metricBreakdown.rows.length) {
+    const { rows, primaryLabel, extraMetrics } = data.metricBreakdown;
+    // When the agent queried more than one metric for the same dimension
+    // (e.g. "units sold AND revenue by product"), show every metric as its
+    // own column instead of only the first one -- otherwise the table would
+    // silently disagree with a narrative that describes more than one
+    // number per row.
+    if (extraMetrics && extraMetrics.length) {
+      return {
+        headers: ['Name', primaryLabel ?? 'Value', ...extraMetrics.map((m) => m.label)],
+        rows: rows.map((row) => [
+          row.name,
+          row.value,
+          ...extraMetrics.map((m) => m.valuesByName[row.name] ?? 0),
+        ]),
+      };
+    }
     return {
-      headers: ['Name', 'Value'],
-      rows: data.metricBreakdown.rows.map((row) => [row.name, row.value]),
+      headers: ['Name', primaryLabel ?? 'Value'],
+      rows: rows.map((row) => [row.name, row.value]),
     };
   }
 

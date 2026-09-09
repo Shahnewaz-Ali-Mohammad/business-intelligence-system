@@ -129,7 +129,7 @@ export function createBiMcpServer() {
         windowDays: days,
         region: region || null,
         customerSort: customerSort || 'most',
-        metricQuery: metric && groupBy ? { metric, groupBy, sortDirection: sortDirection || 'most', limit: limit || 10 } : null,
+        metricQueries: metric && groupBy ? [{ metric, groupBy, sortDirection: sortDirection || 'most', limit: limit || 10 }] : [],
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(summarizeForTool(data)) }],
