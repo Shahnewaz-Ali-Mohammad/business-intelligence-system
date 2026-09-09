@@ -86,7 +86,7 @@ export default function ReportDetailPage() {
   }
 
   const data = report.data;
-  const table = getReportTable(report.topic, data);
+  const table = getReportTable(report.topic, data, report.chart_type);
 
   async function handleExportExcel() {
     if (exporting) return;

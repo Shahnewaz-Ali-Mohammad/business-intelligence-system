@@ -1,6 +1,7 @@
 'use client';
 
 import { RegionRevenueChart } from '@/components/dashboard/charts/region-revenue-chart';
+import { RevenueTrendChart } from '@/components/dashboard/charts/revenue-trend-chart';
 import { StatusDonutChart } from '@/components/dashboard/charts/status-donut-chart';
 import { TopEntitiesBarChart } from '@/components/dashboard/charts/top-entities-bar-chart';
 import { GenericMetricChart } from '@/components/dashboard/charts/generic-metric-chart';
@@ -12,6 +13,10 @@ import type { DashboardData } from '@/lib/dashboard/metrics';
 // (chartType). Shared by the live chat artifact panel and the saved report
 // detail page so a report looks the same way it did when it was generated,
 // instead of every saved report defaulting back to "Revenue by Region".
+//
+// This branching MUST stay in sync with getReportTable (lib/dashboard/
+// report-table.ts) -- same topic/chartType in, same underlying series out,
+// whichever form (chart or table) is showing.
 export function ArtifactChartPicker({
   title,
   topic,
@@ -60,6 +65,14 @@ export function ArtifactChartPicker({
 
   if (topic === 'status' || topic === 'shipping') {
     return <StatusDonutChart data={data} />;
+  }
+
+  // A "line chart" / trend request is about change over time regardless of
+  // topic label ("revenue trend", "orders over time", "show that as a line
+  // chart") -- honor it before falling back to a static region breakdown,
+  // which used to silently ignore chartType entirely.
+  if (chartType === 'line' && data.revenueTrend.length) {
+    return <RevenueTrendChart data={data} />;
   }
 
   return <RegionRevenueChart data={data} />;
