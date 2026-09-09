@@ -36,6 +36,13 @@ export function getReportTable(
     };
   }
 
+  if (topic === 'orders' && data.revenueTrend.length) {
+    return {
+      headers: ['Day', 'Orders'],
+      rows: data.revenueTrend.map((row) => [row.day, row.orders]),
+    };
+  }
+
   if (topic === 'status' || topic === 'shipping') {
     return {
       headers: ['Status', 'Value'],

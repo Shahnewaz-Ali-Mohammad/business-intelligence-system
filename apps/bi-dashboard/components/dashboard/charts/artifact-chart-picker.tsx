@@ -63,6 +63,20 @@ export function ArtifactChartPicker({
     );
   }
 
+  if (topic === 'orders' && data.revenueTrend.length) {
+    // A plain "orders" report is about order volume, not revenue-by-region
+    // (the generic fallback below) -- show order count per day, honoring
+    // whatever chart format was actually asked for.
+    return (
+      <GenericMetricChart
+        title="Order Volume"
+        subtitle={data.dateRange ? `Orders per day, ${data.dateRange}` : 'Orders per day'}
+        entries={data.revenueTrend.map((row) => ({ name: row.day, value: row.orders }))}
+        chartType={resolvedChartType}
+      />
+    );
+  }
+
   if (topic === 'status' || topic === 'shipping') {
     // Donut is the natural shape for "what share is each status" -- but if
     // a specific format was actually asked for, honor it instead.
