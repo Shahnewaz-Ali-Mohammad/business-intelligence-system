@@ -6,7 +6,6 @@ import { Download, FileSpreadsheet, LayoutGrid, Table2, Trash2 } from 'lucide-re
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
-import { ReportChatEditor, type AppliedReportFields } from '@/components/reports/report-chat-editor';
 import { getReportTable } from '@/lib/dashboard/report-table';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { DashboardData } from '@/lib/dashboard/metrics';
@@ -66,10 +65,6 @@ export default function ReportDetailPage() {
     } finally {
       setDeleting(false);
     }
-  }
-
-  function handleApplied(fields: AppliedReportFields) {
-    setReport((prev) => (prev ? { ...prev, ...fields } : prev));
   }
 
   if (report === undefined) {
@@ -185,15 +180,6 @@ export default function ReportDetailPage() {
               </div>
             </section>
           )}
-
-          <ReportChatEditor
-            reportId={report.id}
-            currentTopic={report.topic}
-            currentDays={report.filters?.days ?? 30}
-            currentRegion={report.filters?.region ?? null}
-            currentData={data}
-            onApplied={handleApplied}
-          />
         </div>
 
         <aside className="space-y-4">
