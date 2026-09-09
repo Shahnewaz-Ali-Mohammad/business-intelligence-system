@@ -1,18 +1,18 @@
 'use client';
 
-import { RegionRevenueChart } from '@/components/dashboard/charts/region-revenue-chart';
 import { RevenueTrendChart } from '@/components/dashboard/charts/revenue-trend-chart';
-import { StatusDonutChart } from '@/components/dashboard/charts/status-donut-chart';
-import { TopEntitiesBarChart } from '@/components/dashboard/charts/top-entities-bar-chart';
 import { GenericMetricChart } from '@/components/dashboard/charts/generic-metric-chart';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
 // Picks which chart to render for a generated report/artifact based on what
-// the conversation was actually about (topic) and, if the model produced a
-// flexible metric+dimension breakdown, in whatever format the user asked for
-// (chartType). Shared by the live chat artifact panel and the saved report
-// detail page so a report looks the same way it did when it was generated,
-// instead of every saved report defaulting back to "Revenue by Region".
+// the conversation was actually about (topic) and honors whatever chart
+// format was actually asked for (chartType) -- bar/line/pie/donut all work
+// for customers, products, regions, and any flexible metric+dimension
+// breakdown, via the one flexible GenericMetricChart. Only two cases keep a
+// purpose-built chart: a genuine time-series trend (RevenueTrendChart, also
+// used on the main dashboard) and status/shipping, which defaults to a
+// donut (the natural shape for a status split) but still honors an
+// explicit request for something else.
 //
 // This branching MUST stay in sync with getReportTable (lib/dashboard/
 // report-table.ts) -- same topic/chartType in, same underlying series out,
@@ -43,37 +43,54 @@ export function ArtifactChartPicker({
 
   if (topic === 'customers') {
     return (
-      <TopEntitiesBarChart
+      <GenericMetricChart
         title="Top Customers by Orders"
         subtitle="users.id + orders (last window)"
         entries={data.topCustomersByOrders.map((row) => ({ name: row.name, value: row.orders }))}
-        valueFormatter={(value) => `${value.toLocaleString('en-US')} orders`}
+        chartType={resolvedChartType}
       />
     );
   }
 
   if (topic === 'products') {
     return (
-      <TopEntitiesBarChart
+      <GenericMetricChart
         title="Top Products by Revenue"
         subtitle={data.chartSources.products}
         entries={data.topProductsChart.map((row) => ({ name: row.name, value: row.revenue }))}
-        valueFormatter={(value) => `$${value.toLocaleString('en-US')}`}
+        chartType={resolvedChartType}
       />
     );
   }
 
   if (topic === 'status' || topic === 'shipping') {
-    return <StatusDonutChart data={data} />;
+    // Donut is the natural shape for "what share is each status" -- but if
+    // a specific format was actually asked for, honor it instead.
+    const statusChartType = chartType && chartType !== 'none' ? chartType : 'donut';
+    return (
+      <GenericMetricChart
+        title="Orders by Status"
+        subtitle={data.chartSources.channel}
+        entries={data.channelRevenue.map((row) => ({ name: row.name, value: row.value }))}
+        chartType={statusChartType}
+      />
+    );
   }
 
   // A "line chart" / trend request is about change over time regardless of
   // topic label ("revenue trend", "orders over time", "show that as a line
-  // chart") -- honor it before falling back to a static region breakdown,
-  // which used to silently ignore chartType entirely.
-  if (chartType === 'line' && data.revenueTrend.length) {
+  // chart") -- honor it with the real time-series chart before falling
+  // back to a static region breakdown.
+  if (resolvedChartType === 'line' && data.revenueTrend.length) {
     return <RevenueTrendChart data={data} />;
   }
 
-  return <RegionRevenueChart data={data} />;
+  return (
+    <GenericMetricChart
+      title="Revenue by Region"
+      subtitle={data.chartSources.region}
+      entries={data.regionRevenue.map((row) => ({ name: row.region, value: row.revenue }))}
+      chartType={resolvedChartType}
+    />
+  );
 }
