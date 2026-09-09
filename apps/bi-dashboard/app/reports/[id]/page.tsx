@@ -23,12 +23,22 @@ type ReportRow = {
   created_at: string;
 };
 
-function logExport(reportId: number, fileName: string, fileContent: string) {
-  fetch('/api/exports', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reportId, fileName, format: 'xlsx', fileContent }),
-  }).catch(() => {});
+async function logExport(reportId: number, fileName: string, fileContent: string) {
+  try {
+    const res = await fetch('/api/exports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reportId, fileName, format: 'xlsx', fileContent }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('Saving to export history failed:', res.status, text);
+      alert(`The file downloaded, but saving it to your Exports history failed (${res.status}). Open the browser console and the terminal running "npm run dev" for details.`);
+    }
+  } catch (error) {
+    console.error('Saving to export history failed:', error);
+    alert('The file downloaded, but saving it to your Exports history failed (network error). Open the browser console for details.');
+  }
 }
 
 export default function ReportDetailPage() {
