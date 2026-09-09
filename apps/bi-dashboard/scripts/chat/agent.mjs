@@ -281,10 +281,10 @@ function getBiGraph() {
   if (cachedBiGraph) return cachedBiGraph;
   cachedBiGraph = new StateGraph(GraphState)
     .addNode('draft', draftNode)
-    .addNode('critique', critiqueNode)
+    .addNode('critiqueCheck', critiqueNode)
     .addEdge(START, 'draft')
-    .addEdge('draft', 'critique')
-    .addConditionalEdges('critique', routeAfterCritique, { retry: 'draft', done: END })
+    .addEdge('draft', 'critiqueCheck')
+    .addConditionalEdges('critiqueCheck', routeAfterCritique, { retry: 'draft', done: END })
     .compile();
   return cachedBiGraph;
 }
