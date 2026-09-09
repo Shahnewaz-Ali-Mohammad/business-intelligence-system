@@ -44,7 +44,6 @@ const GUARDRAIL_SYSTEM_PROMPT = `You are the analytical engine behind a live BI 
 
 Scope: you help with THIS business's read-only ecommerce data -- revenue, orders, customers, products, regions, shipping status. You have no built-in knowledge of these numbers; the ONLY way to get real data is the query_semantic_layer tool. You MUST call it before answering anything about revenue, orders, customers, products, regions, or status. Never invent, estimate, or recall a number that isn't in a tool result.
 
-Greetings and meta questions ("hi", "hello", "hey", "what can you help with", "what do you do", "how does this work", simple thanks/acknowledgements) are NOT data questions -- do NOT call query_semantic_layer for these, and do NOT volunteer a random number or metric just to demonstrate capability. Reply with a short, friendly line introducing what you can help with (revenue, orders, customers, products, regions, shipping status) and invite them to ask something specific. intent is "answer", chartType is "none", tablesUsed is empty.
 
 Beyond the standard dashboard bundle, query_semantic_layer also supports a flexible "metric by dimension" breakdown -- pass metric ("revenue" | "order_count" | "avg_order_value" | "units") together with groupBy ("region" | "product" | "customer" | "status" | "day") for questions that don't fit the fixed bundle, e.g. "revenue by status", "order count per customer", "units sold by product", "daily revenue trend". groupBy:"customer" genuinely JOINS orders with users -- use it for any real per-customer breakdown instead of guessing. Use sortDirection ("most"/"least") and limit for ranking questions. Always use this instead of inventing numbers or approximating from the fixed bundle when the user's question names a metric/dimension combination the fixed bundle doesn't cover.
 
@@ -61,10 +60,6 @@ Guardrails:
 - When the user asks for a specific chart format ("pie chart", "line chart", "donut", "bar chart"), honor exactly that format in chartType -- never silently substitute a different chart type than what was asked for.
 - If the request is genuinely ambiguous or missing something you need to answer correctly or usefully -- e.g. "compare them" with no clear referents, "show me the report" with no topic named and nothing to infer from recent history, a metric+dimension combination that could mean two different things -- set intent to "ask_clarification" and put ONE short, specific question in narrative (e.g. "Which two would you like compared -- regions, products, or time periods?"). Do NOT call query_semantic_layer and do NOT guess a default in this case. Only ask when you genuinely cannot proceed correctly without it -- don't ask for confirmation on things you can reasonably infer from the message or recent conversation (a bare "generate a graph" right after a data answer is NOT ambiguous, it clearly means chart that data).
 
-Example -- plain greeting, not a data question:
-User: "hello"
-Assistant: does NOT call query_semantic_layer. narrative: "Hey! I can help with revenue, orders, customers, products, regions, or shipping status for this store -- what would you like to know?" tablesUsed: [] topic: "dashboard" chartType: "none" intent: "answer"
-
 Example -- out-of-scope follow-up:
 User: "which region has the lowest revenue?"
 Assistant: (calls query_semantic_layer, answers with real numbers, tablesUsed: ["orders"])
@@ -80,6 +75,11 @@ const ScopeSchema = z.object({
   declineReason: z
     .string()
     .describe('If inScope is false, ONE short, friendly sentence declining and redirecting to what you can help with (revenue, orders, customers, products, regions, status). Empty string if inScope is true.'),
+  isGreetingOrMeta: z
+    .boolean()
+    .describe(
+      'true if this message is a greeting ("hi", "hello", "hey"), simple thanks/acknowledgement, or a meta question about the chatbot itself ("what can you help with", "what do you do", "how does this work") -- i.e. it needs NO real data lookup at all, just a capabilities reply. false for anything that is actually asking about revenue/orders/customers/products/regions/status data, even loosely. Only meaningful when inScope is true.',
+    ),
 });
 
 const SCOPE_GATE_PROMPT = `You are a strict scope classifier gate in front of a BI dashboard chatbot. The chatbot answers two kinds of things:
@@ -91,7 +91,9 @@ You will be shown a short excerpt of the recent conversation for context, then t
 IN SCOPE: (a) and (b) above, plus any message that is a plausible continuation of the recent in-scope conversation -- including short action requests like "generate graph", "show it as a chart", "make that a report", "export it" that refer back to data just discussed.
 OUT OF SCOPE: a message that clearly introduces something unrelated to this store's data or this chatbot -- an athlete, celebrity, other company, general trivia/knowledge, personal/medical/legal/financial advice -- even if it follows an in-scope message.
 
-When in doubt about a bare, ambiguous, or short message, ask: given the recent conversation, could this plausibly be continuing this store's data conversation or the chatbot itself? If yes, IN SCOPE. Only mark OUT OF SCOPE when the message clearly names or asks about something unrelated.`;
+When in doubt about a bare, ambiguous, or short message, ask: given the recent conversation, could this plausibly be continuing this store's data conversation or the chatbot itself? If yes, IN SCOPE. Only mark OUT OF SCOPE when the message clearly names or asks about something unrelated.
+
+Set isGreetingOrMeta to true for category (b) above (greetings, thanks, "what can you help with" style questions) -- these get a fixed capabilities reply with no data lookup. Set it to false for category (a) (an actual data question, even a vague or short one) and false whenever inScope is false.`;
 
 let cachedScopeModel = null;
 
@@ -321,6 +323,25 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
         scope.declineReason && scope.declineReason.trim()
           ? scope.declineReason.trim()
           : "I'm focused on this store's ecommerce data, so I can't help with that -- ask me about revenue, orders, customers, products, regions, or status instead.",
+      filters: { days: Number(pageState.days ?? 30), region: pageState.region ?? null },
+      tablesUsed: [],
+      data: null,
+    };
+  }
+
+  if (scope.isGreetingOrMeta) {
+    // Deterministic short-circuit, not another prompt instruction: a
+    // greeting/meta message never reaches the tool-calling agent at all, so
+    // there is no path left for it to "decide" to fetch a number to show
+    // off with. Fixed reply, zero LLM narrative risk on this branch.
+    console.log('[agent] greeting/meta message -- short-circuiting before the agent/tools run.');
+    return {
+      intent: 'answer',
+      topic: 'dashboard',
+      chartType: 'none',
+      title: 'Hello',
+      narrative:
+        "Hey! I can help with revenue, orders, customers, products, regions, or shipping status for this store -- what would you like to know?",
       filters: { days: Number(pageState.days ?? 30), region: pageState.region ?? null },
       tablesUsed: [],
       data: null,
