@@ -51,6 +51,8 @@ CRITICAL -- for period-over-period questions ("this month vs last month", "vs la
 
 CRITICAL -- when the user wants MORE THAN ONE number per entity (e.g. "revenue and number of orders for each customer", "units AND revenue per product"): put the extra metric(s) in extraMetrics on the SAME query_semantic_layer call, never as a second separate call. Two separate calls are independently sorted and limited and can return different entities in a different order -- you cannot safely merge their results yourself, and doing so has produced wrong answers before (mixing up which number belongs to which entity, or inventing "unspecified" for entities the second query didn't happen to include). If a follow-up message asks to add another number to a list you just showed ("give me their order count too", "and how many orders each"), that means: re-run the SAME breakdown (same groupBy, same entities/sort as before) with the new metric added to extraMetrics -- not a fresh, differently-sorted query for a different top-N set.
 
+CRITICAL -- if the tool result's metricBreakdown.omittedMetrics is non-empty, that means one or more metrics you asked for in extraMetrics could NOT actually be computed for this breakdown -- most commonly because a metric only makes sense for a different dimension (e.g. "units" only exists for a per-PRODUCT breakdown; it cannot be computed per-customer, per-region, or per-status at all, since only order_items has a units column). Never silently answer with fewer columns than the user asked for and say nothing about it -- always name the specific omitted metric(s) in your narrative and say plainly why (e.g. "units sold isn't tracked per customer, only per product, so here's revenue, order count, and average order value instead"). Silently dropping a requested column with no acknowledgement is exactly the kind of quiet, undetectable gap this system must never have.
+
 CRITICAL -- never call query_semantic_layer twice for the SAME groupBy with two different single metrics instead of using extraMetrics (e.g. calling groupBy:"customer" once with metric:"order_count" and again with metric:"revenue" as two separate calls). Only the most recent such call is what actually gets shown to the user, so the earlier one is silently wasted at best -- and if your narrative describes numbers from that earlier, discarded call, the reply will describe a completely different set of top entities than the one actually rendered. If the request is ambiguous about which single ranking is wanted (e.g. a garbled or unclear message that could mean "rank by revenue" or "rank by order count"), pick the most reasonable single interpretation and say so in the narrative, or ask_clarification -- never hedge by querying multiple rankings and blending them in your answer.
 
 Guardrails:
@@ -125,6 +127,87 @@ async function checkScope(message, history = []) {
   ]);
   console.log('[agent] scope gate result:', JSON.stringify(result));
   return result;
+}
+
+
+// The scope gate's isGreetingOrMeta field is a SINGLE LLM judgment, and a
+// single classifier call deciding "does this need real data at all" is the
+// one place in this pipeline where a wrong answer skips the tool-calling
+// agent entirely and returns a canned reply with zero recovery (unlike the
+// draft answer, which gets a critique/retry pass -- see critiqueNode below).
+// A live bug (a plain, in-scope data question like "need total revenue for
+// each customer" being misclassified as a greeting/meta message, so it got
+// the fixed "Hey! I can help with..." reply instead of ever running a
+// query) showed that trusting that one field alone isn't safe enough for a
+// decision this consequential. Rather than patch the scope-gate prompt with
+// more examples (that only helps the specific wording that happened to be
+// reported), this asks a second, independently-framed question -- not
+// "is this a greeting", but "would answering this well require looking at
+// the store's actual data" -- and the two must agree before the greeting
+// short-circuit is allowed to fire. See decideEntryRoute, which is the
+// actual (pure, unit-tested) decision logic that combines them.
+const NeedsDataSchema = z.object({
+  needsDataLookup: z
+    .boolean()
+    .describe(
+      'true if answering this message well requires looking up a real number, count, date, or record from this store\'s data (revenue, orders, customers, products, regions, or shipping/order status) -- even a vague, short, or typo-ridden data question still counts as true. false only if the message could be fully and honestly answered with no data lookup at all -- a greeting, thanks, or a question about the chatbot/dashboard itself and what it can do.',
+    ),
+});
+
+const NEEDS_DATA_PROMPT = `You classify a single user message for a BI dashboard chatbot. Decide ONLY this: to answer this message well, does the chatbot need to look up real data from this ecommerce store (revenue, orders, customers, products, regions, shipping/order status)?
+
+true: any question, however short, vague, or typo-ridden, that is asking about this store's actual numbers or records -- "revenue by customer", "need total revenue for each custoemr", "top products", "how many orders last week", "which region is lowest".
+false: a greeting ("hi", "hello"), thanks/acknowledgement, or a question about the chatbot/dashboard itself and what it can do ("what can you help with", "how does this work", "what data do you have") -- none of these need a data lookup to answer.
+
+Focus only on whether a data lookup is genuinely needed -- ignore spelling, grammar, and phrasing quality entirely.`;
+
+let cachedNeedsDataModel = null;
+
+function getNeedsDataModel() {
+  if (cachedNeedsDataModel) return cachedNeedsDataModel;
+  cachedNeedsDataModel = new ChatOpenAI({
+    model: process.env.OPENAI_SCOPE_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+    temperature: 0,
+    apiKey: process.env.OPENAI_API_KEY,
+  }).withStructuredOutput(NeedsDataSchema);
+  return cachedNeedsDataModel;
+}
+
+async function checkNeedsDataLookup(message, history = []) {
+  const needsDataModel = getNeedsDataModel();
+  const recentTurns = history.slice(-4);
+  const historyText = recentTurns.length
+    ? recentTurns.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${String(m.content).slice(0, 300)}`).join('\n')
+    : '(no prior messages in this conversation)';
+  const result = await needsDataModel.invoke([
+    new SystemMessage(NEEDS_DATA_PROMPT),
+    new HumanMessage(`Recent conversation (context only):\n${historyText}\n\nCurrent user message to classify: ${JSON.stringify(message)}`),
+  ]);
+  console.log('[agent] needs-data gate result:', JSON.stringify(result));
+  return result;
+}
+
+// Pure decision logic, deliberately separated from the three LLM calls that
+// feed it so it can be unit-tested against a full matrix of
+// (scope, wantsReport, needsData) combinations -- including the exact
+// combination that produced the live bug above -- without needing network
+// access to actually invoke OpenAI. This is the ONLY place that decides
+// which of the three fixed early-return shapes (out-of-scope decline,
+// greeting/meta, or "run the real agent") applies.
+export function decideEntryRoute({ scope, needsData }) {
+  if (!scope.inScope) {
+    return { route: 'out_of_scope' };
+  }
+  // Only short-circuit to the canned greeting/meta reply when BOTH
+  // independent classifiers agree no data lookup is needed. If either one
+  // thinks this message needs real data, it goes to the real agent instead
+  // -- a false positive here just costs one extra (correct) tool call; a
+  // false negative used to mean a real data question got a non-answer with
+  // no recovery at all.
+  if (scope.isGreetingOrMeta && !needsData.needsDataLookup) {
+    return { route: 'greeting' };
+  }
+  return { route: 'agent' };
 }
 
 const ReportGateSchema = z.object({
@@ -312,13 +395,21 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
     throw new Error('OPENAI_API_KEY is not configured.');
   }
 
-  console.log('[agent] runBiAgent starting, checking scope and report intent...');
-  // Run independently of the main agent call (and of each other) -- this is
-  // the same decomposition as the scope gate: one small, single-purpose,
-  // temperature-0 classifier per question, instead of one big call asked to
-  // write the answer AND decide page-vs-text AND stay in scope all at once.
-  const [scope, wantsReport] = await Promise.all([checkScope(message, history), checkWantsReport(message, history)]);
-  if (!scope.inScope) {
+  console.log('[agent] runBiAgent starting, checking scope, report intent, and data need...');
+  // Run independently of each other -- three small, single-purpose,
+  // temperature-0 classifiers, instead of one big call asked to write the
+  // answer AND decide page-vs-text AND stay in scope AND judge whether data
+  // is needed all at once. checkNeedsDataLookup is a deliberately
+  // independent second opinion on scope.isGreetingOrMeta -- see
+  // decideEntryRoute and the comment above it for why.
+  const [scope, wantsReport, needsData] = await Promise.all([
+    checkScope(message, history),
+    checkWantsReport(message, history),
+    checkNeedsDataLookup(message, history),
+  ]);
+  const { route } = decideEntryRoute({ scope, needsData });
+
+  if (route === 'out_of_scope') {
     console.log('[agent] scope gate declined -- short-circuiting before the agent/tools run.');
     return {
       intent: 'answer',
@@ -335,11 +426,13 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
     };
   }
 
-  if (scope.isGreetingOrMeta) {
+  if (route === 'greeting') {
     // Deterministic short-circuit, not another prompt instruction: a
     // greeting/meta message never reaches the tool-calling agent at all, so
     // there is no path left for it to "decide" to fetch a number to show
-    // off with. Fixed reply, zero LLM narrative risk on this branch.
+    // off with. Fixed reply, zero LLM narrative risk on this branch. Only
+    // reached when BOTH the scope gate and the independent needs-data gate
+    // agree no data lookup is needed -- see decideEntryRoute.
     console.log('[agent] greeting/meta message -- short-circuiting before the agent/tools run.');
     return {
       intent: 'answer',
