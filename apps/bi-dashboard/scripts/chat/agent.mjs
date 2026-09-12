@@ -589,7 +589,15 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // that was actually just computed is always worth returning so the UI
   // can keep whatever it's showing in sync with it, regardless of which
   // label the report gate put on this turn.
-  const hasFreshBreakdown = metricQueriesUsed.length > 0;
+  //
+  // A period-over-period question ("compare this month to last month")
+  // genuinely computes and uses real data (comparePreviousPeriodUsed) but
+  // has no metric+groupBy breakdown at all -- there's no dimension to
+  // break down, just two totals. That used to fall through the same
+  // metricQueriesUsed-only check, so `data` (and therefore periodComparison)
+  // was silently discarded even though the narrative was built from real,
+  // freshly-queried numbers.
+  const hasFreshBreakdown = metricQueriesUsed.length > 0 || comparePreviousPeriodUsed;
   const data =
     intent === 'answer' && !hasFreshBreakdown
       ? null

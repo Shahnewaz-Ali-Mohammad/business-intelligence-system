@@ -98,11 +98,25 @@ testCase(
 // never silently mislabel the substituted metric.
 // ---------------------------------------------------------------------
 testCase(
-  'REGRESSION (primary-metric mislabel bug): units by customer must fall back and be reported',
+  'REGRESSION (primary-metric mislabel bug): units by customer must never be silently mislabeled',
   'units sold for each customer',
   (r) => {
+    // Two legitimate outcomes here, and both are fine: the agent can either
+    // (a) ask a clarifying question up front, naming units as unavailable
+    // per-customer, without ever calling the tool -- or (b) call the tool,
+    // get the real fallback metric, and report it via omittedMetrics. What
+    // is NEVER acceptable is a metricBreakdown whose primaryMetric is
+    // "units" (impossible for this dimension -- proves a real number from
+    // a different metric got mislabeled) or a plain answer that silently
+    // gives numbers without ever mentioning units couldn't be computed.
+    if (r.intent === 'ask_clarification') {
+      if (!/unit/i.test(r.narrative)) {
+        throw new Error(`clarification asked but never mentioned units: ${r.narrative}`);
+      }
+      return;
+    }
     const mb = r.data?.metricBreakdown;
-    if (!mb) throw new Error('expected a metricBreakdown result');
+    if (!mb) throw new Error(`expected either ask_clarification or a metricBreakdown result, got intent=${r.intent} with no data`);
     if (mb.primaryMetric === 'units') throw new Error('units was reported as computed per-customer, which is impossible -- mislabel bug');
     const fellBack = mb.omittedMetrics?.find((m) => m.fellBackTo);
     if (!fellBack) throw new Error('expected omittedMetrics to flag the primary-metric fallback');
