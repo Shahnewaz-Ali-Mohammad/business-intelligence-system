@@ -88,11 +88,31 @@ export function GenericMetricChart({
           </div>
         </div>
       ) : (
-        <div className="h-[320px]">
+        // A fixed-height box hides labels: Recharts silently drops any
+        // YAxis category tick that would overlap its neighbor once there
+        // isn't ~28px of vertical room per row, so a 20-row "top 20"
+        // breakdown rendered in the same 320px box a 5-row one uses only
+        // shows a handful of names -- the bars are all still there and the
+        // data matches the table, but it *looks* like rows are missing.
+        // Scale the plot area with the row count instead of holding it
+        // fixed, and force every tick to render (interval={0}) now that
+        // there's guaranteed room for it. Cap the row height contribution
+        // for very large breakdowns so a 200-row result doesn't produce a
+        // multi-thousand-pixel chart -- it becomes a scrollable panel
+        // instead via the wrapping overflow container.
+        <div className="max-h-[640px] overflow-y-auto" style={{ height: Math.max(320, entries.length * 32) }}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={entries} layout="vertical" margin={{ top: 0, right: 16, bottom: 0, left: 0 }} barCategoryGap="22%">
               <XAxis type="number" hide />
-              <YAxis type="category" dataKey="name" tickLine={false} axisLine={false} width={110} fontSize={11} />
+              <YAxis
+                type="category"
+                dataKey="name"
+                tickLine={false}
+                axisLine={false}
+                width={110}
+                fontSize={11}
+                interval={0}
+              />
               <Tooltip />
               <Bar dataKey="value" radius={[0, 5, 5, 0]} fill="#2563eb" maxBarSize={26} />
             </BarChart>
