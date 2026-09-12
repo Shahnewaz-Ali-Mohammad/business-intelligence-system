@@ -14,6 +14,27 @@ const dbConfig = {
 const colors = ['#0f9f9a', '#2563eb', '#7c3aed', '#f59e0b', '#94a3b8'];
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
+// A shared connection POOL, created once per process, instead of a brand
+// new mysql.createConnection() (its own TCP handshake + auth round trip)
+// on every single dashboardData() call. A chat turn that generates a
+// report calls dashboardData() at least twice (once inside the MCP tool
+// while the agent reasons, once again to build the render dataset), and a
+// busy dashboard/chat under real traffic calls it constantly -- paying a
+// fresh connection setup cost every time doesn't scale. Pooled connections
+// are acquired and released (never destroyed) per call below.
+let pool = null;
+function getPool() {
+  if (!pool) {
+    pool = mysql.createPool({
+      ...dbConfig,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    });
+  }
+  return pool;
+}
+
 function toNumber(value) {
   return Number(value ?? 0);
 }
@@ -410,12 +431,45 @@ const METRIC_EXPR = {
 // sets in different orders, forcing the model to either drop numbers or
 // mismatch them across rows.
 function buildMetricSelectList(exprTable, metric, extraMetrics, fallbackMetric) {
-  const primaryExpr = exprTable[metric] ?? exprTable[fallbackMetric];
-  const validExtras = (extraMetrics ?? []).filter((m) => exprTable[m] && m !== metric).slice(0, 2);
+  // The PRIMARY metric can itself be unsupported for this dimension (e.g.
+  // metric:"units" requested with groupBy:"customer" -- there's no
+  // line-item table to sum units from on that join, only
+  // order_items/product has one). That used to silently fall back to
+  // fallbackMetric while every caller kept labeling the result with the
+  // ORIGINALLY REQUESTED metric name -- so a "units by customer" request
+  // would come back as a table of real order-count numbers mislabeled
+  // "Units", which is worse than an omission: it's a wrong, confidently
+  // presented number. primaryMetricUsed/primaryMetricFellBack let every
+  // caller label the result with what was ACTUALLY computed and still
+  // flag the substitution explicitly, instead of mislabeling it.
+  const primarySupported = Boolean(exprTable[metric]);
+  const primaryMetricUsed = primarySupported ? metric : fallbackMetric;
+  const primaryExpr = exprTable[primaryMetricUsed];
+  const requested = extraMetrics ?? [];
+  // Two different reasons a requested extra metric can fail to make it into
+  // the query, and callers need to know which happened: "unsupported" means
+  // the metric genuinely cannot be computed for this dimension at all (e.g.
+  // "units" requested for a customer/region/status breakdown -- there's no
+  // line-item table to sum units from there, only order_items/product has
+  // one). "droppedForCap" means it was a valid metric but more than 2 extras
+  // were requested at once. Both used to be silently dropped with zero
+  // signal anywhere -- the model would happily answer with fewer columns
+  // than it was actually asked for and never mention it, so a request for
+  // "revenue, order count, average order value, AND units per customer"
+  // quietly became a 3-column answer with no acknowledgement that units
+  // was never a real option for that breakdown.
+  const unsupported = requested.filter((m) => m !== metric && !exprTable[m]);
+  const usable = requested.filter((m) => exprTable[m] && m !== metric);
+  const validExtras = usable.slice(0, 2);
+  const droppedForCap = usable.slice(2);
   const extraCols = validExtras.map((m, i) => `${exprTable[m]} AS extra_${i}`);
   return {
     selectSql: [`${primaryExpr} AS value`, ...extraCols].join(', '),
     extraMetricNames: validExtras,
+    omittedMetricNames: [...unsupported, ...droppedForCap],
+    primaryMetricRequested: metric,
+    primaryMetricUsed,
+    primaryMetricFellBack: !primarySupported,
   };
 }
 
@@ -476,9 +530,17 @@ async function computeMetricBreakdown(
   const safeDirection = sortDirection === 'least' ? 'ASC' : 'DESC';
   const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 50 ? limit : 10;
 
-  try {
-    if (groupBy === 'region') {
-      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'revenue');
+  // No try/catch swallowing errors into a fake "empty" result here anymore.
+  // A genuine query failure now propagates up to dashboardDataUncached()'s
+  // own catch, which already logs full detail server-side and converts it
+  // into one sanitized, honest error message -- the same path a DB-down
+  // failure takes. Silently returning { rows: [] } used to make a real bug
+  // in one specific breakdown query look exactly like "there's no data for
+  // that", which is a much worse failure mode than a visible error: it's
+  // indistinguishable from a correct, empty answer.
+  if (groupBy === 'region') {
+      const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
+        buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'revenue');
       const rows = await readOnlyQuery(
         connection,
         `
@@ -494,12 +556,16 @@ async function computeMetricBreakdown(
       return {
         rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
         extraMetricNames,
+        omittedMetricNames,
+        primaryMetricUsed,
+        primaryMetricFellBack,
         tablesUsed: ['orders'],
       };
     }
 
     if (groupBy === 'status') {
-      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'order_count');
+      const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
+        buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'order_count');
       const rows = await readOnlyQuery(
         connection,
         `
@@ -515,16 +581,29 @@ async function computeMetricBreakdown(
       return {
         rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
         extraMetricNames,
+        omittedMetricNames,
+        primaryMetricUsed,
+        primaryMetricFellBack,
         tablesUsed: ['orders'],
       };
     }
 
     if (groupBy === 'day') {
+      // Used to hardcode SUM(grand_total) (revenue) no matter what metric
+      // was actually requested -- "order count by day" or "average order
+      // value trend" silently came back as a revenue trend mislabeled with
+      // whatever metric name the model asked for. buildMetricSelectList is
+      // the same real fix used for every other dimension: compute whatever
+      // was actually asked for (with the same documented, reported fallback
+      // when it's genuinely unsupported), instead of a second, inconsistent
+      // hardcoded path that only ever silently returned revenue.
+      const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
+        buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'revenue');
       const rows = await readOnlyQuery(
         connection,
         `
-          SELECT DATE_FORMAT(ordered_at, '%b %e') AS name, COALESCE(SUM(grand_total), 0) AS value
-          FROM orders
+          SELECT DATE_FORMAT(ordered_at, '%b %e') AS name, ${selectSql}
+          FROM orders o
           WHERE DATE(ordered_at) >= ? ${regionClause}
           GROUP BY DATE(ordered_at), DATE_FORMAT(ordered_at, '%b %e')
           ORDER BY DATE(ordered_at) ASC
@@ -532,11 +611,19 @@ async function computeMetricBreakdown(
         `,
         [windowCutoff, ...regionParam],
       );
-      return { rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: {} })), extraMetricNames: [], tablesUsed: ['orders'] };
+      return {
+        rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
+        extraMetricNames,
+        omittedMetricNames,
+        primaryMetricUsed,
+        primaryMetricFellBack,
+        tablesUsed: ['orders'],
+      };
     }
 
     if (groupBy === 'product') {
-      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.order_items, metric, extraMetrics, 'revenue');
+      const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
+        buildMetricSelectList(METRIC_EXPR.order_items, metric, extraMetrics, 'revenue');
       const rows = await readOnlyQuery(
         connection,
         `
@@ -550,6 +637,9 @@ async function computeMetricBreakdown(
       return {
         rows: rows.map((r) => ({ name: r.name, value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
         extraMetricNames,
+        omittedMetricNames,
+        primaryMetricUsed,
+        primaryMetricFellBack,
         tablesUsed: ['order_items'],
       };
     }
@@ -558,13 +648,14 @@ async function computeMetricBreakdown(
       const fkCol = await findOrdersCustomerColumn(connection);
       const usersPk = await findPrimaryKeyColumn(connection, 'users');
       const nameInfo = await findUsersDisplayName(connection);
-      if (!fkCol || !usersPk || !nameInfo) return { rows: [], extraMetricNames: [], tablesUsed: ['orders', 'users'] };
+      if (!fkCol || !usersPk || !nameInfo) return { rows: [], extraMetricNames: [], omittedMetricNames: [], primaryMetricUsed: metric, primaryMetricFellBack: false, tablesUsed: ['orders', 'users'] };
 
       const nameExpr =
         nameInfo.type === 'combo'
           ? `TRIM(CONCAT(u.${nameInfo.columns[0]}, ' ', u.${nameInfo.columns[1]}))`
           : `u.${nameInfo.column}`;
-      const { selectSql, extraMetricNames } = buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'order_count');
+      const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
+        buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'order_count');
 
       const rows = await readOnlyQuery(
         connection,
@@ -582,15 +673,21 @@ async function computeMetricBreakdown(
       return {
         rows: rows.map((r) => ({ name: r.name || 'Unknown customer', value: toNumber(r.value), extras: attachExtras(r, extraMetricNames) })),
         extraMetricNames,
+        omittedMetricNames,
+        primaryMetricUsed,
+        primaryMetricFellBack,
         tablesUsed: ['orders', 'users'],
       };
     }
 
-    return { rows: [], extraMetricNames: [], tablesUsed: [] };
-  } catch (error) {
-    console.error('metric breakdown query failed, falling back to empty list:', error.message);
-    return { rows: [], extraMetricNames: [], tablesUsed: [] };
-  }
+  return {
+    rows: [],
+    extraMetricNames: [],
+    omittedMetricNames: [],
+    primaryMetricUsed: metric,
+    primaryMetricFellBack: false,
+    tablesUsed: [],
+  };
 }
 
 const compactMoney = new Intl.NumberFormat('en-US', {
@@ -616,7 +713,48 @@ const METRIC_LABELS = {
   avg_order_value: 'Avg Order Value',
 };
 
-async function dashboardData({
+// A single chat turn that generates a report calls dashboardData() at
+// least twice with the EXACT same parameters -- once inside the MCP tool
+// while the agent reasons, once again afterward to build the full render
+// dataset (the tool result even computed and attached a `_fullData` field
+// with this same data, but nothing downstream ever reads it, since MCP's
+// result schema doesn't carry arbitrary extra fields back through the
+// protocol reliably). Rather than rely on threading that raw object through
+// MCP/LangChain plumbing, an identical call within a short window is served
+// from this small in-process cache instead of re-querying the database --
+// same effect (one real DB round trip per unique request instead of two),
+// much simpler to reason about and verify. The TTL is intentionally short:
+// this is a live dashboard, not a place staleness should live for long.
+const DASHBOARD_DATA_CACHE_TTL_MS = 5_000;
+const DASHBOARD_DATA_CACHE_MAX_ENTRIES = 50;
+const dashboardDataCache = new Map();
+
+function cacheKeyFor(params) {
+  const { windowDays = 30, region = null, customerSort = 'most', metricQueries = [], comparePreviousPeriod = false } = params ?? {};
+  return JSON.stringify({ windowDays, region, customerSort, metricQueries, comparePreviousPeriod });
+}
+
+async function dashboardData(params) {
+  const key = cacheKeyFor(params);
+  const cached = dashboardDataCache.get(key);
+  const now = Date.now();
+  if (cached && now - cached.at < DASHBOARD_DATA_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
+  const value = await dashboardDataUncached(params);
+
+  // A successful result is cached; a promise that rejected is not stored --
+  // there's nothing useful to serve back to a second identical caller.
+  dashboardDataCache.set(key, { at: now, value });
+  if (dashboardDataCache.size > DASHBOARD_DATA_CACHE_MAX_ENTRIES) {
+    const oldestKey = dashboardDataCache.keys().next().value;
+    dashboardDataCache.delete(oldestKey);
+  }
+  return value;
+}
+
+async function dashboardDataUncached({
   windowDays = 30,
   region = null,
   customerSort = 'most',
@@ -639,7 +777,7 @@ async function dashboardData({
   // agent) to handle the same way a "no data yet" case would.
   let connection;
   try {
-    connection = await mysql.createConnection(dbConfig);
+    connection = await getPool().getConnection();
     await connection.query('SET SESSION TRANSACTION READ ONLY');
 
     const WINDOW_DAYS = windowDays;
@@ -849,12 +987,43 @@ async function dashboardData({
         alreadyCovered.add(query.metric);
       }
 
+      // primaryResult.primaryMetricUsed is what the query ACTUALLY computed
+      // -- if the requested primary metric wasn't supported for this
+      // dimension (e.g. metric:"units" with groupBy:"customer"), it fell
+      // back to a real, correctly-labeled metric instead of the query
+      // silently returning that fallback's numbers mislabeled with the
+      // originally-requested metric's name. The label/primaryMetric below
+      // always describe what the rows genuinely contain.
+      const primaryMetricUsed = primaryResult.primaryMetricUsed ?? primary.metric;
+      const omittedMetrics = (primaryResult.omittedMetricNames ?? []).map((metricName) => ({
+        metric: metricName,
+        label: METRIC_LABELS[metricName] ?? metricName,
+      }));
+      if (primaryResult.primaryMetricFellBack) {
+        omittedMetrics.unshift({
+          metric: primary.metric,
+          label: METRIC_LABELS[primary.metric] ?? primary.metric,
+          fellBackTo: METRIC_LABELS[primaryMetricUsed] ?? primaryMetricUsed,
+        });
+      }
+
       metricBreakdown = {
         rows: primaryResult.rows.map((r) => ({ name: r.name, value: r.value })),
-        primaryMetric: primary.metric,
-        primaryLabel: METRIC_LABELS[primary.metric] ?? primary.metric,
+        primaryMetric: primaryMetricUsed,
+        primaryLabel: METRIC_LABELS[primaryMetricUsed] ?? primaryMetricUsed,
         groupBy: primary.groupBy,
         extraMetrics,
+        // Metrics the caller asked for (via extraMetrics, or as the PRIMARY
+        // metric itself) that this dimension genuinely cannot compute at
+        // all, or that were dropped only because more than 2 extras were
+        // requested at once -- e.g. "units" has no meaning for a
+        // customer/region/status breakdown, only for products. Surfaced
+        // explicitly instead of silently vanishing or silently swapped in
+        // for a differently-labeled number, so the agent can (and must, per
+        // its guardrail prompt) say so in the narrative rather than quietly
+        // answering with fewer, or the wrong, numbers than it was actually
+        // asked for.
+        omittedMetrics,
         tablesUsed: [
           ...new Set([...primaryResult.tablesUsed, ...extraMetrics.flatMap((m) => m.tablesUsed)]),
         ],
@@ -1012,7 +1181,10 @@ async function dashboardData({
     console.error('[dashboardData] query failed:', error);
     throw new Error('The data source is temporarily unavailable. Please try again in a moment.');
   } finally {
-    if (connection) await connection.end();
+    // release() returns the connection to the pool for reuse -- end()
+    // would close the underlying TCP connection entirely, defeating the
+    // point of pooling.
+    if (connection) connection.release();
   }
 }
 

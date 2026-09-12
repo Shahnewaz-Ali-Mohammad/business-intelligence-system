@@ -31,15 +31,26 @@ export function ArtifactChartPicker({
   const resolvedChartType = chartType && chartType !== 'none' ? chartType : 'bar';
 
   if (data.metricBreakdown && data.metricBreakdown.rows.length) {
-    const { tablesUsed, extraMetrics, primaryLabel } = data.metricBreakdown;
+    const { tablesUsed, extraMetrics, primaryLabel, omittedMetrics } = data.metricBreakdown;
     // The chart itself can only plot one series -- when the report asked
     // for more than one metric (e.g. units AND revenue by product), the
     // chart shows the primary one and the subtitle points at the Table view
-    // for the rest, instead of silently dropping them.
+    // for the rest, instead of silently dropping them. Anything the
+    // dimension genuinely couldn't compute at all (omittedMetrics) is
+    // called out here too, so the UI is never quietly showing fewer
+    // columns than were actually asked for with no explanation.
+    const fellBack = omittedMetrics?.find((m) => m.fellBackTo);
+    const genuinelyOmitted = omittedMetrics?.filter((m) => !m.fellBackTo) ?? [];
     const subtitle =
-      extraMetrics && extraMetrics.length
+      (extraMetrics && extraMetrics.length
         ? `${primaryLabel ?? 'Value'} shown -- see Table view for ${extraMetrics.map((m) => m.label).join(', ')}`
-        : `Tables used: ${tablesUsed.join(', ') || 'orders'}`;
+        : `Tables used: ${tablesUsed.join(', ') || 'orders'}`) +
+      (fellBack
+        ? ` (${fellBack.label} isn't available for this breakdown -- showing ${fellBack.fellBackTo} instead)`
+        : '') +
+      (genuinelyOmitted.length
+        ? ` (${genuinelyOmitted.map((m) => m.label).join(', ')} not available for this breakdown)`
+        : '');
     return (
       <GenericMetricChart
         title={title}

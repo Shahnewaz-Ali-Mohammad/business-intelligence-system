@@ -31,6 +31,11 @@ export type DashboardData = {
     primaryLabel?: string;
     groupBy?: string;
     extraMetrics?: { metric: string; label: string; valuesByName: Record<string, number>; tablesUsed: string[] }[];
+    // Metrics the agent asked for that this dimension genuinely can't
+    // compute (e.g. "units" for a per-customer breakdown) or that were
+    // dropped for exceeding the 2-extra-metric cap -- surfaced so the UI
+    // can be honest about it too, not just the chat reply.
+    omittedMetrics?: { metric: string; label: string; fellBackTo?: string }[];
   } | null;
   anomalies: string[][];
   pinnedPages: PageLink[];
