@@ -36,8 +36,11 @@ function isRateLimited(userId: number): boolean {
 
 // Bounds how long a single chat turn can hang -- a stuck OpenAI call or a
 // stuck DB connection inside the backend used to be able to hold this
-// request open indefinitely.
-const REQUEST_TIMEOUT_MS = 45_000;
+// request open indefinitely. Kept a few seconds above the backend's own
+// internal timeout (readonly-api.mjs) so that server's own, more specific
+// "Request timed out" error is what the user sees, rather than this proxy
+// aborting first and masking it.
+const REQUEST_TIMEOUT_MS = 60_000;
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();

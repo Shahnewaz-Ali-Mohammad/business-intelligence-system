@@ -36,8 +36,14 @@ const BIND_HOST = process.env.API_HOST ?? '127.0.0.1';
 
 // Bounds how long a single request can tie up this server -- a stuck OpenAI
 // or DB call used to be able to hang a request (and its DB connection)
-// indefinitely.
-const REQUEST_TIMEOUT_MS = 40_000;
+// indefinitely. A real chat turn can legitimately involve several
+// sequential OpenAI calls (scope/report/needs-data gates, a draft, a
+// fact-check, and occasionally one redraft + a second fact-check), so a
+// heavier request (e.g. a 20-row customer breakdown with a chart) can
+// genuinely take longer than a simple one -- 40s was tight enough that a
+// normal, non-buggy turn hit it and got killed. 55s gives real multi-step
+// turns realistic headroom while still bounding a truly stuck call.
+const REQUEST_TIMEOUT_MS = 55_000;
 
 function withTimeout(promise, ms) {
   let timer;
