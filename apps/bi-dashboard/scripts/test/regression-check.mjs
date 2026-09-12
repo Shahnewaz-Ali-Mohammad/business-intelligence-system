@@ -178,6 +178,24 @@ testCase(
     if (r.data === null) throw new Error('expected a real data lookup');
   },
 );
+testCase(
+  'REGRESSION (customerSort/sortDirection ambiguity): bottom customers BY REVENUE must use sortDirection, not customerSort',
+  'who are our bottom 5 customers by revenue?',
+  (r) => {
+    const mb = r.data?.metricBreakdown;
+    if (!mb) throw new Error('expected a metricBreakdown result for a revenue-by-customer ranking question');
+    if (mb.groupBy !== 'customer') throw new Error(`expected groupBy "customer", got "${mb.groupBy}"`);
+    if (mb.primaryMetric !== 'revenue') throw new Error(`expected primaryMetric "revenue", got "${mb.primaryMetric}"`);
+    const values = mb.rows.map((row) => row.value);
+    const isAscending = values.every((v, i) => i === 0 || v >= values[i - 1]);
+    if (!isAscending) {
+      throw new Error(
+        `expected the bottom-N rows sorted ascending (lowest revenue first) -- got ${JSON.stringify(values)}. ` +
+          'This is the customerSort/sortDirection mixup: customerSort only reorders the unrelated order-count list.',
+      );
+    }
+  },
+);
 testCase('comparison: this month vs last month', 'compare total revenue this month to last month', (r) => {
   if (r.data === null) throw new Error('expected a real data lookup');
   if (!r.data.periodComparison) throw new Error('expected periodComparison to be populated for a period-over-period question');
