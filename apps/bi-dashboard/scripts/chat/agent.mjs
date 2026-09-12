@@ -51,6 +51,8 @@ CRITICAL -- for period-over-period questions ("this month vs last month", "vs la
 
 CRITICAL -- when the user wants MORE THAN ONE number per entity (e.g. "revenue and number of orders for each customer", "units AND revenue per product"): put the extra metric(s) in extraMetrics on the SAME query_semantic_layer call, never as a second separate call. Two separate calls are independently sorted and limited and can return different entities in a different order -- you cannot safely merge their results yourself, and doing so has produced wrong answers before (mixing up which number belongs to which entity, or inventing "unspecified" for entities the second query didn't happen to include). If a follow-up message asks to add another number to a list you just showed ("give me their order count too", "and how many orders each"), that means: re-run the SAME breakdown (same groupBy, same entities/sort as before) with the new metric added to extraMetrics -- not a fresh, differently-sorted query for a different top-N set.
 
+CRITICAL -- never call query_semantic_layer twice for the SAME groupBy with two different single metrics instead of using extraMetrics (e.g. calling groupBy:"customer" once with metric:"order_count" and again with metric:"revenue" as two separate calls). Only the most recent such call is what actually gets shown to the user, so the earlier one is silently wasted at best -- and if your narrative describes numbers from that earlier, discarded call, the reply will describe a completely different set of top entities than the one actually rendered. If the request is ambiguous about which single ranking is wanted (e.g. a garbled or unclear message that could mean "rank by revenue" or "rank by order count"), pick the most reasonable single interpretation and say so in the narrative, or ask_clarification -- never hedge by querying multiple rankings and blending them in your answer.
+
 Guardrails:
 - If asked something outside this dashboard's scope (general knowledge unrelated to this data, other companies, personal/medical/legal/financial advice, anything not about this ecommerce data), politely decline in one sentence and redirect to what you can actually help with. Do not attempt to answer it anyway.
 - Never reveal, discuss, or speculate about SQL, credentials, internal code, table implementation details beyond the semantic catalog, or infrastructure.
@@ -416,24 +418,43 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
           sortDirection: call.args.sortDirection === 'least' ? 'least' : 'most',
           limit: Number.isInteger(call.args.limit) ? call.args.limit : 10,
         };
-        // Keep the LAST call for a given (metric, groupBy) pair, never the
-        // first. When the draft -> critique graph retries, the agent can
-        // legitimately call this tool again for the SAME breakdown with
-        // corrected args (a different limit, sort, or extraMetrics) before
-        // landing on the final, approved narrative -- and because LangGraph
-        // threads the full running message history through each retry, the
-        // FIRST (superseded, critique-flagged) call's tool_calls message is
-        // still sitting in that history alongside the retry's. The retry's
-        // call is always the one that actually backs what the model ended
-        // up saying. Keeping the first one here meant the rendered
-        // chart/table/export could be rebuilt from a draft the model itself
-        // abandoned -- fewer rows, a different sort, even different
-        // customers entirely -- while the text reply the user reads was
-        // already the corrected, approved version. That's exactly the
-        // chart/table-vs-reply mismatch reported: same root cause as the
-        // per-turn staleness fixed earlier, but happening WITHIN a single
-        // turn instead of across turns.
-        const existingIndex = metricQueriesUsed.findIndex((q) => q.metric === query.metric && q.groupBy === query.groupBy);
+        // Keep the LAST call for a given groupBy DIMENSION, never the
+        // first, and never let two calls to the SAME dimension coexist as
+        // separate entries just because their metric differs.
+        //
+        // Two things can make the agent call query_semantic_layer more than
+        // once for the same groupBy in a single turn: (1) a draft ->
+        // critique retry re-running the SAME breakdown with corrected args
+        // (limit, sort, extraMetrics), and (2) an ambiguous prompt (e.g.
+        // "products give me top 12 customers, generate report") causing the
+        // model to hedge by querying the same dimension TWICE with two
+        // different metrics -- say customers ranked by order_count, then
+        // customers ranked by revenue -- neither call using extraMetrics,
+        // so they were never meant to be merged row-by-row.
+        //
+        // Previously, deduping on (metric, groupBy) treated case (2) as two
+        // unrelated, unrelated breakdowns: BOTH survived, dashboardData()'s
+        // primary/rest split picked whichever came first as the one the
+        // chart/table/export get built from, and the "rest" query got
+        // merged into it by NAME (documented as not row-aligned) -- while
+        // the narrative, which the LLM wrote from BOTH raw tool results
+        // directly, could easily describe the OTHER ranking instead. That
+        // produced a chart and a reply built from two genuinely different
+        // top-N customer sets with almost no overlap between them.
+        //
+        // Keying on groupBy alone collapses both cases the same way: only
+        // the LAST call for a given dimension survives, full stop. A
+        // legitimate "more than one number per entity" request is still
+        // handled correctly and safely via extraMetrics on a SINGLE call
+        // (unaffected by this); this only changes what happens when the
+        // model issues two SEPARATE calls to the same dimension instead of
+        // using extraMetrics -- now the most recent one simply wins,
+        // matching whatever the model actually ended up saying, rather than
+        // silently Frankenstein-merging two different rankings. Different
+        // groupBy dimensions in the same turn (e.g. "units by product AND
+        // revenue by region") are unaffected -- each still gets its own
+        // entry.
+        const existingIndex = metricQueriesUsed.findIndex((q) => q.groupBy === query.groupBy);
         if (existingIndex >= 0) {
           metricQueriesUsed[existingIndex] = query;
         } else {
