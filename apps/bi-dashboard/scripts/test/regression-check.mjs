@@ -66,6 +66,21 @@ testCase('out of scope: unrelated topic', 'who do you think will win the champio
   if (r.tablesUsed.length !== 0) throw new Error('expected empty tablesUsed for an out-of-scope decline');
 });
 
+testCase(
+  'REGRESSION (scope-gate false decline bug): "can i get order status" must NOT be declined as out-of-scope',
+  'can i get order status',
+  (r) => {
+    if (r.data === null) throw new Error('a genuinely in-scope order-status question was declined as out-of-scope -- scope gate regression');
+  },
+);
+testCase(
+  'REGRESSION variant: "order status report" must NOT be declined as out-of-scope',
+  'order status report',
+  (r) => {
+    if (r.data === null) throw new Error('a genuinely in-scope order-status report request was declined as out-of-scope -- scope gate regression');
+  },
+);
+
 // ---------------------------------------------------------------------
 // Group B -- single metric x every dimension (the core "does it actually
 // compute what was asked" matrix)

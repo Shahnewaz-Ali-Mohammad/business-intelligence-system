@@ -195,7 +195,17 @@ async function checkNeedsDataLookup(message, history = []) {
 // which of the three fixed early-return shapes (out-of-scope decline,
 // greeting/meta, or "run the real agent") applies.
 export function decideEntryRoute({ scope, needsData }) {
-  if (!scope.inScope) {
+  // Same corroboration principle as the greeting branch below, applied to
+  // the OTHER consequential decision this gate makes. A live bug ("can i
+  // get order status" and "order status report" -- both squarely in scope,
+  // "status" is a real supported dimension -- both getting declined as
+  // out-of-scope) showed the scope gate's inScope=false verdict was being
+  // trusted alone, with zero recovery, exactly like the greeting
+  // misclassification fixed earlier. If the independent needs-data gate
+  // thinks this message genuinely needs a real store-data lookup, that's
+  // strong evidence it is NOT actually off-topic, so don't decline it on
+  // the scope gate's word alone.
+  if (!scope.inScope && !needsData.needsDataLookup) {
     return { route: 'out_of_scope' };
   }
   // Only short-circuit to the canned greeting/meta reply when BOTH
