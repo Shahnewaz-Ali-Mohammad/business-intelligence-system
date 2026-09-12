@@ -1,6 +1,26 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { dashboardData } from './lib/dashboard-data.mjs';
 import { runBiAgent } from './chat/agent.mjs';
+
+// A plain append-only file next to this script, so a real failure's full
+// detail (message + stack) survives even if nobody is watching this
+// process's stdout at the moment it happens -- console.error alone means
+// the only copy of an error lives in terminal scrollback, gone the moment
+// the terminal is closed or scrolled past.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ERROR_LOG_PATH = path.join(__dirname, '..', 'chat-errors.log');
+
+function logErrorToFile(label, error) {
+  try {
+    const entry = `[${new Date().toISOString()}] ${label}: ${error?.stack ?? error?.message ?? String(error)}\n`;
+    fs.appendFileSync(ERROR_LOG_PATH, entry);
+  } catch {
+    // Never let logging itself take down a request.
+  }
+}
 
 const port = Number(process.env.API_PORT ?? 4100);
 
@@ -56,6 +76,7 @@ const server = http.createServer(async (request, response) => {
         // into a generic message before it reaches a browser, but this
         // server shouldn't be the one deciding what's safe to expose.
         console.error('[chat] request failed entirely:', error);
+        logErrorToFile('[chat] request failed entirely', error);
         response.writeHead(400, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ error: 'Could not handle chat request.' }));
       }
@@ -84,6 +105,7 @@ const server = http.createServer(async (request, response) => {
     response.end(JSON.stringify(data));
   } catch (error) {
     console.error('[dashboard] request failed:', error);
+    logErrorToFile('[dashboard] request failed', error);
     response.writeHead(500, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify({ error: 'Database read failed.' }));
   }
