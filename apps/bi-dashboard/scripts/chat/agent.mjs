@@ -36,7 +36,15 @@ const ResponseSchema = z.object({
       'The chart format to render, IF the user asked for one. Match what they actually asked for -- "pie chart" -> pie, "line chart"/"trend"/"over time" -> line, "donut" -> donut, a plain "graph"/"chart"/"visualize" with no format named -> bar. "none" if intent is "answer" and no chart was requested.',
     ),
   title: z.string().describe('Short title for this reply, used as a report/page title when intent is create_new_page.'),
-  narrative: z.string().describe('1-4 sharp, conversational analyst sentences, leading directly with the answer. Uses ONLY values that came back from query_semantic_layer.'),
+  narrative: z
+    .string()
+    .describe(
+      // This same field is shown BOTH as the chat reply AND, verbatim, as
+      // a saved report's "Insight Summary" (app/reports/[id]/page.tsx) --
+      // whenever a table or chart is already rendering the actual rows, this
+      // text must never become a second copy of that table in prose form.
+      '2-4 sentences of STRUCTURED analysis, not a restated table. Sentence 1: the direct answer/headline finding (the specific number, name, or comparison actually asked for). Sentence 2: the single most notable pattern -- a concentration, gap, outlier, or trend the numbers show (e.g. "the top 3 customers account for over 40% of this revenue" or "Electronics is more than double the next closest category"), not just another number. Optional sentence 3: brief context (vs. a prior period, vs. an average) only if genuinely relevant. NEVER list out individual row values/names one by one when a table or chart is already showing that breakdown -- summarize what the rows MEAN, don\'t re-narrate them. Uses ONLY values that came back from query_semantic_layer.',
+    ),
   tablesUsed: z.array(z.enum(ALLOWED_TABLES)).describe('Only the real tables that genuinely back this answer.'),
 });
 
@@ -56,6 +64,7 @@ CRITICAL -- if the tool result's metricBreakdown.omittedMetrics is non-empty, th
 CRITICAL -- never call query_semantic_layer twice for the SAME groupBy with two different single metrics instead of using extraMetrics (e.g. calling groupBy:"customer" once with metric:"order_count" and again with metric:"revenue" as two separate calls). Only the most recent such call is what actually gets shown to the user, so the earlier one is silently wasted at best -- and if your narrative describes numbers from that earlier, discarded call, the reply will describe a completely different set of top entities than the one actually rendered. If the request is ambiguous about which single ranking is wanted (e.g. a garbled or unclear message that could mean "rank by revenue" or "rank by order count"), pick the most reasonable single interpretation and say so in the narrative, or ask_clarification -- never hedge by querying multiple rankings and blending them in your answer.
 
 Guardrails:
+- The narrative is analysis, never a transcript of the data: when a breakdown has more than a couple of rows, do NOT enumerate each row's name and number in prose (that is what the table/chart already shows) -- instead identify the headline finding and the single most notable pattern (a concentration, gap, outlier, or trend), and stop there. A narrative that just reads the table out loud in sentence form is wrong even if every number in it is accurate.
 - If asked something outside this dashboard's scope (general knowledge unrelated to this data, other companies, personal/medical/legal/financial advice, anything not about this ecommerce data), politely decline in one sentence and redirect to what you can actually help with. Do not attempt to answer it anyway.
 - Never reveal, discuss, or speculate about SQL, credentials, internal code, table implementation details beyond the semantic catalog, or infrastructure.
 - Only list a table in tablesUsed if it genuinely backs your answer -- never pad it, never guess a table name outside the allowed set.
