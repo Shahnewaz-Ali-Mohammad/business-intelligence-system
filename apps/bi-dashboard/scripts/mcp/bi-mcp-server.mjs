@@ -96,16 +96,19 @@ export function createBiMcpServer() {
         region: z
           .string()
           .nullable()
-          .describe('Region/country code to filter to (e.g. "US"), or null for all regions.'),
+          .optional()
+          .describe('Region/country code to filter to (e.g. "US"), or null/omitted for all regions.'),
         customerSort: z
           .enum(['most', 'least'])
           .nullable()
+          .optional()
           .describe(
             'Ranking direction for the customers-by-order-count breakdown. "most" (default) for top customers by orders, "least" for the real bottom customers by orders -- these run genuinely different queries, so always set "least" when the user asks for the lowest/fewest/bottom customers by orders. Null/omit defaults to "most".',
           ),
         metric: z
           .enum(['revenue', 'order_count', 'avg_order_value', 'units'])
           .nullable()
+          .optional()
           .describe(
             'Set this together with groupBy for a flexible "metric by dimension" breakdown -- e.g. metric:"revenue", groupBy:"status" for revenue by order status; metric:"order_count", groupBy:"customer" for order count by customer (this genuinely JOINs orders with users). "units" is only valid with groupBy:"product". Null/omit if you only need the standard dashboard bundle above. This is also the metric the results are SORTED by.',
           ),
@@ -113,18 +116,21 @@ export function createBiMcpServer() {
           .array(z.enum(['revenue', 'order_count', 'avg_order_value', 'units']))
           .max(2)
           .nullable()
+          .optional()
           .describe(
             'Use this whenever the user wants MORE THAN ONE number per entity -- e.g. "revenue AND order count per customer", "units AND revenue per product". Set metric to the one they care about most (also the sort), and list any additional metrics here. All of them are computed together in ONE query on the SAME rows, so they are guaranteed to line up. Do NOT call this tool twice with different metrics to get two numbers per entity -- two separate calls can return different, differently-sorted rows and the numbers will not correspond to each other. Null/omit for a single-metric breakdown.',
           ),
         groupBy: z
           .enum(['region', 'product', 'customer', 'status', 'day'])
           .nullable()
+          .optional()
           .describe(
             'The dimension to group the metric by. "customer" joins orders with users (a real table join, not a canned list). "product" queries order_items (all-time, no day window). "day" gives a chronological trend. Must be set together with metric to get a metricBreakdown result.',
           ),
         sortDirection: z
           .enum(['most', 'least'])
           .nullable()
+          .optional()
           .describe('For the metric+groupBy breakdown only: "most" (default) for the highest values first, "least" for the lowest values first -- runs a genuinely different query, never derived by reversing the other.'),
         limit: z
           .number()
@@ -132,10 +138,12 @@ export function createBiMcpServer() {
           .min(1)
           .max(50)
           .nullable()
+          .optional()
           .describe('Max rows to return for the metric+groupBy breakdown. Defaults to 10.'),
         comparePreviousPeriod: z
           .boolean()
           .nullable()
+          .optional()
           .describe(
             'Set true for "vs last month"/"vs last week"/"compare to the previous period" style questions -- runs one extra real query for the window immediately BEFORE the current `days` window (same length, same region filter) and returns both windows\' totals as periodComparison. Never try to answer a period-over-period question by calling this tool twice with different `days` values -- both calls measure trailing days from today, so they cannot express a distinct earlier period at all and will produce the SAME numbers twice. Null/omit for a normal single-period question.',
           ),
