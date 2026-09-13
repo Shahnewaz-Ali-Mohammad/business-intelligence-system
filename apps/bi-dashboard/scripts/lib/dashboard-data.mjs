@@ -436,6 +436,24 @@ const METRIC_EXPR = {
   },
 };
 
+// "number of customers" (distinct customers, not orders) genuinely did not
+// exist as a computable metric anywhere in this file -- there was no
+// customer_count entry in METRIC_EXPR at all. A request like "customers per
+// region" had no real query behind it, so the chat agent had nothing
+// grounded to answer with; the correct behavior for an unsupported metric
+// is the existing fallback/omission reporting in buildMetricSelectList, but
+// that only works if the metric is a recognized key in the first place.
+// customer_count needs the orders table's customer foreign key column,
+// which (unlike revenue/order_count/avg_order_value) is only known at
+// runtime via findOrdersCustomerColumn -- so it can't be a static entry in
+// METRIC_EXPR. This builds the same expression table with customer_count
+// added once the FK column has been resolved for this call.
+function ordersMetricExprWithCustomerCount(fkCol) {
+  return fkCol
+    ? { ...METRIC_EXPR.orders, customer_count: `COUNT(DISTINCT o.${fkCol})` }
+    : METRIC_EXPR.orders;
+}
+
 // Builds "<expr> AS value, <expr2> AS extra_0, <expr3> AS extra_1" -- extra
 // metrics computed in the SAME query as the primary one, on the SAME
 // grouped rows. This is what lets "revenue AND order count per customer"
@@ -552,8 +570,9 @@ async function computeMetricBreakdown(
   // that", which is a much worse failure mode than a visible error: it's
   // indistinguishable from a correct, empty answer.
   if (groupBy === 'region') {
+      const regionFkCol = await findOrdersCustomerColumn(connection);
       const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
-        buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'revenue');
+        buildMetricSelectList(ordersMetricExprWithCustomerCount(regionFkCol), metric, extraMetrics, 'revenue');
       const rows = await readOnlyQuery(
         connection,
         `
@@ -572,13 +591,14 @@ async function computeMetricBreakdown(
         omittedMetricNames,
         primaryMetricUsed,
         primaryMetricFellBack,
-        tablesUsed: ['orders'],
+        tablesUsed: regionFkCol ? ['orders', 'users'] : ['orders'],
       };
     }
 
     if (groupBy === 'status') {
+      const statusFkCol = await findOrdersCustomerColumn(connection);
       const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
-        buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'order_count');
+        buildMetricSelectList(ordersMetricExprWithCustomerCount(statusFkCol), metric, extraMetrics, 'order_count');
       const rows = await readOnlyQuery(
         connection,
         `
@@ -597,7 +617,7 @@ async function computeMetricBreakdown(
         omittedMetricNames,
         primaryMetricUsed,
         primaryMetricFellBack,
-        tablesUsed: ['orders'],
+        tablesUsed: statusFkCol ? ['orders', 'users'] : ['orders'],
       };
     }
 
@@ -610,8 +630,9 @@ async function computeMetricBreakdown(
       // was actually asked for (with the same documented, reported fallback
       // when it's genuinely unsupported), instead of a second, inconsistent
       // hardcoded path that only ever silently returned revenue.
+      const dayFkCol = await findOrdersCustomerColumn(connection);
       const { selectSql, extraMetricNames, omittedMetricNames, primaryMetricUsed, primaryMetricFellBack } =
-        buildMetricSelectList(METRIC_EXPR.orders, metric, extraMetrics, 'revenue');
+        buildMetricSelectList(ordersMetricExprWithCustomerCount(dayFkCol), metric, extraMetrics, 'revenue');
       const rows = await readOnlyQuery(
         connection,
         `
@@ -630,7 +651,7 @@ async function computeMetricBreakdown(
         omittedMetricNames,
         primaryMetricUsed,
         primaryMetricFellBack,
-        tablesUsed: ['orders'],
+        tablesUsed: dayFkCol ? ['orders', 'users'] : ['orders'],
       };
     }
 
@@ -724,6 +745,7 @@ const METRIC_LABELS = {
   units: 'Units',
   order_count: 'Orders',
   avg_order_value: 'Avg Order Value',
+  customer_count: 'Customers',
 };
 
 // A single chat turn that generates a report calls dashboardData() at

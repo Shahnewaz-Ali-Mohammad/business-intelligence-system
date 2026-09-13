@@ -106,19 +106,19 @@ export function createBiMcpServer() {
             'Ranking direction for the customers-by-order-count breakdown. "most" (default) for top customers by orders, "least" for the real bottom customers by orders -- these run genuinely different queries, so always set "least" when the user asks for the lowest/fewest/bottom customers by orders. Null/omit defaults to "most".',
           ),
         metric: z
-          .enum(['revenue', 'order_count', 'avg_order_value', 'units'])
+          .enum(['revenue', 'order_count', 'avg_order_value', 'units', 'customer_count'])
           .nullable()
           .optional()
           .describe(
-            'Set this together with groupBy for a flexible "metric by dimension" breakdown -- e.g. metric:"revenue", groupBy:"status" for revenue by order status; metric:"order_count", groupBy:"customer" for order count by customer (this genuinely JOINs orders with users). "units" is only valid with groupBy:"product". Null/omit if you only need the standard dashboard bundle above. This is also the metric the results are SORTED by.',
+            'Set this together with groupBy for a flexible "metric by dimension" breakdown -- e.g. metric:"revenue", groupBy:"status" for revenue by order status; metric:"order_count", groupBy:"customer" for order count by customer (this genuinely JOINs orders with users). "units" is only valid with groupBy:"product". "customer_count" is the number of DISTINCT customers (not orders) and is only valid with groupBy:"region", "status", or "day" -- never with groupBy:"customer" (each row there already IS one customer) or groupBy:"product" (order_items has no customer link). Null/omit if you only need the standard dashboard bundle above. This is also the metric the results are SORTED by.',
           ),
         extraMetrics: z
-          .array(z.enum(['revenue', 'order_count', 'avg_order_value', 'units']))
+          .array(z.enum(['revenue', 'order_count', 'avg_order_value', 'units', 'customer_count']))
           .max(2)
           .nullable()
           .optional()
           .describe(
-            'Use this whenever the user wants MORE THAN ONE number per entity -- e.g. "revenue AND order count per customer", "units AND revenue per product". Set metric to the one they care about most (also the sort), and list any additional metrics here. All of them are computed together in ONE query on the SAME rows, so they are guaranteed to line up. Do NOT call this tool twice with different metrics to get two numbers per entity -- two separate calls can return different, differently-sorted rows and the numbers will not correspond to each other. Null/omit for a single-metric breakdown.',
+            'Use this whenever the user wants MORE THAN ONE number per entity -- e.g. "revenue AND order count per customer", "units AND revenue per product", "number of customers AND revenue per region". Set metric to the one they care about most (also the sort), and list any additional metrics here. All of them are computed together in ONE query on the SAME rows, so they are guaranteed to line up. Do NOT call this tool twice with different metrics to get two numbers per entity -- two separate calls can return different, differently-sorted rows and the numbers will not correspond to each other. Null/omit for a single-metric breakdown.',
           ),
         groupBy: z
           .enum(['region', 'product', 'customer', 'status', 'day'])
