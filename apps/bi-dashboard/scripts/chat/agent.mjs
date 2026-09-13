@@ -335,6 +335,50 @@ const GraphState = Annotation.Root({
   }),
 });
 
+// The agent can call query_semantic_layer more than once in a single turn
+// for the SAME groupBy dimension -- a draft/critique retry re-running the
+// same breakdown with corrected args, or an ambiguous request causing two
+// differently-sorted/limited queries for the same dimension. Whatever
+// finally becomes the rendered `data` only ever reflects the LAST call for
+// a given groupBy (see the metricQueriesUsed dedup below, in runBiAgent) --
+// so grounding the narrative against every tool call this turn, including
+// ones that got superseded and excluded from what's actually rendered, let
+// a narrative cite real numbers from a DISCARDED call and still pass the
+// critique gate as "grounded," while the table/chart the user actually
+// sees came from the different, later call. That produced a narrative and
+// a table describing two genuinely different query results in the same
+// report, with no error anywhere in the pipeline. This mirrors the exact
+// same "last call per groupBy wins" rule used to build `data`, so the
+// critique step can never certify a narrative against a call that isn't
+// the one the user ends up looking at.
+export function extractWinningToolOutputs(messages) {
+  const callInfoById = new Map();
+  for (const m of messages) {
+    const calls = m?.tool_calls;
+    if (!Array.isArray(calls)) continue;
+    for (const call of calls) {
+      if (call?.id) callInfoById.set(call.id, { name: call.name, args: call.args ?? {} });
+    }
+  }
+
+  const winningByGroupBy = new Map();
+  const otherOutputs = [];
+  for (const m of messages) {
+    if (m?.getType?.() !== 'tool') continue;
+    const info = callInfoById.get(m.tool_call_id);
+    const content = String(m.content).slice(0, 4000);
+    if (info?.name === 'query_semantic_layer' && info.args?.metric && info.args?.groupBy) {
+      // Overwrite, never append -- only the most recent call for this
+      // dimension should ever be treated as ground truth, exactly matching
+      // which call's data actually gets rendered.
+      winningByGroupBy.set(info.args.groupBy, content);
+    } else {
+      otherOutputs.push(content);
+    }
+  }
+  return [...otherOutputs, ...winningByGroupBy.values()];
+}
+
 async function draftNode(state) {
   const tools = await getAgentTools();
   const model = new ChatOpenAI({
@@ -344,13 +388,12 @@ async function draftNode(state) {
   });
   const agent = createReactAgent({ llm: model, tools, responseFormat: ResponseSchema });
   const result = await agent.invoke({ messages: state.messages });
-  const toolOutputs = (result.messages ?? [])
-    .filter((m) => m?.getType?.() === 'tool')
-    .map((m) => String(m.content).slice(0, 4000));
+  const resultMessages = result.messages ?? [];
+  const toolOutputs = extractWinningToolOutputs(resultMessages);
   return {
     structured: result.structuredResponse,
     toolOutputs,
-    lastAgentMessages: result.messages ?? [],
+    lastAgentMessages: resultMessages,
   };
 }
 
