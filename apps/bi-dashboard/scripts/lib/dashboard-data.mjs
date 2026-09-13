@@ -361,7 +361,7 @@ async function computeRepeatCustomers(connection) {
 // count are a completely different set of rows than the top-N. Falls back
 // to an empty list (never throws) if we can't confidently resolve the
 // customer link / name columns.
-async function computeTopCustomersByOrders(connection, direction = 'DESC', limit = 10) {
+async function computeTopCustomersByOrders(connection, direction = 'DESC', limit = 10, windowCutoff = null) {
   try {
     const fkCol = await findOrdersCustomerColumn(connection);
     if (!fkCol) return [];
@@ -377,6 +377,17 @@ async function computeTopCustomersByOrders(connection, direction = 'DESC', limit
 
     const safeDirection = direction === 'ASC' ? 'ASC' : 'DESC';
     const safeLimit = Number.isInteger(limit) && limit > 0 && limit <= 50 ? limit : 10;
+    // Every other figure in the same bundle (revenueTrend, region, status)
+    // is scoped to the active day window -- this one was not, so it silently
+    // returned each customer's ALL-TIME order count while everything else on
+    // screen (and the flexible per-customer breakdown the chat agent also
+    // queries) described "last N days." Both numbers were real, which is
+    // exactly why a chat narrative that picked this field instead of the
+    // windowed metricBreakdown looked plausible but described a completely
+    // different, unbounded time range -- reproducibly, since this query has
+    // no randomness. Scope it the same way the rest of the bundle already does.
+    const windowClause = windowCutoff ? 'WHERE DATE(o.ordered_at) >= ?' : '';
+    const windowParam = windowCutoff ? [windowCutoff] : [];
 
     const rows = await readOnlyQuery(
       connection,
@@ -386,10 +397,12 @@ async function computeTopCustomersByOrders(connection, direction = 'DESC', limit
           COUNT(*) AS order_count
         FROM orders o
         JOIN users u ON u.${usersPk} = o.${fkCol}
+        ${windowClause}
         GROUP BY o.${fkCol}, ${nameExpr}
         ORDER BY order_count ${safeDirection}
         LIMIT ${safeLimit}
       `,
+      windowParam,
     );
 
     return rows.map((row) => ({
@@ -921,6 +934,8 @@ async function dashboardDataUncached({
     const topCustomersByOrders = await computeTopCustomersByOrders(
       connection,
       customerSort === 'least' ? 'ASC' : 'DESC',
+      10,
+      windowCutoff,
     );
 
     // Optional flexible "X by Y" breakdown requested by the MCP tool --
