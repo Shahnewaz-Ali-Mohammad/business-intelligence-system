@@ -2,6 +2,7 @@
 
 import { RevenueTrendChart } from '@/components/dashboard/charts/revenue-trend-chart';
 import { GenericMetricChart } from '@/components/dashboard/charts/generic-metric-chart';
+import { SmallMultiplesChart } from '@/components/dashboard/charts/small-multiples-chart';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
 // Picks which chart to render for a generated report/artifact based on what
@@ -32,29 +33,45 @@ export function ArtifactChartPicker({
 
   if (data.metricBreakdown && data.metricBreakdown.rows.length) {
     const { tablesUsed, extraMetrics, primaryLabel, omittedMetrics } = data.metricBreakdown;
-    // The chart itself can only plot one series -- when the report asked
-    // for more than one metric (e.g. units AND revenue by product), the
-    // chart shows the primary one and the subtitle points at the Table view
-    // for the rest, instead of silently dropping them. Anything the
-    // dimension genuinely couldn't compute at all (omittedMetrics) is
-    // called out here too, so the UI is never quietly showing fewer
-    // columns than were actually asked for with no explanation.
+    // Anything the dimension genuinely couldn't compute at all
+    // (omittedMetrics) is called out here, so the UI never quietly shows
+    // fewer columns than were actually asked for with no explanation.
     const fellBack = omittedMetrics?.find((m) => m.fellBackTo);
     const genuinelyOmitted = omittedMetrics?.filter((m) => !m.fellBackTo) ?? [];
-    const subtitle =
-      (extraMetrics && extraMetrics.length
-        ? `${primaryLabel ?? 'Value'} shown -- see Table view for ${extraMetrics.map((m) => m.label).join(', ')}`
-        : `Tables used: ${tablesUsed.join(', ') || 'orders'}`) +
-      (fellBack
-        ? ` (${fellBack.label} isn't available for this breakdown -- showing ${fellBack.fellBackTo} instead)`
-        : '') +
-      (genuinelyOmitted.length
-        ? ` (${genuinelyOmitted.map((m) => m.label).join(', ')} not available for this breakdown)`
-        : '');
+    const omissionNote =
+      (fellBack ? ` (${fellBack.label} isn't available for this breakdown -- showing ${fellBack.fellBackTo} instead)` : '') +
+      (genuinelyOmitted.length ? ` (${genuinelyOmitted.map((m) => m.label).join(', ')} not available for this breakdown)` : '');
+
+    // A single chart can only honestly plot ONE series -- when more than
+    // one metric was requested (e.g. "customers AND revenue by region"),
+    // those numbers are typically on completely different scales (dollars
+    // vs. a small headcount), so forcing them onto one shared axis either
+    // squashes one series flat or needs a dual-axis chart, which is widely
+    // considered bad practice (two independently-scaled axes make it easy
+    // to make unrelated series LOOK correlated). Small multiples -- one
+    // small chart per metric, same rows/order, each on its own real scale
+    // -- is the honest way to show all of them visually instead of
+    // silently dropping every metric but the first into a "see Table view"
+    // footnote.
+    if (extraMetrics && extraMetrics.length) {
+      return (
+        <div>
+          <SmallMultiplesChart
+            baseTitle={title}
+            primaryLabel={primaryLabel ?? 'Value'}
+            entries={data.metricBreakdown.rows}
+            extraMetrics={extraMetrics}
+            chartType={resolvedChartType}
+          />
+          {omissionNote ? <p className="mt-2 text-xs text-slate-500">{omissionNote.trim()}</p> : null}
+        </div>
+      );
+    }
+
     return (
       <GenericMetricChart
         title={title}
-        subtitle={subtitle}
+        subtitle={`Tables used: ${tablesUsed.join(', ') || 'orders'}${omissionNote}`}
         entries={data.metricBreakdown.rows}
         chartType={resolvedChartType}
       />
