@@ -5,7 +5,7 @@
 // This is the most important sync in the whole system — it encodes the
 // confirmed (not assumed) RefTypeID mapping from real production data.
 // See db/warehouse-schema.sql header comment and
-// claude/full-project-context.md section 3.7 for how this was verified.
+// the project's running decision-log doc, section 3.7, for how this was verified.
 //
 // BillingMaster is large (~12.4M rows at last check) and has UpdateDate +
 // EntryDate columns, so this uses TRUE INCREMENTAL sync — never a full

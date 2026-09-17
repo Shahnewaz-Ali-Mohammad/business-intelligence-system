@@ -13,6 +13,6 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 .vercel/
-Claude outputs/
+project-notes/
 apps/bi-dashboard/scripts/chat/*.csv
 apps/bi-warehouse/_tmp_orphan_check.mjs

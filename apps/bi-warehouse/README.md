@@ -90,7 +90,7 @@ If you ever find yourself writing a SQL query outside `src/etl/*` or
 
 ## Known open items before this is fully production-ready
 
-See `claude/full-project-context.md` (the project's running decision log)
+See the project's running decision-log doc (kept outside this repo)
 for the full list, but the two that block real use:
 
 1. **`tickets.js` is a placeholder** — the real TicketingDB ticket table

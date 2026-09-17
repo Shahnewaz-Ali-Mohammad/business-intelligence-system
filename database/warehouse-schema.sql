@@ -14,7 +14,7 @@
 --   RefTypeID 4  (MR = Money Receipt)               -> collection (Credit)
 --   RefTypeID 5  (REFUND)                            -> refund (Debit)
 --   RefTypeID 6  (ADJUSTMENT)                        -> adjustment (Credit)
--- See claude/full-project-context.md section 3.7 for the full confirmed
+-- See the project's running decision-log doc, section 3.7, for the full confirmed
 -- mapping and real row counts/totals used to verify this.
 -- ============================================================================
 
