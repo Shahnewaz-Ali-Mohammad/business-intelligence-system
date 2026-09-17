@@ -34,7 +34,15 @@ export function WorkspacePage({
             </div>
             {action}
           </header>
-          <div className={`min-h-0 flex-1 px-6 py-6 ${scroll ? 'overflow-y-auto' : 'overflow-hidden'}`}>{children}</div>
+          {/* FIX 2026-09-17: scrollable pages (Reports/Sessions) were ending
+              with only 24px of bottom padding (py-6), so on a shorter
+              browser window the last row -- often the pagination control --
+              sat flush against (or past) the window's bottom edge with
+              barely any breathing room, reading as "cut off" even though
+              overflow-y-auto technically let you scroll to it. pb-10 gives
+              real clearance below the last element on every scrollable
+              page, regardless of window height. */}
+          <div className={`min-h-0 flex-1 overflow-x-hidden px-4 pt-6 pb-10 sm:px-6 ${scroll ? 'overflow-y-auto' : 'overflow-hidden'}`}>{children}</div>
         </section>
       </div>
     </main>

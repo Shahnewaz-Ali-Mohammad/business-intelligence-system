@@ -1,6 +1,12 @@
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
 export function RepeatCustomersTable({ data }: { data: DashboardData }) {
+  // data.repeatCustomers is always [] now -- this ISP warehouse has no real
+  // "repeat customer" / cohort concept yet (see the TODO comment on
+  // repeatCustomers in scripts/lib/dashboard-data.mjs). This component is
+  // kept, rather than deleted, so it comes back to life automatically if a
+  // real cohort breakdown is ever added there; until then it renders
+  // nothing rather than showing stale or fabricated ecommerce-style rows.
   if (data.repeatCustomers.length === 0) return null;
 
   return (

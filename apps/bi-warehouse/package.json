@@ -1,0 +1,16 @@
+{
+  "name": "bi-warehouse",
+  "version": "0.1.0",
+  "description": "ETL sync + semantic layer + BI service functions for the ISP BI system warehouse (Postgres, fed from billGENIXDB / TicketingDB).",
+  "type": "module",
+  "scripts": {
+    "sync": "node src/etl/sync.mjs",
+    "migrate": "node scripts/run-migration.mjs"
+  },
+  "dependencies": {
+    "mssql": "^11.0.0",
+    "pg": "^8.13.0",
+    "dotenv": "^16.4.5",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}

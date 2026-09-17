@@ -2,10 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { FileSpreadsheet, LayoutGrid, Table2, Trash2 } from 'lucide-react';
+import { FileSpreadsheet, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
-import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
 import { getReportTable } from '@/lib/dashboard/report-table';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { DashboardData } from '@/lib/dashboard/metrics';
@@ -45,7 +44,6 @@ export default function ReportDetailPage() {
   const router = useRouter();
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
-  const [view, setView] = useState<'chart' | 'table'>('chart');
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
@@ -139,33 +137,7 @@ export default function ReportDetailPage() {
           ) : null}
         </section>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setView('chart')}
-            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-              view === 'chart' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            <LayoutGrid size={14} />
-            Chart
-          </button>
-          <button
-            type="button"
-            onClick={() => setView('table')}
-            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-              view === 'table' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            <Table2 size={14} />
-            Table
-          </button>
-        </div>
-
-        {view === 'chart' ? (
-          <ArtifactChartPicker title={report.title} topic={report.topic} chartType={report.chart_type} data={data} />
-        ) : (
-          <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
+        <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -191,7 +163,6 @@ export default function ReportDetailPage() {
               </table>
             </div>
           </section>
-        )}
 
         <div className="flex flex-col gap-2 md:hidden">
           <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel} disabled={exporting}>

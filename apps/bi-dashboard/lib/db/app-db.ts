@@ -1,7 +1,9 @@
 // Connection pool for the app's OWN database (bi_app) -- fully separate from
-// the read-only `ecommerce` business database used by scripts/readonly-api.mjs.
-// This pool is read-WRITE by design: it stores users, sessions, chat history,
-// and generated reports. It must never be pointed at `ecommerce`.
+// the read-only BI warehouse (Postgres, synced from billGENIXDB/TicketingDB)
+// used by scripts/readonly-api.mjs. This pool is read-WRITE by design: it
+// stores users, sessions, chat history, and generated reports. It must
+// never be pointed at the warehouse -- app state and analytical data stay
+// on two different databases on purpose.
 import mysql from 'mysql2/promise';
 
 let pool: mysql.Pool | null = null;

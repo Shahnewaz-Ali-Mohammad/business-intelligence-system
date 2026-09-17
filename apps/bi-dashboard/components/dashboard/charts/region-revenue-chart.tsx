@@ -9,7 +9,11 @@ export function RegionRevenueChart({ data }: { data: DashboardData }) {
     <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)] ring-1 ring-white">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-base font-bold text-slate-950">Revenue by Region</h2>
+          {/* "region" data key kept for this component's existing contract
+              (see dashboard-data.mjs) -- the values are real POP ids, not
+              ecommerce ship-country codes, so the visible label is
+              corrected here to say what it actually shows. */}
+          <h2 className="text-base font-bold text-slate-950">Billing by POP</h2>
           <p className="text-xs text-slate-500">{data.chartSources.region}</p>
         </div>
         <MoreHorizontal size={18} className="text-slate-400" />

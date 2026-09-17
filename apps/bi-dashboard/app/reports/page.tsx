@@ -19,7 +19,7 @@ export default function ReportsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const pageSize = 5;
+  const pageSize = 6; // standardized with Sessions list (was 5)
 
   const loadPage = useCallback((targetPage: number) => {
     setReports(null);
@@ -89,7 +89,7 @@ export default function ReportsPage() {
         </div>
       ) : (
         <>
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {reports.map((report) => (
               <section
                 key={report.id}
@@ -121,7 +121,7 @@ export default function ReportsPage() {
           </div>
 
           {totalPages > 1 ? (
-            <div className="mt-6 flex items-center justify-center gap-3">
+            <div className="mt-6 mb-2 flex items-center justify-center gap-3">
               <button
                 type="button"
                 onClick={() => loadPage(page - 1)}

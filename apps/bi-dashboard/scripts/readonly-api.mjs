@@ -1,3 +1,30 @@
+// DECISION (warehouse rewiring): keep this as a separate long-lived Node
+// process, rather than folding dashboardData()/runBiAgent() straight into
+// Next.js API routes now that the data source is Postgres and reachable
+// in-process. Reasons, weighed at the time of the rewiring:
+//   1. runBiAgent() keeps its own in-memory caches (cachedTools,
+//      cachedBiGraph, the OpenAI model clients) that are only worth having
+//      if they survive across requests -- a Next.js API route function can
+//      get re-instantiated per request/per serverless invocation depending
+//      on deployment target, which would silently defeat that caching and
+//      reopen the in-process MCP connection on every chat message.
+//   2. dashboardData()'s own 30s result cache (see dashboard-data.mjs) has
+//      the same "needs one long-lived process" requirement.
+//   3. This process's error-log-to-file behavior (logErrorToFile below) and
+//      its own request timeout wrapper are already tuned for exactly this
+//      shape; collapsing it into Next.js API routes would mean re-solving
+//      both inside route handlers instead of reusing what's already here.
+//   4. The actual DB client change (MySQL -> Postgres) was fully absorbed
+//      inside dashboard-data.mjs/agent.mjs -- this file never imported
+//      mysql2 or any MySQL-specific code directly, so there was no
+//      MySQL-shaped logic HERE that needed removing or replacing to make
+//      Postgres work. The two-process shape was never actually coupled to
+//      which database sat behind it.
+// If a future need arises to eliminate the extra process/port (e.g. to
+// simplify local dev, or because a serverless deployment target can't run
+// a second long-lived process at all), the fix is to move the caches above
+// into a shared module Next.js API routes can import once per server
+// instance -- not to remove the caches, since they exist for real reasons.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,7 +70,19 @@ const BIND_HOST = process.env.API_HOST ?? '127.0.0.1';
 // genuinely take longer than a simple one -- 40s was tight enough that a
 // normal, non-buggy turn hit it and got killed. 55s gives real multi-step
 // turns realistic headroom while still bounding a truly stuck call.
-const REQUEST_TIMEOUT_MS = 55_000;
+// FIX 2026-09-15: was 55_000. A real compound question ("total
+// collected amounts and billing details for pop 1 to 100") timed out
+// here -- confirmed in chat-errors.log as a plain 'Request timed out',
+// no other error underneath. A two-metric ask like that can mean two
+// real warehouse tool calls (get_revenue_summary + get_region_breakdown)
+// plus the draft/critique redraft cycle, each a real aggregate query
+// over multi-million-row fact tables -- right after the Postgres
+// container was recreated (cold cache, see the shared-memory fix),
+// those queries are slower than they'll be once warmed up. 90s gives a
+// genuinely heavy, multi-tool-call turn realistic room -- this does not
+// make the underlying queries faster, it just stops a legitimately slow
+// (not broken) turn from being killed before it finishes.
+const REQUEST_TIMEOUT_MS = 150_000; // FIX 2026-09-17: was 90s -- too short now that fact_collection has real 6.1M-row data to aggregate, plus the draft->critique->redraft loop can take up to 3 full LLM round-trips for one answer. Raised as an immediate unblock; the real fix is making the critique loop converge faster / cheaper (see agent.mjs's own TODO).
 
 function withTimeout(promise, ms) {
   let timer;
@@ -105,8 +144,18 @@ const server = http.createServer(async (request, response) => {
   const rawRegion = requestUrl.searchParams.get('region');
   const region = rawRegion && /^[A-Za-z]{2,10}$/.test(rawRegion) ? rawRegion.toUpperCase() : null;
 
+  // PERF FIX 2026-09-17: an optional `topic` query param lets a caller that
+  // only needs the cheap, always-fetched fields (plus one specific real
+  // breakdown) skip the rest -- see dashboard-data.mjs's own comment on
+  // `need()`. Validated against the same real topic list dashboardData
+  // itself understands; anything else falls through to the full fetch
+  // (needAll), matching the previous unconditional behavior exactly.
+  const ALLOWED_DASHBOARD_TOPICS = ['pops', 'packages', 'trend', 'top_customers', 'tickets', 'ticket_pops', 'tran_modes', 'tran_mode_by_pop', 'tran_mode_by_package'];
+  const rawTopic = requestUrl.searchParams.get('topic');
+  const topic = rawTopic && ALLOWED_DASHBOARD_TOPICS.includes(rawTopic) ? rawTopic : null;
+
   try {
-    const data = await withTimeout(dashboardData({ windowDays, region }), REQUEST_TIMEOUT_MS);
+    const data = await withTimeout(dashboardData({ windowDays, region, topic }), REQUEST_TIMEOUT_MS);
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(data));
   } catch (error) {

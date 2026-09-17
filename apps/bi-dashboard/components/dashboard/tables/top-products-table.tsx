@@ -6,7 +6,11 @@ export function TopProductsTable({ data }: { data: DashboardData }) {
     <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)] ring-1 ring-white">
       <div className="flex items-center justify-between border-b border-slate-200/80 bg-white px-5 py-4">
         <div>
-          <h2 className="text-base font-bold text-slate-950">Top Products by Revenue</h2>
+          {/* Relabeled from "Top Products by Revenue" -- there is no product
+              concept in ISP billing. This table is repurposed as the top
+              POPs (service areas) by real billing amount; see
+              scripts/lib/dashboard-data.mjs's topProducts mapping comment. */}
+          <h2 className="text-base font-bold text-slate-950">Top POPs by Billing</h2>
           <p className="text-xs text-slate-500">{data.chartSources.products}</p>
         </div>
         <Button variant="ghost" size="sm">View all</Button>
@@ -14,7 +18,7 @@ export function TopProductsTable({ data }: { data: DashboardData }) {
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500">
-            <tr>{['Product', 'Revenue', 'Share', 'Units', 'AOV', 'Source'].map((head) => <th key={head} className="px-4 py-3 font-semibold">{head}</th>)}</tr>
+            <tr>{['POP', 'Billed', 'Share', 'Orders (N/A)', 'AOV (N/A)', 'Source'].map((head) => <th key={head} className="px-4 py-3 font-semibold">{head}</th>)}</tr>
           </thead>
           <tbody>
             {data.topProducts.map((row) => (

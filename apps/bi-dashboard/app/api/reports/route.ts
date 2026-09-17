@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
 
-const PAGE_SIZE = 5;
+const PAGE_SIZE = 6; // standardized with Sessions list (was 5)
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();

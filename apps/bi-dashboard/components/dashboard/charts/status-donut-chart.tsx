@@ -11,7 +11,11 @@ export function StatusDonutChart({ data }: { data: DashboardData }) {
     <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)] ring-1 ring-white">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-base font-bold text-slate-950">Orders by Status</h2>
+          {/* Relabeled from "Orders by Status" -- there is no order-status
+              concept in ISP billing. Now shows the real billed/collected/
+              refunded/adjusted split (see dashboard-data.mjs's
+              channelRevenue mapping comment). */}
+          <h2 className="text-base font-bold text-slate-950">Billed / Collected / Refunded / Adjusted</h2>
           <p className="text-xs text-slate-500">{data.chartSources.channel}</p>
         </div>
         <MoreHorizontal size={18} className="text-slate-400" />

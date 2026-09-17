@@ -33,9 +33,16 @@ export async function GET(req: NextRequest) {
 
   const days = req.nextUrl.searchParams.get('days');
   const region = req.nextUrl.searchParams.get('region');
+  // PERF FIX 2026-09-17: pass an optional `topic` through so a caller that
+  // only needs one real breakdown (e.g. the background chat-page fetch,
+  // which only ever reads kpi labels + static chartSources + top POPs)
+  // doesn't pay for every breakdown in the system -- see readonly-api.mjs's
+  // own comment on this.
+  const topic = req.nextUrl.searchParams.get('topic');
   const upstreamUrl = new URL(DASHBOARD_API_INTERNAL_URL);
   if (days) upstreamUrl.searchParams.set('days', days);
   if (region) upstreamUrl.searchParams.set('region', region);
+  if (topic) upstreamUrl.searchParams.set('topic', topic);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);

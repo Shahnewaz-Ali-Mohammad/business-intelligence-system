@@ -40,7 +40,11 @@ function isRateLimited(userId: number): boolean {
 // internal timeout (readonly-api.mjs) so that server's own, more specific
 // "Request timed out" error is what the user sees, rather than this proxy
 // aborting first and masking it.
-const REQUEST_TIMEOUT_MS = 60_000;
+// FIX 2026-09-15: kept a few seconds above readonly-api.mjs's own
+// timeout (bumped 55s -> 90s there for the same reason) so that
+// server's own specific error is what the user sees, not this proxy
+// aborting first.
+const REQUEST_TIMEOUT_MS = 95_000;
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();

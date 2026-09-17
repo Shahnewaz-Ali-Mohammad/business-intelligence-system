@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { BarChart3, Database, Download, FileText, FolderOpen, Home, LayoutDashboard, Pin, Search, ShieldCheck, Star, Table2, X } from 'lucide-react';
+import { BarChart3, Database, Download, FileText, FolderOpen, LayoutDashboard, Pin, Search, ShieldCheck, Star, Table2, X } from 'lucide-react';
 import { StatusBadge } from './status-badge';
 import type { FilterHistoryEntry, PinnedView } from './types';
 
@@ -38,11 +38,11 @@ export function Sidebar({
 
       <div className="space-y-5 px-3.5 py-5">
         <nav className="space-y-1.5">
-          <button className="flex w-full items-center gap-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-3 text-left text-sm font-semibold text-blue-700 shadow-sm">
-            <Home size={17} />
-            Home Dashboard
-            <span className="ml-auto h-2 w-2 rounded-full bg-emerald-500" />
-          </button>
+          {/* Home Dashboard nav entry removed 2026-09-15 -- the route
+              itself now redirects to /chat (see app/page.tsx), so a link
+              here would just bounce through an extra hop. Left as a code
+              comment rather than silently gone in case the dashboard UI
+              path is revisited. */}
           {[
             ['Chat', '/chat', Search],
             ['Sessions', '/sessions', BarChart3],

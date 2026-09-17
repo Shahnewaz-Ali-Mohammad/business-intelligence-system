@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BarChart3, Check, Database, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ArtifactChartPicker } from '@/components/dashboard/charts/artifact-chart-picker';
 import { useAuth } from '@/components/auth/auth-provider';
 import { getReportTable } from '@/lib/dashboard/report-table';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
@@ -30,7 +29,7 @@ type Artifact = {
 
 const WELCOME_MESSAGE: Message = {
   role: 'assistant',
-  text: 'Hi. Ask about revenue, orders, regions, products, or request a report from the ecommerce DB.',
+  text: 'Hi. Ask about billing, collections, POPs, active customers, or support tickets, or request a report.',
 };
 
 async function saveMessage(sessionId: number, role: 'user' | 'assistant', text: string, tablesUsed?: string[]) {
@@ -70,14 +69,52 @@ async function saveReport(artifact: Artifact): Promise<boolean> {
   }
 }
 
-export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
+export function ChatWorkspace({ initialData = null }: { initialData?: DashboardData | null }) {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSessionId = searchParams.get('session');
 
+  // FIX 2026-09-17: previously the ONLY source of this data was the
+  // `initialData` prop, fetched server-side in app/chat/page.tsx BEFORE the
+  // page was allowed to render at all -- see that file's comment. Fetched
+  // here instead, after mount, so it never blocks the chat UI itself from
+  // appearing; it's only read later, when a message is actually sent (see
+  // activeData below), by which point this same-origin fetch has almost
+  // always already resolved.
+  const [homeData, setHomeData] = useState<DashboardData | null>(initialData);
+  useEffect(() => {
+    if (homeData) return;
+    let cancelled = false;
+    // PERF FIX 2026-09-17: this only ever feeds kpi labels + static
+    // chartSources + top-POP context (see activeData usage below) -- it
+    // never needed package/customer/ticket/transaction-mode breakdowns.
+    // topic=pops keeps that context real while skipping the full
+    // 386k-customer aggregation and every other breakdown this page never
+    // renders (see readonly-api.mjs/dashboard-data.mjs's own comments).
+    fetch('/api/dashboard-data?topic=pops')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: DashboardData | null) => {
+        if (!cancelled && data) setHomeData(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // FIX 2026-09-15: the loading bubble below used to say the same fixed
+  // sentence no matter how long a turn actually took -- a real compound
+  // question (two metrics, a wide POP range) can genuinely take up to the
+  // backend's own ~90s timeout (see readonly-api.mjs), and with no signal
+  // that it was still working, that looked identical to "frozen/broken".
+  // This escalates the message after 8s so a slow-but-working turn reads
+  // as slow, not dead.
+  const [slowRequest, setSlowRequest] = useState(false);
+  const slowRequestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [reportSaveState, setReportSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -86,7 +123,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
   const sessionSetupRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const activeData = artifact?.data ?? initialData;
+  const activeData = artifact?.data ?? homeData;
 
   useEffect(() => {
     if (authLoading || !user || !requestedSessionId) return;
@@ -149,6 +186,9 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
 
     setInput('');
     setLoading(true);
+    setSlowRequest(false);
+    if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current);
+    slowRequestTimerRef.current = setTimeout(() => setSlowRequest(true), 8_000);
     setMessages((prev) => [...prev, { role: 'user', text: message }]);
     const activeSessionId = await ensureSession(message);
     if (user && activeSessionId) {
@@ -171,8 +211,8 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
               page: 'chat',
               days: artifact?.days ?? 30,
               region: artifact?.region ?? null,
-              kpis: activeData.kpis.map((kpi) => kpi.label),
-              chartSources: activeData.chartSources,
+              kpis: activeData?.kpis?.map((kpi) => kpi.label) ?? [],
+              chartSources: activeData?.chartSources ?? null,
             },
           }),
         },
@@ -210,7 +250,18 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
       // current. Only an explicit create_new_page ever opens a NEW panel
       // that wasn't showing before -- a plain answer never spontaneously
       // pops one up.
-      if (result.data && (result.intent === 'create_new_page' || artifact)) {
+      if (result.askedClarification) {
+        // FIX 2026-09-17: a clarifying question means NOTHING was actually
+        // looked up this turn -- leaving a previous report panel on screen
+        // next to it silently implies that old, unrelated data (wrong
+        // topic, wrong metrics) answers the new question the user hasn't
+        // even gotten a chance to clarify yet (confirmed live: a package-
+        // report clarifying question was shown next to a leftover POP
+        // table). Clear the panel so a clarifying question always reads as
+        // "no report yet" rather than "here's your report" with the wrong
+        // one attached.
+        setArtifact(null);
+      } else if (result.data && (result.intent === 'create_new_page' || artifact)) {
         setArtifact({
           title: result.title,
           narrative: result.narrative,
@@ -230,7 +281,12 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
           : 'I could not complete that request.';
       setMessages((prev) => [...prev, { role: 'assistant', text: errorText }]);
     } finally {
+      if (slowRequestTimerRef.current) {
+        clearTimeout(slowRequestTimerRef.current);
+        slowRequestTimerRef.current = null;
+      }
       setLoading(false);
+      setSlowRequest(false);
     }
   }
 
@@ -327,7 +383,9 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
                 <Sparkles size={16} />
               </div>
               <div className="rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-500 shadow-sm">
-                Reading the database and preparing a grounded answer...
+                {slowRequest
+                  ? 'Still working -- this question needs more than one real database lookup, so it is taking longer than usual (up to ~90s for a heavy or multi-part question).'
+                  : 'Reading the database and preparing a grounded answer...'}
               </div>
             </div>
           ) : null}
@@ -345,7 +403,7 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
                 }
               }}
               className="max-h-32 min-h-16 flex-1 resize-none bg-transparent text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400"
-              placeholder="Ask anything about your ecommerce data..."
+              placeholder="Ask anything about billing, collections, POPs, or tickets..."
             />
             <Button
               type="submit"
@@ -370,7 +428,41 @@ export function ChatWorkspace({ initialData }: { initialData: DashboardData }) {
               <p className="text-sm text-slate-500">{artifact.narrative}</p>
             </div>
 
-            <ArtifactChartPicker title={artifact.title} topic={artifact.topic} chartType={artifact.chartType} data={artifact.data} />
+            {(() => {
+              const inlineTable = getReportTable(artifact.topic, artifact.data, artifact.chartType);
+              return (
+                <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+                  <div className="max-h-[360px] overflow-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                          {inlineTable.headers.map((header) => (
+                            <th key={header} className="px-3 py-2 font-semibold">{header}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {inlineTable.rows.length ? (
+                          inlineTable.rows.map((row, i) => (
+                            <tr key={i}>
+                              {row.map((cell, j) => (
+                                <td key={j} className="px-3 py-2 text-slate-700">{cell}</td>
+                              ))}
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={inlineTable.headers.length} className="px-3 py-6 text-center text-slate-400">
+                              No data available for this view.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="flex flex-wrap gap-2">
               {user ? (

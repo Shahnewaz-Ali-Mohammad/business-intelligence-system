@@ -208,9 +208,10 @@ testCase('report request: top 10 products by revenue', 'generate a report for th
   if (r.intent !== 'create_new_page') throw new Error(`expected intent create_new_page, got ${r.intent}`);
   if (!r.data?.metricBreakdown) throw new Error('expected a metricBreakdown to render the report from');
 });
-testCase('chart format request: pie chart of orders by status', 'show me a pie chart of orders by status', (r) => {
-  if (r.chartType !== 'pie') throw new Error(`expected chartType pie (explicitly requested), got ${r.chartType}`);
-});
+// Chart-format testCase removed 2026-09-17: chartType no longer exists on
+// runBiAgent's return value -- charts were removed from the app entirely
+// (tables only now, per direct user request). This test asserted a field
+// that doesn't exist anymore.
 
 function requireBreakdown(r, expectedMetric, expectedGroupBy) {
   const mb = r.data?.metricBreakdown;

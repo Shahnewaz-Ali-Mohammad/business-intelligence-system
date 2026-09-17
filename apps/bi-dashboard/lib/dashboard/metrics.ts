@@ -3,6 +3,12 @@ import 'server-only';
 import type { CustomerMix, Kpi, PageLink, TopCustomerByOrders } from '@/lib/dashboard/types';
 
 export type DashboardData = {
+  // FIX 2026-09-17: which financial columns (billed/collected/refunded/
+  // adjusted/outstanding) the user actually named this turn, for
+  // per-POP/per-package/per-customer tables -- empty/undefined means show
+  // every available column (the correct default for an unspecific ask, and
+  // for old saved reports that predate this field).
+  requestedMetrics?: string[];
   connected: boolean;
   source: string;
   dateRange: string;
@@ -21,6 +27,15 @@ export type DashboardData = {
   topCustomersByOrders: TopCustomerByOrders[];
   revenueTrend: { day: string; revenue: number; orders: number }[];
   regionRevenue: { region: string; revenue: number }[];
+  popFinancials: { pop: string; billed: number; collected: number; refunded: number; adjusted: number; outstanding: number; activeCustomers: number; collectionRate: number | null; billedShare: number | null }[];
+  packageFinancials: { packageId: string | number | null; packageName: string | null; billed: number; collected: number; outstanding: number; activeCustomers: number; collectionRate: number | null; billedShare: number | null; revenuePerActiveCustomer: number | null }[];
+  revenueTimeseriesFinancials: { day: string; billed: number; collected: number; refunded: number; adjusted: number }[];
+  customerFinancials: { customerId: string; customerName: string | null; billed: number; collected: number; outstanding: number; refunded: number; adjusted: number; packageId: string | null; packageName: string | null; collectedByTranMode: Record<string, number> }[];
+  tranModeBreakdown: { tranModeId: string | number; collected: number }[];
+  tranModeByPop: { dimValue: string | number; byTranMode: Record<string, number> }[];
+  tranModeByPackage: { dimValue: string | number; byTranMode: Record<string, number> }[];
+  ticketPopBreakdown: { pop: string; count: number; avgResolutionHours: number | null }[];
+  ticketBreakdown: { ticketTypeId: string | number | null; ticketTypeName: string | null; count: number; avgResolutionHours: number | null }[];
   channelRevenue: { name: string; value: number; fill: string }[];
   topProducts: string[][];
   topProductsChart: { name: string; revenue: number }[];
@@ -50,6 +65,12 @@ export type DashboardFilters = {
 
 export type ChatResponse = {
   intent: 'answer' | 'mutate_current_page' | 'create_new_page';
+  // FIX 2026-09-17: true when this turn was the AI asking a clarifying
+  // question rather than a grounded answer -- `intent` alone can't carry
+  // this (it's normalized to 'answer' for the rest of the app's existing
+  // contract), so the chat UI needs this separately to know not to treat
+  // any leftover report panel as still answering the current question.
+  askedClarification?: boolean;
   topic?: string;
   chartType?: 'bar' | 'line' | 'pie' | 'donut' | 'none';
   title: string;
