@@ -297,12 +297,35 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     setReportSaveState(ok ? 'saved' : 'error');
   }
 
-  function handleExportArtifact() {
+  async function handleExportArtifact() {
     if (!artifact) return;
     const table = getReportTable(artifact.topic, artifact.data, artifact.chartType);
     const fileName = `${artifact.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
     const base64 = buildXlsxBase64(table.headers, table.rows);
     triggerDownload(fileName, base64ToBlob(base64, XLSX_MIME_TYPE));
+    // FIX 2026-09-19: this used to only trigger the browser download --
+    // the /exports page (and its own empty-state copy: "click Export Excel
+    // ... it will show up here") reads from the report_exports table via
+    // POST /api/exports, and nothing here ever called it, so an export
+    // from the chat panel's inline artifact (as opposed to a saved report
+    // page, which already did this correctly via reports/[id]/page.tsx's
+    // own logExport) never appeared in Exports. reportId is null here
+    // since this artifact may not be a saved report yet -- the exports
+    // table already allows that (see report_exports schema).
+    if (!user) return;
+    try {
+      const res = await fetch('/api/exports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reportId: null, fileName, format: 'xlsx', fileContent: base64 }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        console.error('Saving to export history failed:', res.status, text);
+      }
+    } catch (error) {
+      console.error('Saving to export history failed:', error);
+    }
   }
 
   return (
