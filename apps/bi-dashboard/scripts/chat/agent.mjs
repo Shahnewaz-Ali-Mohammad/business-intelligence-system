@@ -58,7 +58,7 @@ const ResponseSchema = z.object({
       // a saved report's "Insight Summary" (app/reports/[id]/page.tsx) --
       // whenever a table or chart is already rendering the actual rows, this
       // text must never become a second copy of that table in prose form.
-      '2-4 sentences of STRUCTURED analysis, not a restated table. Sentence 1: the direct answer/headline finding (the specific number, name, or comparison actually asked for). Sentence 2: the single most notable pattern, stated using the REAL computed fields the tool already returned -- NEVER estimate or eyeball a percentage/concentration/rate yourself. get_pop_financials and get_package_financials rows each include collectionRate (collected/billed, already computed) and billedShare (this row\'s share of TOTAL billing across the FULL POP/package list, already computed against the complete set before any limit was applied -- use this directly for "X accounts for Y% of total billing", never estimate that percentage from the top-N subset alone). get_package_financials rows also include revenuePerActiveCustomer (billed/activeCustomers, already computed) -- use it for "package X generates $Y per active customer" framing, which is more meaningful than raw totals for comparing package value. If collectionRate is unusually low (e.g. under 50%) for the top row, that IS the notable pattern -- say so plainly (e.g. "POP 10 leads billing but its collection rate is only 34%, meaning most of that revenue hasn\'t actually been collected yet"). Optional sentence 3: brief context (vs. a prior period, vs. an average) only if genuinely relevant and the data supports it. NEVER list out individual row values/names one by one when a table or chart is already showing that breakdown -- summarize what the rows MEAN, don\'t re-narrate them. Uses ONLY values that came back from a warehouse tool call.',
+      '2-4 sentences of STRUCTURED analysis, not a restated table. Sentence 1: the direct answer/headline finding (the specific number, name, or comparison actually asked for). Sentence 2: the single most notable pattern, stated using the REAL computed fields the tool already returned -- NEVER estimate or eyeball a percentage/concentration/rate yourself. get_pop_financials and get_package_financials rows each include collectionRate (collected/billed, already computed) and billedShare (this row\'s share of TOTAL billing across the FULL POP/package list, already computed against the complete set before any limit was applied -- use this directly for "X accounts for Y% of total billing", never estimate that percentage from the top-N subset alone). get_package_financials rows also include revenuePerActiveCustomer (billed/activeCustomers, already computed) -- use it for "package X generates $Y per active customer" framing, which is more meaningful than raw totals for comparing package value. If collectionRate is unusually low (e.g. under 50%) for the top row, that IS the notable pattern -- say so plainly (e.g. "POP 10 leads billing but its collection rate is only 34%, meaning most of that revenue hasn\'t actually been collected yet"). CURRENCY: this is a Bangladeshi ISP -- every money figure you write is BDT (Taka), formatted like "BDT 1,234,567", NEVER a "$" sign or "USD" (there is no currency column in the data at all; BDT is simply the real currency this business operates in). Optional sentence 3: brief context (vs. a prior period, vs. an average) only if genuinely relevant and the data supports it. NEVER list out individual row values/names one by one when a table or chart is already showing that breakdown -- summarize what the rows MEAN, don\'t re-narrate them. Uses ONLY values that came back from a warehouse tool call.',
     ),
   tablesUsed: z.array(z.enum(ALLOWED_TABLES)).describe('Only the real tables that genuinely back this answer.'),
   requestedMetrics: z
@@ -345,7 +345,7 @@ const CritiqueSchema = z.object({
 
 const CRITIQUE_PROMPT = `You are a strict fact-checker sitting between a BI chatbot and the user. You will be shown the raw tool result data the chatbot actually queried, and the narrative it drafted in response. Your only job: does every specific number, date, or figure in the narrative genuinely appear in the tool results, attached to the SAME entity/row it's reported against? A number that is real but attached to the wrong entity (e.g. a customer's real order count from one breakdown mistakenly reported next to a different breakdown's revenue figure for that same customer, or vice versa) is NOT grounded -- flag it just like an invented number. Also flag anything invented, hallucinated, stale from a previous turn, pulled from a different breakdown than the one shown, or a vague hedge like "an unspecified number" standing in for a real figure the data actually has.
 
-The following are explicitly NOT grounding violations -- never flag them, they waste a redraft cycle for no reason: a thousands separator (20427.01 in the tool result written as $20,427.01 in the narrative is the SAME number); rounding to whole dollars, one decimal, or a "$1.2K"/"$45.7K" compact form of the same underlying value (1682.4966 shown as $1,682 or $1.68K is the SAME number -- check by rounding, not by exact string match); and a total/sum the narrative computed by adding several tool-result rows together, AS LONG AS that arithmetic is actually correct. Only flag a number if it genuinely refers to a different quantity than what the tool returned, not because its formatting or rounding differs from the tool's raw representation.`;
+The following are explicitly NOT grounding violations -- never flag them, they waste a redraft cycle for no reason: a thousands separator (20427.01 in the tool result written as BDT 20,427.01 in the narrative is the SAME number); rounding to whole taka, one decimal, or a "BDT 1.2K"/"BDT 45.7K" compact form of the same underlying value (1682.4966 shown as BDT 1,682 or BDT 1.68K is the SAME number -- check by rounding, not by exact string match); and a total/sum the narrative computed by adding several tool-result rows together, AS LONG AS that arithmetic is actually correct. Only flag a number if it genuinely refers to a different quantity than what the tool returned, not because its formatting or rounding differs from the tool's raw representation.`;
 
 let cachedCritiqueModel = null;
 
@@ -441,10 +441,13 @@ function formatPct(ratio) {
   return ratio === null || ratio === undefined ? 'not computable' : `${(ratio * 100).toFixed(2)}%`;
 }
 
+// FIX 2026-09-19: was a hardcoded '$' prefix -- there is no currency
+// column anywhere in the source data, that was a plain assumption. This
+// is a Bangladeshi ISP; BDT is correct.
 function formatMoney(amount) {
   return amount === null || amount === undefined
     ? 'N/A'
-    : `$${Number(amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+    : `BDT ${Number(amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 }
 
 // Deterministic (code-computed, never LLM-authored) insight sentence --
@@ -805,8 +808,16 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // happens to return. Validated against the known set here too, not just
   // trusted from the model.
   const VALID_REQUESTED_METRICS = ['billed', 'collected', 'refunded', 'adjusted', 'outstanding', 'activeCustomers', 'count', 'avgResolutionHours', 'byTranMode', 'packageName'];
+  // FIX 2026-09-19: dedupe -- if the model's structured output names the
+  // same metric twice (e.g. requestedMetrics: ['billed', 'billed']), every
+  // report-table.ts branch maps this array 1:1 into <th> headers with no
+  // dedup of its own, producing two columns with the identical label
+  // (real symptom: a live "Encountered two children with the same key,
+  // `Total Billed`" React warning). Deduping once here, at the single
+  // source this array is built from, fixes it for every branch at once
+  // instead of patching each branch's header-mapping separately.
   const requestedMetrics = Array.isArray(structured?.requestedMetrics)
-    ? structured.requestedMetrics.filter((m) => VALID_REQUESTED_METRICS.includes(m))
+    ? [...new Set(structured.requestedMetrics.filter((m) => VALID_REQUESTED_METRICS.includes(m)))]
     : [];
 
   return {

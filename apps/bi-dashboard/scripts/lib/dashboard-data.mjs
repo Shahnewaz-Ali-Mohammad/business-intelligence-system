@@ -77,10 +77,17 @@ function chartPointsFrom(rows, valueKey, formatter, options = {}) {
   }));
 }
 
-const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+// FIX 2026-09-19: currency is not a real column anywhere in the source
+// data or warehouse (confirmed -- no currency field exists on any synced
+// table), so USD here was a plain assumption baked into display
+// formatting, not a fact from the data. This is a Bangladeshi ISP -- BDT
+// (Taka) is correct. Node's available ICU locale data renders this as
+// "BDT 1,234,567" rather than a rupee-style glyph; that's still an
+// unambiguous, correct label, just not a "৳" symbol.
+const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'BDT', maximumFractionDigits: 0 });
 const compactMoney = new Intl.NumberFormat('en-US', {
   style: 'currency',
-  currency: 'USD',
+  currency: 'BDT',
   notation: 'compact',
   maximumFractionDigits: 1,
 });

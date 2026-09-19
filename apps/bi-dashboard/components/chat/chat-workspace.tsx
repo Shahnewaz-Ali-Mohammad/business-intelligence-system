@@ -436,8 +436,8 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                     <table className="w-full text-left text-sm">
                       <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                         <tr>
-                          {inlineTable.headers.map((header) => (
-                            <th key={header} className="px-3 py-2 font-semibold">{header}</th>
+                          {inlineTable.headers.map((header, i) => (
+                            <th key={`${header}-${i}`} className="px-3 py-2 font-semibold">{header}</th>
                           ))}
                         </tr>
                       </thead>
