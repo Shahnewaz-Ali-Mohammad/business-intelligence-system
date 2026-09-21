@@ -300,6 +300,126 @@ export async function getPopFinancials({
   return rows;
 }
 
+const METRIC_BY_SORT_KEY = {
+  billed: 'total_billed',
+  collected: 'total_collected',
+  refunded: 'total_refunded',
+  adjusted: 'total_adjusted',
+};
+
+// PERF FIX: getCustomerFinancials used to aggregate ALL ~386k customers
+// across a full GROUP BY customer_id (queryMetric has no ORDER BY/LIMIT at
+// all), pull every grouped row back into Node, and sort/slice in JS -- real
+// work identical whether the caller asked for "top 10" or "top 100", which
+// is why "top 100 customers" timed out while smaller asks happened to
+// squeak by. This pushes ORDER BY + LIMIT into SQL for the metric actually
+// being sorted on, so Postgres does the sort and only N rows ever cross
+// the wire.
+async function queryMetricTopN(metricName, { dateFrom, dateTo, limit, direction = 'desc' } = {}) {
+  const metric = getMetric(metricName);
+  const pool = getWarehousePool();
+  const conditions = ['customer_id IS NOT NULL'];
+  const params = [];
+  if (dateFrom) {
+    params.push(dateFrom);
+    conditions.push(`ref_date >= $${params.length}`);
+  }
+  if (dateTo) {
+    params.push(dateTo);
+    conditions.push(`ref_date <= $${params.length}`);
+  }
+  const sortDir = direction === 'asc' ? 'ASC' : 'DESC';
+  params.push(limit);
+  const query = `
+    SELECT customer_id, ${metric.sql} AS value
+    FROM ${metric.table}
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY customer_id
+    ORDER BY value ${sortDir}
+    LIMIT $${params.length}
+  `;
+  const { rows } = await pool.query(query, params);
+  return rows;
+}
+
+// 'outstanding' (billed - collected) spans two fact tables, so its top-N
+// can't be pushed down as a single metric's GROUP BY -- this aggregates
+// both tables independently (each still just one GROUP BY over its own
+// fact table, no per-customer join blowup) and lets Postgres sort +
+// truncate the DIFFERENCE, same principle as queryMetricTopN above.
+async function queryOutstandingTopN({ dateFrom, dateTo, limit, direction = 'desc' } = {}) {
+  const pool = getWarehousePool();
+  const params = [];
+  const billedConditions = ['customer_id IS NOT NULL'];
+  const collectedConditions = ['customer_id IS NOT NULL'];
+  if (dateFrom) {
+    params.push(dateFrom);
+    const p = `$${params.length}`;
+    billedConditions.push(`ref_date >= ${p}`);
+    collectedConditions.push(`ref_date >= ${p}`);
+  }
+  if (dateTo) {
+    params.push(dateTo);
+    const p = `$${params.length}`;
+    billedConditions.push(`ref_date <= ${p}`);
+    collectedConditions.push(`ref_date <= ${p}`);
+  }
+  const sortDir = direction === 'asc' ? 'ASC' : 'DESC';
+  params.push(limit);
+  const query = `
+    WITH b AS (
+      SELECT customer_id, SUM(amount) AS billed
+      FROM fact_billing
+      WHERE ${billedConditions.join(' AND ')}
+      GROUP BY customer_id
+    ),
+    c AS (
+      SELECT customer_id, SUM(amount) AS collected
+      FROM fact_collection
+      WHERE ${collectedConditions.join(' AND ')}
+      GROUP BY customer_id
+    )
+    SELECT COALESCE(b.customer_id, c.customer_id) AS customer_id,
+           COALESCE(b.billed, 0) - COALESCE(c.collected, 0) AS value
+    FROM b
+    FULL OUTER JOIN c ON b.customer_id = c.customer_id
+    ORDER BY value ${sortDir}
+    LIMIT $${params.length}
+  `;
+  const { rows } = await pool.query(query, params);
+  return rows;
+}
+
+// Once the top-N customer_ids are known (from whichever of the two
+// functions above matched the sort), the OTHER metrics are only ever
+// queried for those N ids -- a cheap WHERE customer_id = ANY($ids), the
+// same "only resolve for the final top-N slice" pattern this function
+// already used below for name/package/tran-mode, now applied to the
+// financial numbers themselves instead of pulling all ~386k rows per metric.
+async function queryMetricForIds(metricName, ids, { dateFrom, dateTo } = {}) {
+  if (!ids.length) return [];
+  const metric = getMetric(metricName);
+  const pool = getWarehousePool();
+  const params = [ids];
+  const conditions = ['customer_id = ANY($1)'];
+  if (dateFrom) {
+    params.push(dateFrom);
+    conditions.push(`ref_date >= $${params.length}`);
+  }
+  if (dateTo) {
+    params.push(dateTo);
+    conditions.push(`ref_date <= $${params.length}`);
+  }
+  const query = `
+    SELECT customer_id, ${metric.sql} AS value
+    FROM ${metric.table}
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY customer_id
+  `;
+  const { rows } = await pool.query(query, params);
+  return rows;
+}
+
 /**
  * Real per-CUSTOMER breakdown: total billed, total collected, and
  * outstanding (billed - collected) for the top N customers by revenue,
@@ -323,50 +443,41 @@ export async function getCustomerFinancials({
   sortBy = 'billed',
   direction = 'desc',
 } = {}) {
-  // NEW 2026-09-17: refunded/adjusted added -- customer_id is now a valid
-  // dimension for total_refunded/total_adjusted (a REAL direct column on
-  // fact_refund/fact_adjustment, no join needed, unlike pop_id/package_id
-  // for these two tables). Fetched unconditionally across all customers
-  // the same way billed/collected already are -- fact_refund/
-  // fact_adjustment are tiny (tens of thousands of rows total, not
-  // millions), so this is cheap, and doing it here (not only for the final
-  // top-N slice, unlike the tran_mode join below) keeps sorting by
-  // refunded/adjusted accurate against the full customer population.
-  const [billedRows, collectedRows, refundedRows, adjustedRows] = await Promise.all([
-    queryMetric('total_billed', { groupBy: 'customer_id', dateFrom, dateTo, filters }),
-    queryMetric('total_collected', { groupBy: 'customer_id', dateFrom, dateTo, filters }),
-    queryMetric('total_refunded', { groupBy: 'customer_id', dateFrom, dateTo, filters }),
-    queryMetric('total_adjusted', { groupBy: 'customer_id', dateFrom, dateTo, filters }),
-  ]);
-
-  const billedByCustomer = new Map(billedRows.map((r) => [r.customer_id, Number(r.value || 0)]));
-  const collectedByCustomer = new Map(collectedRows.map((r) => [r.customer_id, Number(r.value || 0)]));
-  const refundedByCustomer = new Map(refundedRows.map((r) => [r.customer_id, Number(r.value || 0)]));
-  const adjustedByCustomer = new Map(adjustedRows.map((r) => [r.customer_id, Number(r.value || 0)]));
-  const customerIds = new Set([
-    ...billedByCustomer.keys(),
-    ...collectedByCustomer.keys(),
-    ...refundedByCustomer.keys(),
-    ...adjustedByCustomer.keys(),
-  ]);
-
-  let rows = [...customerIds]
-    .filter((id) => id != null)
-    .map((customerId) => {
-      const billed = billedByCustomer.get(customerId) ?? 0;
-      const collected = collectedByCustomer.get(customerId) ?? 0;
-      const refunded = refundedByCustomer.get(customerId) ?? 0;
-      const adjusted = adjustedByCustomer.get(customerId) ?? 0;
-      return { customerId, billed, collected, refunded, adjusted, outstanding: billed - collected };
-    });
-
   const sortKey = ['billed', 'collected', 'outstanding', 'refunded', 'adjusted'].includes(sortBy) ? sortBy : 'billed';
-  const sign = direction === 'asc' ? 1 : -1;
-  rows.sort((a, b) => sign * (a[sortKey] - b[sortKey]));
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
 
-  if (Number.isFinite(limit) && limit > 0) {
-    rows = rows.slice(0, limit);
+  const topRows =
+    sortKey === 'outstanding'
+      ? await queryOutstandingTopN({ dateFrom, dateTo, limit: safeLimit, direction })
+      : await queryMetricTopN(METRIC_BY_SORT_KEY[sortKey], { dateFrom, dateTo, limit: safeLimit, direction });
+
+  const topCustomerIds = topRows.map((r) => r.customer_id).filter((id) => id != null);
+  if (!topCustomerIds.length) return [];
+
+  // Every OTHER metric besides the one already sorted on -- fetched only
+  // for these N ids, never against the full customer population.
+  const otherKeys = ['billed', 'collected', 'refunded', 'adjusted'].filter((k) => k !== sortKey);
+  const otherResults = await Promise.all(
+    otherKeys.map((k) => queryMetricForIds(METRIC_BY_SORT_KEY[k], topCustomerIds, { dateFrom, dateTo })),
+  );
+
+  const valueByCustomer = { billed: new Map(), collected: new Map(), refunded: new Map(), adjusted: new Map() };
+  if (sortKey !== 'outstanding') {
+    for (const r of topRows) valueByCustomer[sortKey].set(r.customer_id, Number(r.value || 0));
   }
+  otherKeys.forEach((key, i) => {
+    for (const r of otherResults[i]) valueByCustomer[key].set(r.customer_id, Number(r.value || 0));
+  });
+
+  // topCustomerIds is already in the correct sorted order (Postgres did
+  // the ORDER BY) -- preserve it exactly rather than re-sorting in JS.
+  let rows = topCustomerIds.map((customerId) => {
+    const billed = valueByCustomer.billed.get(customerId) ?? 0;
+    const collected = valueByCustomer.collected.get(customerId) ?? 0;
+    const refunded = valueByCustomer.refunded.get(customerId) ?? 0;
+    const adjusted = valueByCustomer.adjusted.get(customerId) ?? 0;
+    return { customerId, billed, collected, refunded, adjusted, outstanding: billed - collected };
+  });
 
   // Only resolve names + tran_mode breakdown for the final top-N slice --
   // never join/aggregate this against all ~386k customers.

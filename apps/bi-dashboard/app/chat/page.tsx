@@ -19,6 +19,7 @@ export default function ChatPage() {
       active="Chat"
       title="Chat Workspace"
       subtitle="Ask questions, generate charts, and turn answers into saved reports."
+      scroll
     >
       <Suspense fallback={null}>
         <ChatWorkspace />

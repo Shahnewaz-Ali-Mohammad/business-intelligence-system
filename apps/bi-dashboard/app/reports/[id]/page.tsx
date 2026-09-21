@@ -2,10 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { FileSpreadsheet, Trash2 } from 'lucide-react';
+import { FileSpreadsheet, Save, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
-import { getReportTable } from '@/lib/dashboard/report-table';
+import { getReportTable, stripTotalsRow } from '@/lib/dashboard/report-table';
+import type { ChartSpec } from '@/lib/dashboard/chart-spec';
+import { AutoReportChart } from '@/components/dashboard/charts/auto-report-chart';
+import { ChartErrorBoundary } from '@/components/dashboard/charts/chart-error-boundary';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 
@@ -18,6 +21,7 @@ type ReportRow = {
   filters: { days: number; region: string | null } | null;
   tables_used: string[] | null;
   data: DashboardData;
+  chart_spec: ChartSpec | null;
   created_at: string;
 };
 
@@ -45,6 +49,10 @@ export default function ReportDetailPage() {
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [view, setView] = useState<'table' | 'chart'>('table');
+  const [chartSpec, setChartSpec] = useState<ChartSpec | null>(null);
+  const [chartDirty, setChartDirty] = useState(false);
+  const [chartSaveState, setChartSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   useEffect(() => {
     fetch(`/api/reports/${params.id}`)
@@ -52,6 +60,18 @@ export default function ReportDetailPage() {
       .then((body: { report: ReportRow | null }) => setReport(body.report))
       .catch(() => setReport(null));
   }, [params.id]);
+
+  // Reports saved before chart persistence existed simply have
+  // chart_spec === null -- by the user's explicit call, that's NOT treated
+  // as "regenerate one on the fly." An old report never had a chart saved
+  // for it, so there is nothing to show; chartSpec just stays null and the
+  // Chart tab honestly says graphical data doesn't exist for it, instead of
+  // silently fabricating a chart the user never saved or reviewed.
+  useEffect(() => {
+    if (!report) return;
+    if (chartSpec) return;
+    if (report.chart_spec) setChartSpec(report.chart_spec);
+  }, [report, chartSpec]);
 
   async function handleDelete() {
     if (!report) return;
@@ -62,6 +82,34 @@ export default function ReportDetailPage() {
       if (res.ok) router.push('/reports');
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function handleSaveChart() {
+    if (!report || !chartSpec) return;
+    setChartSaveState('saving');
+    try {
+      const res = await fetch(`/api/reports/${report.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: report.title,
+          narrative: report.narrative,
+          topic: report.topic,
+          chartType: report.chart_type,
+          filters: report.filters,
+          tablesUsed: report.tables_used,
+          data: report.data,
+          chartSpec,
+        }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      setChartSaveState('saved');
+      setChartDirty(false);
+      setReport({ ...report, chart_spec: chartSpec });
+    } catch (err) {
+      console.error('Saving chart edits failed:', err);
+      setChartSaveState('error');
     }
   }
 
@@ -137,13 +185,58 @@ export default function ReportDetailPage() {
           ) : null}
         </section>
 
-        <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
+        <div className="flex items-center justify-between">
+          <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setView('table')}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                view === 'table' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              Table
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('chart')}
+              disabled={!chartSpec || chartSpec.groups.length === 0}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                view === 'chart' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              Chart
+            </button>
+          </div>
+
+          {view === 'chart' && chartSpec && chartSpec.groups.length > 0 ? (
+            <div className="flex items-center gap-2">
+              {chartSaveState === 'saved' && !chartDirty ? (
+                <span className="text-xs font-medium text-emerald-600">Chart saved</span>
+              ) : null}
+              {chartSaveState === 'error' ? (
+                <span className="text-xs font-medium text-red-600">Save failed, try again</span>
+              ) : null}
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={handleSaveChart}
+                disabled={!chartDirty || chartSaveState === 'saving'}
+              >
+                <Save size={16} />
+                {chartSaveState === 'saving' ? 'Saving...' : 'Save chart'}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+
+        {view === 'table' ? (
+          <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
-                    {table.headers.map((header) => (
-                      <th key={header} className="px-5 py-3 font-semibold">
+                    {table.headers.map((header, i) => (
+                      <th key={`${header}-${i}`} className="px-5 py-3 font-semibold">
                         {header}
                       </th>
                     ))}
@@ -163,6 +256,23 @@ export default function ReportDetailPage() {
               </table>
             </div>
           </section>
+        ) : chartSpec && chartSpec.groups.length > 0 ? (
+          <ChartErrorBoundary key={report.id}>
+            <section className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-[0_12px_30px_rgb(15_23_42/7%)]">
+              <AutoReportChart
+                table={{ headers: table.headers, rows: stripTotalsRow(table) }}
+                spec={chartSpec}
+                onSpecChange={(updated) => {
+                  setChartSpec(updated);
+                  setChartDirty(true);
+                  setChartSaveState('idle');
+                }}
+              />
+            </section>
+          </ChartErrorBoundary>
+        ) : (
+          <p className="text-sm text-slate-500">Graphical data does not exist for this report.</p>
+        )}
 
         <div className="flex flex-col gap-2 md:hidden">
           <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel} disabled={exporting}>

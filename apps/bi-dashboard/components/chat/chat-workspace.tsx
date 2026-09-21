@@ -6,7 +6,10 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BarChart3, Check, Database, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/components/auth/auth-provider';
-import { getReportTable } from '@/lib/dashboard/report-table';
+import { getReportTable, stripTotalsRow } from '@/lib/dashboard/report-table';
+import { getChartSpec } from '@/lib/dashboard/chart-spec';
+import { AutoReportChart } from '@/components/dashboard/charts/auto-report-chart';
+import { ChartErrorBoundary } from '@/components/dashboard/charts/chart-error-boundary';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
 
@@ -48,7 +51,14 @@ async function saveMessage(sessionId: number, role: 'user' | 'assistant', text: 
 // in the report panel) -- it never happens automatically just because a
 // chart was generated, so the Reports list only fills up with reports the
 // user actually chose to keep.
-async function saveReport(artifact: Artifact): Promise<boolean> {
+// chartSpec here is the auto-picked default (see getChartSpec at the top
+// of ChatWorkspace) -- the chat panel's own chart edits are session-only
+// by design (they reset each question, see the ChartErrorBoundary's own
+// per-message key), so Save always stores the default, sensible chart.
+// Editing a chart's type/measures/row-count PERSISTENTLY happens on the
+// saved report page instead, where AutoReportChart is given onSpecChange
+// and a real Save-chart action.
+async function saveReport(artifact: Artifact, chartSpec: unknown): Promise<boolean> {
   try {
     const response = await fetch('/api/reports', {
       method: 'POST',
@@ -61,6 +71,7 @@ async function saveReport(artifact: Artifact): Promise<boolean> {
         filters: { days: artifact.days, region: artifact.region },
         tablesUsed: artifact.tablesUsed,
         data: artifact.data,
+        chartSpec,
       }),
     });
     return response.ok;
@@ -293,7 +304,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   async function handleSaveReport() {
     if (!artifact || !user) return;
     setReportSaveState('saving');
-    const ok = await saveReport(artifact);
+    const ok = await saveReport(artifact, chartSpec);
     setReportSaveState(ok ? 'saved' : 'error');
   }
 
@@ -328,8 +339,33 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     }
   }
 
+  const inlineTable = artifact ? getReportTable(artifact.topic, artifact.data, artifact.chartType) : null;
+  // Chart is generated from the SAME table data, minus the Totals row (a
+  // chart bar for "Total (N rows)" would be meaningless) -- so the chart
+  // and the table it sits below can never disagree.
+  const chartRows = inlineTable ? stripTotalsRow(inlineTable) : [];
+  // FIX: getChartSpec (and, if this ever throws, whatever's downstream of
+  // it) used to be able to fail SILENTLY -- an uncaught error in this
+  // computation just meant the whole chart section quietly never
+  // appeared, with nothing in the UI to say why, and nothing for us to go
+  // on when a report's chart didn't show up. This makes a failure LOUD
+  // instead: the real error is logged to the console (open devtools ->
+  // Console to see it) and a visible message replaces the missing chart,
+  // instead of the report looking like it just silently skipped charting.
+  let chartSpec: ReturnType<typeof getChartSpec> = { groups: [] };
+  let chartSpecError: string | null = null;
+  if (inlineTable) {
+    try {
+      chartSpec = getChartSpec({ headers: inlineTable.headers, rows: chartRows });
+    } catch (err) {
+      chartSpecError = err instanceof Error ? err.message : String(err);
+      console.error('[chart] getChartSpec failed for topic', artifact?.topic, err);
+    }
+  }
+
   return (
-    <div className="grid h-full min-h-0 gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="flex min-h-0 flex-col gap-5">
+    <div className="grid h-[70vh] min-h-[520px] gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
       <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/90 shadow-[0_22px_60px_rgb(15_23_42/12%)] ring-1 ring-slate-950/5 backdrop-blur">
         <div className="shrink-0 border-b border-slate-200/70 bg-white/70 px-5 py-4">
           <div className="flex items-center justify-between gap-4">
@@ -451,42 +487,6 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               <p className="text-sm text-slate-500">{artifact.narrative}</p>
             </div>
 
-            {(() => {
-              const inlineTable = getReportTable(artifact.topic, artifact.data, artifact.chartType);
-              return (
-                <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
-                  <div className="max-h-[360px] overflow-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                        <tr>
-                          {inlineTable.headers.map((header, i) => (
-                            <th key={`${header}-${i}`} className="px-3 py-2 font-semibold">{header}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {inlineTable.rows.length ? (
-                          inlineTable.rows.map((row, i) => (
-                            <tr key={i}>
-                              {row.map((cell, j) => (
-                                <td key={j} className="px-3 py-2 text-slate-700">{cell}</td>
-                              ))}
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td colSpan={inlineTable.headers.length} className="px-3 py-6 text-center text-slate-400">
-                              No data available for this view.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              );
-            })()}
-
             <div className="flex flex-wrap gap-2">
               {user ? (
                 <Button
@@ -528,6 +528,42 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
             {reportSaveState !== 'saved' ? (
               <p className="text-xs text-slate-400">This chart is not saved yet -- click Save Report to keep it.</p>
             ) : null}
+
+            {(() => {
+              return (
+                <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+                  <div className="max-h-[360px] overflow-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                          {(inlineTable?.headers ?? []).map((header, i) => (
+                            <th key={`${header}-${i}`} className="px-3 py-2 font-semibold">{header}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {(inlineTable?.rows.length ?? 0) ? (
+                          inlineTable!.rows.map((row, i) => (
+                            <tr key={i}>
+                              {row.map((cell, j) => (
+                                <td key={j} className="px-3 py-2 text-slate-700">{cell}</td>
+                              ))}
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={inlineTable?.headers.length} className="px-3 py-6 text-center text-slate-400">
+                              No data available for this view.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
+
           </section>
         ) : (
           <section className="flex h-full min-h-[240px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-200 bg-white/60 p-8 text-center">
@@ -536,6 +572,28 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           </section>
         )}
       </aside>
+    </div>
+
+    {artifact && chartSpecError ? (
+      <section className="rounded-2xl border border-rose-200 bg-rose-50/80 p-5 shadow-[0_22px_60px_rgb(15_23_42/12%)]">
+        <div className="mb-1 flex items-center gap-2">
+          <BarChart3 size={18} className="text-rose-500" />
+          <p className="font-semibold text-rose-700">Chart failed to generate</p>
+        </div>
+        <p className="text-sm text-rose-600">{chartSpecError}</p>
+        <p className="mt-1 text-xs text-rose-400">The table above is unaffected -- this only stopped the chart. Check the browser console for the full error.</p>
+      </section>
+    ) : artifact && chartSpec.groups.length > 0 ? (
+      <ChartErrorBoundary key={messages.length}>
+        <section className="rounded-2xl border border-white/70 bg-white/90 p-5 shadow-[0_22px_60px_rgb(15_23_42/12%)] ring-1 ring-slate-950/5 backdrop-blur">
+          <div className="mb-4 flex items-center gap-2">
+            <BarChart3 size={18} className="text-teal-600" />
+            <p className="font-semibold">{artifact.title} -- Chart</p>
+          </div>
+          <AutoReportChart table={{ headers: inlineTable!.headers, rows: chartRows }} spec={chartSpec} />
+        </section>
+      </ChartErrorBoundary>
+    ) : null}
     </div>
   );
 }

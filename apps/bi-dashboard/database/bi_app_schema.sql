@@ -182,3 +182,28 @@ SET @sql_add_file_content = IF(@has_file_content_col = 0,
 PREPARE stmt FROM @sql_add_file_content;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
+
+-- ============================================================================
+-- Migration: persist the chart alongside a saved report, not just the
+-- table. Stores the EDITED chart spec (chart type, which measure columns
+-- are visible, how many rows) as JSON -- never a rendered image -- so
+-- reopening a saved report brings back the exact chart it was left in,
+-- still further editable. A report saved before this column existed (or
+-- never edited since) has chart_spec = NULL; the app falls back to
+-- re-deriving a default chart on the fly from that report's own `data`
+-- (getChartSpec), the same "don't require a backfill, just degrade
+-- gracefully off what's already stored" pattern topic/chart_type used
+-- above. Safe to re-run: uses IF NOT EXISTS everywhere.
+-- ============================================================================
+USE bi_app;
+
+SET @has_chart_spec_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'chart_spec'
+);
+SET @sql_add_chart_spec = IF(@has_chart_spec_col = 0,
+  'ALTER TABLE generated_reports ADD COLUMN chart_spec JSON NULL AFTER data',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_chart_spec;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

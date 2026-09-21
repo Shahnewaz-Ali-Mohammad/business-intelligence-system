@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   const total = Number((countRows as Array<{ total: number }>)[0]?.total ?? 0);
 
   const [rows] = await db.query(
-    'SELECT id, title, narrative, topic, chart_type, created_at FROM generated_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    'SELECT id, title, narrative, topic, chart_type, chart_spec, created_at FROM generated_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
     [user.id, PAGE_SIZE, offset],
   );
 
@@ -32,14 +32,14 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ saved: false, reason: 'not logged in' });
 
   try {
-    const { title, narrative, topic, chartType, filters, tablesUsed, data } = await req.json();
+    const { title, narrative, topic, chartType, filters, tablesUsed, data, chartSpec } = await req.json();
     if (typeof title !== 'string' || typeof narrative !== 'string' || !data) {
       return NextResponse.json({ error: 'title, narrative, and data are required.' }, { status: 400 });
     }
 
     const db = getAppDb();
     const [result] = await db.execute(
-      'INSERT INTO generated_reports (user_id, title, narrative, topic, chart_type, filters, tables_used, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO generated_reports (user_id, title, narrative, topic, chart_type, filters, tables_used, data, chart_spec) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         user.id,
         title,
@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
         filters ? JSON.stringify(filters) : null,
         tablesUsed ? JSON.stringify(tablesUsed) : null,
         JSON.stringify(data),
+        chartSpec ? JSON.stringify(chartSpec) : null,
       ],
     );
     return NextResponse.json({ saved: true, id: (result as { insertId: number }).insertId });

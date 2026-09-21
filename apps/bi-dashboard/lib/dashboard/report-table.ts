@@ -19,6 +19,21 @@ import type { DashboardData } from '@/lib/dashboard/metrics';
 
 export type ReportTable = { headers: string[]; rows: (string | number)[][] };
 
+// Every table from this file gets a final "Total (N rows)" / "Total" style
+// row appended by withTotalsRow() below. Charting code needs the data rows
+// WITHOUT that row -- a bar/line point for "Total (100 rows)" is meaningless
+// and, worse, distorts the scale of every real data point next to it. This
+// is the one shared place that knows the exact label shape, so chart code
+// never has to guess or duplicate the check (a prior duplicate, looser
+// check elsewhere compared against the literal string 'Total', which never
+// matched this label and silently let the Totals row through into charts).
+export function stripTotalsRow(table: ReportTable): (string | number)[][] {
+  const { rows } = table;
+  if (!rows.length) return rows;
+  const lastLabel = String(rows[rows.length - 1][0]);
+  return lastLabel.startsWith('Total (') || lastLabel === 'Total' ? rows.slice(0, -1) : rows;
+}
+
 // FIX 2026-09-17: every table now gets a final Totals row appended.
 // Column 0 (the identifying column -- POP ID/Package/Customer/Ticket
 // Type/Day/Name) shows a row COUNT ("Total (N rows)") since summing an ID
