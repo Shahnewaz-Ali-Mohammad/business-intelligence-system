@@ -79,6 +79,12 @@ type GroupOverride = {
   kind: ChartKind;
   hiddenMeasures: Set<number>;
   rowLimit: number;
+  // Which measure the Donut view plots -- a DEDICATED choice, independent
+  // of the show/hide chips (those apply to Bar/Line's multiple series;
+  // Donut can only ever show one, so it gets its own selector instead of
+  // making the user hide every other measure just to pick which one it
+  // draws).
+  donutMeasureIndex: number;
 };
 
 function toChartRows(
@@ -125,6 +131,20 @@ function ChartGroupCard({
   const isTimeSeries = isDateLikeHeader(table.headers[group.dimensionIndex] ?? '');
   const rowLimitOptions = getRowLimitOptions(table.rows.length, isTimeSeries);
 
+  // A donut slice can't represent a negative share of the whole (see the
+  // longer note further down) -- so the default measure it opens with
+  // should be the first one that's never negative in this data, not just
+  // "whichever measure happens to be listed first" (which, for a table
+  // like Outstanding/Collected/Billed, would default to the one measure
+  // most likely to actually be negative for some rows).
+  function measureHasNegatives(measureIndex: number): boolean {
+    return table.rows.some((row) => {
+      const v = row[measureIndex];
+      return typeof v === 'number' && v < 0;
+    });
+  }
+  const defaultDonutMeasure = group.measureIndices.find((i) => !measureHasNegatives(i)) ?? group.measureIndices[0];
+
   const [override, setOverride] = useState<GroupOverride>({
     // 'grouped-bar' is just a bar chart with >1 series -- collapse it to
     // 'bar' for the editable kind so the type switcher only ever shows
@@ -135,24 +155,33 @@ function ChartGroupCard({
     // the user last chose, not silently reset to "everything visible".
     hiddenMeasures: new Set(group.hiddenMeasureIndices ?? []),
     rowLimit: group.rowIndices.length,
+    donutMeasureIndex: group.donutMeasureIndex ?? defaultDonutMeasure,
   });
 
   const totalRows = table.rows.length;
   const visibleMeasures = group.measureIndices.filter((i) => !override.hiddenMeasures.has(i));
-  // A donut can only ever plot one series -- if more than one measure is
-  // still visible when donut is picked, use the first visible one rather
-  // than disabling the option outright (the user's override always wins;
-  // it just narrows to what's actually renderable). This narrowing is
-  // PURELY a rendering choice, computed fresh every render -- it must
-  // never be written back as the group's real `measureIndices` (that was
-  // the bug: picking Donut used to permanently delete every measure but
-  // this one from the saved chart, so switching back to Bar/Line had only
-  // one series left to draw).
-  const donutMeasure = visibleMeasures[0] ?? group.measureIndices[0];
+  // Donut's measure comes from its OWN dedicated selector (override.donutMeasureIndex),
+  // not from whatever the show/hide chips currently leave visible -- those
+  // chips are a separate control for Bar/Line's multiple series. This
+  // narrowing to one measure is PURELY a rendering choice, computed fresh
+  // every render -- it must never be written back as the group's real
+  // `measureIndices` (that was the earlier bug: picking Donut used to
+  // permanently delete every measure but this one from the saved chart,
+  // so switching back to Bar/Line had only one series left to draw).
+  const donutMeasure = override.donutMeasureIndex;
   const measuresForChart = override.kind === 'donut' ? [donutMeasure] : visibleMeasures.length ? visibleMeasures : group.measureIndices;
 
   const chartRows = toChartRows(table, group.dimensionIndex, measuresForChart, override.rowLimit);
   const measureHeaders = measuresForChart.map((i) => table.headers[i]);
+  // A donut/pie slice's angle is that row's share of the SUM of the whole
+  // series -- a value like "Outstanding" can be negative (a customer who
+  // overpaid, i.e. a credit balance), and there is no valid slice angle
+  // for a negative share of a whole. recharts doesn't error on this, it
+  // just silently produces zero-size/invalid arcs, which is why the donut
+  // rendered as a totally empty circle instead of any visible error. Bar
+  // and line have no such restriction (a bar can dip below the zero
+  // line), so this only ever blocks the Donut view, never the data itself.
+  const donutMeasureHasNegatives = override.kind === 'donut' && measureHasNegatives(donutMeasure);
   const showingAll = override.rowLimit >= totalRows;
   // The visible title always reflects the CURRENT row limit, computed live
   // -- group.title is only ever the stable base label ("X vs Y"), never a
@@ -179,6 +208,7 @@ function ChartGroupCard({
       // user's current toggle choice.
       measureIndices: group.measureIndices,
       hiddenMeasureIndices: Array.from(override.hiddenMeasures),
+      donutMeasureIndex: override.donutMeasureIndex,
       title: group.title,
       rowIndices: Array.from({ length: Math.min(override.rowLimit, totalRows) }, (_, i) => i),
       truncated: override.rowLimit < totalRows,
@@ -239,6 +269,31 @@ function ChartGroupCard({
             ))}
           </div>
 
+          {/* Donut's dedicated metric selector -- Donut can only ever plot
+              ONE measure, so instead of making the user hide every other
+              measure with the toggle chips just to pick which one it
+              draws, it gets its own direct control. Defaults to the first
+              never-negative measure and switches immediately on pick;
+              a measure with negative values (e.g. Outstanding, which goes
+              negative for a customer credit/overpayment) is listed but
+              disabled, since a donut slice can't represent a negative
+              share of the whole. */}
+          {override.kind === 'donut' && group.measureIndices.length > 1 && (
+            <select
+              value={override.donutMeasureIndex}
+              onChange={(e) => setOverride((prev) => ({ ...prev, donutMeasureIndex: Number(e.target.value) }))}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600 outline-none"
+              title="Which metric the donut shows"
+            >
+              {group.measureIndices.map((i) => (
+                <option key={i} value={i} disabled={measureHasNegatives(i)}>
+                  {table.headers[i]}
+                  {measureHasNegatives(i) ? ' (has negative values)' : ''}
+                </option>
+              ))}
+            </select>
+          )}
+
           {/* Row-count control */}
           {rowLimitOptions.length > 1 && (
             <select
@@ -257,9 +312,11 @@ function ChartGroupCard({
         </div>
       </div>
 
-      {/* Measure toggle chips -- only meaningful with more than one
-          measure column in this chart group. */}
-      {group.measureIndices.length > 1 && (
+      {/* Measure toggle chips -- for Bar/Line's multiple series. Donut has
+          its own dedicated metric selector above instead (a donut only
+          ever plots one measure, so "hide" isn't the right control for
+          it). */}
+      {group.measureIndices.length > 1 && override.kind !== 'donut' && (
         <div className="mb-3 flex flex-wrap gap-1.5">
           {group.measureIndices.map((i, mi) => {
             const active = !override.hiddenMeasures.has(i);
@@ -283,7 +340,18 @@ function ChartGroupCard({
         </div>
       )}
 
-      {override.kind === 'donut' ? (
+      {override.kind === 'donut' && donutMeasureHasNegatives ? (
+        <div className="flex h-[220px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-6 text-center">
+          <p className="text-sm font-medium text-slate-600">
+            A donut can&apos;t show {table.headers[donutMeasure]} here
+          </p>
+          <p className="max-w-md text-xs text-slate-500">
+            Some rows have a negative {table.headers[donutMeasure].toLowerCase()} (e.g. a customer credit/overpayment),
+            and a donut slice can&apos;t represent a negative share of the whole. Pick Bar or Line instead, or switch to
+            a measure that&apos;s never negative using the chips above.
+          </p>
+        </div>
+      ) : override.kind === 'donut' ? (
         <DonutChart chartRows={chartRows} measureHeader={measureHeaders[0]} />
       ) : (
         <div className={needsMinWidth ? 'overflow-x-auto' : undefined}>

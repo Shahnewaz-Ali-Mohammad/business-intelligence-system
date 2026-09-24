@@ -34,6 +34,15 @@ export type ChartGroup = {
   // render time from this + the chart's own "only one series fits" rule;
   // it is never written back here either.
   hiddenMeasureIndices: number[];
+  // Which single measure the Donut view is currently showing (Donut can
+  // only ever plot one series -- see the field above for why that
+  // narrowing must live in its own field rather than shrinking
+  // `measureIndices`). Persisted so a reopened chart keeps the same
+  // metric selected instead of silently resetting to whichever measure
+  // happens to be first. Undefined means "no explicit choice yet" -- the
+  // component picks a sensible default (the first measure that's never
+  // negative, since a donut can't render a negative share of the whole).
+  donutMeasureIndex?: number;
   // Base label only (e.g. "Total Billed vs Total Collected") -- NEVER
   // includes a "(top N of M)" suffix. That suffix depends on the
   // currently-selected row limit, which changes via the row-count editor
@@ -186,6 +195,7 @@ export function getChartSpec(table: ReportTable): ChartSpec {
       dimensionIndex,
       measureIndices: bucketIndices,
       hiddenMeasureIndices: [],
+      donutMeasureIndex: undefined,
       title: baseTitle,
       rowIndices,
       truncated,
