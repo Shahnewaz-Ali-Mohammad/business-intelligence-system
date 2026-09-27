@@ -393,6 +393,38 @@ function ChartGroupCard({
   );
 }
 
+// FIX 2026-09-28: a donut/pie chart is only legible up to about 7-8
+// slices -- past that, no amount of legend scrolling or hue-spreading
+// fixes it, because the SHAPE itself stops working (a "top 300" or "all
+// 2000" request was rendering 300-2000 individual slices, each a sliver
+// under 0.5% with no visible boundary between it and its neighbors, and
+// a legend of hundreds of 0.1% entries nobody can read or compare). The
+// fix is not a bigger chart or more scrolling -- it's capping the actual
+// number of slices: the top MAX_DONUT_SLICES-1 rows by this measure's own
+// value, real ones, plus one honest "Other (N more)" slice holding the
+// SUM of everything past that (never silently dropped -- the total
+// across all slices still equals the true total of every row). This is
+// exactly what a part-to-whole chart is for: showing how much of the
+// whole the top handful takes up, which a 2000-slice version could never
+// actually communicate anyway.
+const MAX_DONUT_SLICES = 8;
+
+function buildDonutSlices(
+  chartRows: Record<string, string | number>[],
+  measureHeader: string,
+): { slices: Record<string, string | number>[]; othersFolded: number } {
+  if (chartRows.length <= MAX_DONUT_SLICES) return { slices: chartRows, othersFolded: 0 };
+  const valueOf = (row: Record<string, string | number>) => (typeof row[measureHeader] === 'number' ? (row[measureHeader] as number) : 0);
+  const sorted = [...chartRows].sort((a, b) => valueOf(b) - valueOf(a));
+  const top = sorted.slice(0, MAX_DONUT_SLICES - 1);
+  const rest = sorted.slice(MAX_DONUT_SLICES - 1);
+  const otherSum = rest.reduce((sum, row) => sum + valueOf(row), 0);
+  return {
+    slices: [...top, { __label: `Other (${rest.length} more)`, [measureHeader]: otherSum }],
+    othersFolded: rest.length,
+  };
+}
+
 // FIX: recharts' default <Legend> tries to lay out every slice name
 // inline and wraps onto as many rows as it needs (8+ rows for a 70-slice
 // package breakdown), which squeezed the actual donut down to a tiny
@@ -401,26 +433,32 @@ function ChartGroupCard({
 // underneath (2-3 columns, capped height) -- so the chart stays readable
 // and full-size no matter how many slices the data has.
 function DonutChart({ chartRows, measureHeader }: { chartRows: Record<string, string | number>[]; measureHeader: string }) {
-  const total = chartRows.reduce((sum, row) => sum + (typeof row[measureHeader] === 'number' ? (row[measureHeader] as number) : 0), 0);
-  const manySlices = chartRows.length > 8;
+  const { slices, othersFolded } = buildDonutSlices(chartRows, measureHeader);
+  const total = slices.reduce((sum, row) => sum + (typeof row[measureHeader] === 'number' ? (row[measureHeader] as number) : 0), 0);
+  const manySlices = slices.length > 8;
 
   return (
     <div>
+      {othersFolded > 0 ? (
+        <p className="mb-2 text-center text-xs text-slate-400">
+          Showing the top {MAX_DONUT_SLICES - 1} of {chartRows.length} -- the rest are grouped into &quot;Other ({othersFolded} more)&quot; below.
+        </p>
+      ) : null}
       <div className="mx-auto h-[340px] w-full max-w-[380px]">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
-              data={chartRows}
+              data={slices}
               dataKey={measureHeader}
               nameKey="__label"
               cx="50%"
               cy="50%"
               innerRadius="58%"
               outerRadius="94%"
-              paddingAngle={chartRows.length <= 20 ? 2 : 0.5}
+              paddingAngle={slices.length <= 20 ? 2 : 0.5}
             >
-              {chartRows.map((_, i) => (
-                <Cell key={i} fill={sliceColor(i, chartRows.length)} stroke="#fff" strokeWidth={1} />
+              {slices.map((_, i) => (
+                <Cell key={i} fill={sliceColor(i, slices.length)} stroke="#fff" strokeWidth={1} />
               ))}
             </Pie>
             <Tooltip
@@ -438,12 +476,12 @@ function DonutChart({ chartRows, measureHeader }: { chartRows: Record<string, st
           manySlices ? 'max-h-40' : ''
         }`}
       >
-        {chartRows.map((row, i) => {
+        {slices.map((row, i) => {
           const value = typeof row[measureHeader] === 'number' ? (row[measureHeader] as number) : 0;
           const pct = total ? Math.round((value / total) * 1000) / 10 : 0;
           return (
             <div key={i} className="flex min-w-0 items-center gap-1.5">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: sliceColor(i, chartRows.length) }} />
+              <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: sliceColor(i, slices.length) }} />
               <span className="min-w-0 flex-1 truncate text-slate-700" title={String(row.__label)}>
                 {row.__label}
               </span>
