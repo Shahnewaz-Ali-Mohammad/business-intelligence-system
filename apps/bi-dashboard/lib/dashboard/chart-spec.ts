@@ -10,7 +10,7 @@
 
 export type ReportTable = { headers: string[]; rows: (string | number)[][] };
 
-export type ChartKind = 'bar' | 'line' | 'donut' | 'grouped-bar' | 'none';
+export type ChartKind = 'bar' | 'line' | 'donut' | 'grouped-bar' | 'pareto' | 'none';
 
 export type ChartGroup = {
   kind: ChartKind;
@@ -43,6 +43,15 @@ export type ChartGroup = {
   // component picks a sensible default (the first measure that's never
   // negative, since a donut can't render a negative share of the whole).
   donutMeasureIndex?: number;
+  // Which single measure the Pareto view is currently ranking/summing by.
+  // Same reasoning as `donutMeasureIndex` above -- a Pareto chart (bars
+  // ranked by one measure + a cumulative-share line) only ever plots one
+  // series, so its measure choice is kept in its own field rather than
+  // narrowing `measureIndices`. Undefined means "no explicit choice yet";
+  // the component defaults to the first never-negative measure, for the
+  // same reason a donut can't take a negative value (a negative row would
+  // make its "share of total" meaningless).
+  paretoMeasureIndex?: number;
   // Base label only (e.g. "Total Billed vs Total Collected") -- NEVER
   // includes a "(top N of M)" suffix. That suffix depends on the
   // currently-selected row limit, which changes via the row-count editor
@@ -196,6 +205,7 @@ export function getChartSpec(table: ReportTable): ChartSpec {
       measureIndices: bucketIndices,
       hiddenMeasureIndices: [],
       donutMeasureIndex: undefined,
+      paretoMeasureIndex: undefined,
       title: baseTitle,
       rowIndices,
       truncated,

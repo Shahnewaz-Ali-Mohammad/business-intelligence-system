@@ -13,6 +13,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Line,
   LineChart,
   Pie,
@@ -22,7 +23,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { BarChart3, LineChart as LineChartIcon, PieChart as PieChartIcon } from 'lucide-react';
+import { BarChart3, LineChart as LineChartIcon, PieChart as PieChartIcon, TrendingUp } from 'lucide-react';
 import {
   getRowLimitOptions,
   isDateLikeHeader,
@@ -85,6 +86,10 @@ type GroupOverride = {
   // making the user hide every other measure just to pick which one it
   // draws).
   donutMeasureIndex: number;
+  // Same idea as `donutMeasureIndex`, for the Pareto view -- a Pareto
+  // chart ranks by, and shows the cumulative share of, exactly one
+  // measure, so it gets its own dedicated selector too.
+  paretoMeasureIndex: number;
 };
 
 function toChartRows(
@@ -111,6 +116,7 @@ const KIND_OPTIONS: { kind: ChartKind; label: string; icon: typeof BarChart3 }[]
   { kind: 'bar', label: 'Bar', icon: BarChart3 },
   { kind: 'line', label: 'Line', icon: LineChartIcon },
   { kind: 'donut', label: 'Donut', icon: PieChartIcon },
+  { kind: 'pareto', label: 'Pareto', icon: TrendingUp },
 ];
 
 function ChartGroupCard({
@@ -156,6 +162,7 @@ function ChartGroupCard({
     hiddenMeasures: new Set(group.hiddenMeasureIndices ?? []),
     rowLimit: group.rowIndices.length,
     donutMeasureIndex: group.donutMeasureIndex ?? defaultDonutMeasure,
+    paretoMeasureIndex: group.paretoMeasureIndex ?? defaultDonutMeasure,
   });
 
   const totalRows = table.rows.length;
@@ -169,7 +176,18 @@ function ChartGroupCard({
   // permanently delete every measure but this one from the saved chart,
   // so switching back to Bar/Line had only one series left to draw).
   const donutMeasure = override.donutMeasureIndex;
-  const measuresForChart = override.kind === 'donut' ? [donutMeasure] : visibleMeasures.length ? visibleMeasures : group.measureIndices;
+  // Same pattern as `donutMeasure` above -- Pareto's own dedicated
+  // selector, never the show/hide chips.
+  const paretoMeasure = override.paretoMeasureIndex;
+  const singleSeriesMeasure = override.kind === 'pareto' ? paretoMeasure : donutMeasure;
+  const measuresForChart =
+    override.kind === 'donut'
+      ? [donutMeasure]
+      : override.kind === 'pareto'
+        ? [paretoMeasure]
+        : visibleMeasures.length
+          ? visibleMeasures
+          : group.measureIndices;
 
   const chartRows = toChartRows(table, group.dimensionIndex, measuresForChart, override.rowLimit);
   const measureHeaders = measuresForChart.map((i) => table.headers[i]);
@@ -182,6 +200,12 @@ function ChartGroupCard({
   // and line have no such restriction (a bar can dip below the zero
   // line), so this only ever blocks the Donut view, never the data itself.
   const donutMeasureHasNegatives = override.kind === 'donut' && measureHasNegatives(donutMeasure);
+  // A Pareto bar is that row's share of the grand total, and the
+  // cumulative line only ever climbs toward 100% -- both break the same
+  // way a donut slice does the moment any row is negative (there's no
+  // sensible "share of the whole" once the whole isn't a strict sum of
+  // positives), so it gets the identical guard.
+  const paretoMeasureHasNegatives = override.kind === 'pareto' && measureHasNegatives(paretoMeasure);
   const showingAll = override.rowLimit >= totalRows;
   // The visible title always reflects the CURRENT row limit, computed live
   // -- group.title is only ever the stable base label ("X vs Y"), never a
@@ -191,7 +215,7 @@ function ChartGroupCard({
   // recomputed after the row-limit edit.)
   const displayTitle = showingAll ? group.title : `${group.title} (top ${override.rowLimit} of ${totalRows})`;
 
-  const needsMinWidth = override.kind !== 'donut';
+  const needsMinWidth = override.kind !== 'donut' && override.kind !== 'pareto';
   const minWidth = needsMinWidth ? chartRows.length * MIN_PX_PER_CATEGORY : undefined;
 
   // Bubble the current effective state up as a plain, JSON-serializable
@@ -209,6 +233,7 @@ function ChartGroupCard({
       measureIndices: group.measureIndices,
       hiddenMeasureIndices: Array.from(override.hiddenMeasures),
       donutMeasureIndex: override.donutMeasureIndex,
+      paretoMeasureIndex: override.paretoMeasureIndex,
       title: group.title,
       rowIndices: Array.from({ length: Math.min(override.rowLimit, totalRows) }, (_, i) => i),
       truncated: override.rowLimit < totalRows,
@@ -245,8 +270,8 @@ function ChartGroupCard({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm font-semibold text-slate-700">
           {displayTitle}
-          {override.kind === 'donut' && group.measureIndices.length > 1 ? (
-            <span className="ml-1 font-normal text-slate-400">(showing {table.headers[donutMeasure]} only)</span>
+          {(override.kind === 'donut' || override.kind === 'pareto') && group.measureIndices.length > 1 ? (
+            <span className="ml-1 font-normal text-slate-400">(showing {table.headers[singleSeriesMeasure]} only)</span>
           ) : null}
         </p>
 
@@ -294,6 +319,25 @@ function ChartGroupCard({
             </select>
           )}
 
+          {/* Pareto's dedicated metric selector -- same reasoning as
+              Donut's above: a Pareto chart ranks by, and shows the
+              cumulative share of, exactly one measure. */}
+          {override.kind === 'pareto' && group.measureIndices.length > 1 && (
+            <select
+              value={override.paretoMeasureIndex}
+              onChange={(e) => setOverride((prev) => ({ ...prev, paretoMeasureIndex: Number(e.target.value) }))}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600 outline-none"
+              title="Which metric the Pareto chart ranks by"
+            >
+              {group.measureIndices.map((i) => (
+                <option key={i} value={i} disabled={measureHasNegatives(i)}>
+                  {table.headers[i]}
+                  {measureHasNegatives(i) ? ' (has negative values)' : ''}
+                </option>
+              ))}
+            </select>
+          )}
+
           {/* Row-count control */}
           {rowLimitOptions.length > 1 && (
             <select
@@ -316,7 +360,7 @@ function ChartGroupCard({
           its own dedicated metric selector above instead (a donut only
           ever plots one measure, so "hide" isn't the right control for
           it). */}
-      {group.measureIndices.length > 1 && override.kind !== 'donut' && (
+      {group.measureIndices.length > 1 && override.kind !== 'donut' && override.kind !== 'pareto' && (
         <div className="mb-3 flex flex-wrap gap-1.5">
           {group.measureIndices.map((i, mi) => {
             const active = !override.hiddenMeasures.has(i);
@@ -351,8 +395,21 @@ function ChartGroupCard({
             a measure that&apos;s never negative using the chips above.
           </p>
         </div>
+      ) : override.kind === 'pareto' && paretoMeasureHasNegatives ? (
+        <div className="flex h-[220px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-6 text-center">
+          <p className="text-sm font-medium text-slate-600">
+            A Pareto chart can&apos;t rank by {table.headers[paretoMeasure]} here
+          </p>
+          <p className="max-w-md text-xs text-slate-500">
+            Some rows have a negative {table.headers[paretoMeasure].toLowerCase()} (e.g. a customer credit/overpayment),
+            and a share-of-total ranking can&apos;t represent a negative share of the whole. Pick Bar or Line instead, or
+            switch to a measure that&apos;s never negative using the selector above.
+          </p>
+        </div>
       ) : override.kind === 'donut' ? (
         <DonutChart chartRows={chartRows} measureHeader={measureHeaders[0]} />
+      ) : override.kind === 'pareto' ? (
+        <ParetoChart chartRows={chartRows} measureHeader={measureHeaders[0]} />
       ) : (
         <div className={needsMinWidth ? 'overflow-x-auto' : undefined}>
           <div className="h-[320px]" style={minWidth ? { minWidth: `${minWidth}px` } : undefined}>
@@ -489,6 +546,105 @@ function DonutChart({ chartRows, measureHeader }: { chartRows: Record<string, st
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// A Pareto chart's job is "rank a large number of entities by one measure
+// and show how concentrated the total is" -- the BI-tool-standard answer
+// for exactly the case a donut breaks on (hundreds/thousands of rows).
+// Two series, but per the dataviz skill's #1 anti-pattern (dual-axis
+// charts invent a correlation that isn't in the data), this does NOT use
+// a classic dual y-axis (raw value + %). Instead both series are
+// expressed as percentages of the SAME grand total -- each bar is that
+// row's own share, the line is the running cumulative share -- so both
+// share one honest 0-100% axis.
+const MAX_PARETO_BARS = 20;
+
+function buildParetoRows(
+  chartRows: Record<string, string | number>[],
+  measureHeader: string,
+): {
+  bars: { __label: string; sharePct: number; cumulativePct: number }[];
+  total: number;
+  shownCount: number;
+  totalCount: number;
+  shownSharePct: number;
+  remainderCount: number;
+} {
+  const valueOf = (row: Record<string, string | number>) => (typeof row[measureHeader] === 'number' ? (row[measureHeader] as number) : 0);
+  // Sorted descending by this measure -- "top N" for a Pareto chart means
+  // top by value, which for most of this app's tables is already the
+  // row order, but this holds even if a caller ever passes chartRows in
+  // a different order.
+  const sorted = [...chartRows].sort((a, b) => valueOf(b) - valueOf(a));
+  // The grand total across EVERY row, not just the ones actually drawn --
+  // this is what makes each bar's % and the cumulative line's % honest
+  // even when only the top 20 of, say, 2000 rows get a bar.
+  const total = sorted.reduce((sum, row) => sum + valueOf(row), 0);
+  const shown = sorted.slice(0, MAX_PARETO_BARS);
+
+  let running = 0;
+  const bars = shown.map((row) => {
+    const value = valueOf(row);
+    running += value;
+    return {
+      __label: String(row.__label ?? ''),
+      sharePct: total ? (value / total) * 100 : 0,
+      cumulativePct: total ? (running / total) * 100 : 0,
+    };
+  });
+
+  return {
+    bars,
+    total,
+    shownCount: shown.length,
+    totalCount: sorted.length,
+    shownSharePct: total ? Math.round((running / total) * 1000) / 10 : 0,
+    remainderCount: sorted.length - shown.length,
+  };
+}
+
+function ParetoChart({ chartRows, measureHeader }: { chartRows: Record<string, string | number>[]; measureHeader: string }) {
+  const { bars, shownCount, totalCount, shownSharePct, remainderCount } = buildParetoRows(chartRows, measureHeader);
+  const minWidth = bars.length * MIN_PX_PER_CATEGORY;
+
+  return (
+    <div>
+      <p className="mb-2 text-center text-xs text-slate-500">
+        Top {shownCount} of {totalCount.toLocaleString('en-US')} account for{' '}
+        <span className="font-semibold text-slate-700">{shownSharePct}%</span> of total {measureHeader}
+        {remainderCount > 0 ? ` -- the remaining ${remainderCount.toLocaleString('en-US')} make up the rest.` : '.'}
+      </p>
+      <div className="overflow-x-auto">
+        <div className="h-[320px]" style={{ minWidth: `${minWidth}px` }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={bars} margin={{ top: 8, right: 16, bottom: 24, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+              <XAxis dataKey="__label" {...X_AXIS_PROPS} />
+              {/* One shared 0-100% axis for both series -- see the note
+                  above the constant above for why this deliberately isn't
+                  a dual-axis chart. */}
+              <YAxis
+                domain={[0, 100]}
+                tickFormatter={(v: number) => `${v}%`}
+                tickLine={false}
+                axisLine={false}
+                fontSize={12}
+                width={44}
+              />
+              <Tooltip
+                formatter={(value, name) => [
+                  `${typeof value === 'number' ? value.toFixed(1) : value}%`,
+                  name === 'cumulativePct' ? 'Cumulative share' : 'Share of total',
+                ]}
+              />
+              <Bar dataKey="sharePct" fill={SERIES_COLORS[0]} radius={[4, 4, 0, 0]} maxBarSize={40} />
+              <Line type="monotone" dataKey="cumulativePct" stroke={SERIES_COLORS[3]} strokeWidth={2} dot={bars.length <= 30} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
