@@ -1,21 +1,36 @@
 // ============================================================================
-// Real MCP server for the NEW warehouse-backed semantic layer. Mirrors the
-// pattern already used by apps/bi-dashboard/scripts/mcp/bi-mcp-server.mjs
-// (same SDK, same "expose a Resource for schema discovery + typed Tools for
-// actions" shape) so swapping the dashboard over later is a drop-in, not a
-// rewrite of how MCP is wired into the app.
+// The REAL, LIVE MCP server for the warehouse-backed semantic layer.
+// Registered as 'bi-warehouse-semantic-layer' and loaded by
+// apps/bi-dashboard/scripts/chat/agent.mjs (getAgentTools/loadMcpTools) --
+// every chat answer's data comes from the tools registered here.
 //
-// NOT yet wired into the live dashboard/chat pipeline on purpose — this
-// server only returns real numbers once the warehouse has been populated
-// by a successful ETL run (see src/etl/sync.mjs). Point the dashboard's
-// LangGraph agent at this server (instead of the old bi-mcp-server.mjs)
-// once that's true.
+// (UPDATE 2026-09-27: the header above used to say this was "not yet
+// wired in" -- that was true when this file was first written, but it has
+// been the live server for a while now; the old placeholder demo server
+// apps/bi-dashboard/scripts/mcp/bi-mcp-server.mjs it was compared against
+// has since been deleted as dead code.)
 //
 // Tool names match the ORIGINAL 10-point spec exactly (get_revenue_summary,
-// get_revenue_timeseries, get_region_breakdown, get_ticket_metrics, etc.)
-// — unlike the old server's single flexible query_semantic_layer tool, this
-// uses explicit named tools per the requirement: "Direct, raw SQL creation
-// by the LLM is strictly prohibited" + "explicit named MCP tools."
+// get_revenue_timeseries, get_region_breakdown, get_ticket_metrics, etc.),
+// per the requirement: "Direct, raw SQL creation by the LLM is strictly
+// prohibited" + "explicit named MCP tools" -- no free-form query tool
+// exists anywhere in this server.
+//
+// Request flow for one chat message, end to end (see agent.mjs for the
+// fuller version of this map):
+//   1. apps/bi-dashboard app/api/chat/route.ts (authenticated proxy)
+//   2. apps/bi-dashboard scripts/readonly-api.mjs (HTTP entrypoint)
+//   3. apps/bi-dashboard scripts/chat/agent.mjs (LangGraph agent: decides
+//      which tool(s) below to call, drafts a narrative, critiques it)
+//   4. THIS FILE -- the actual named tools the agent can call
+//   5. apps/bi-warehouse src/services/*.mjs -- the real SQL, one file per
+//      domain (revenueService.mjs, ticketService.mjs)
+//   6. separately, apps/bi-dashboard scripts/lib/dashboard-data.mjs calls
+//      the SAME services directly (step 5) to build the actual table/
+//      chart the user sees -- this never goes through steps 3/4, which is
+//      why a row-limit cap on a tool here (see MAX_RANKED_LIMIT/
+//      MAX_CUSTOMER_LIMIT below) only protects the LLM's own reasoning,
+//      never what the user's table/export actually shows.
 // ============================================================================
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -71,6 +86,39 @@ function capLimitForLlm(limit, cap) {
 
 function withLlmNote(rows, note) {
   return note ? { note, rows } : rows;
+}
+
+// FIX 2026-09-27: five of the tools below (POP, package, ticket-type,
+// ticket-by-POP, transaction-mode) were each hand-writing the exact same
+// handler shape -- capLimitForLlm, call the service, wrap the result with
+// withLlmNote -- differing only in which service function to call. Their
+// titles/descriptions/input schemas stay fully hand-written below (that
+// wording carries real per-tool nuance the model relies on, and
+// templating it would blur that for the sake of fewer lines); only the
+// mechanical, truly-identical handler body is shared here.
+// get_customer_financials is deliberately NOT included -- it has three
+// genuinely unique behaviors (includeTranModeBreakdown, stripping the
+// nested breakdown, aggregate totals in its note) that would make this
+// shared function more convoluted for one outlier rather than simpler.
+function registerRankedTool(server, { name, title, description, inputSchema, cap, service }) {
+  server.registerTool(
+    name,
+    { title, description, inputSchema },
+    async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
+      const { effectiveLimit, note } = capLimitForLlm(limit, cap);
+      const result = await service({
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        limit: effectiveLimit,
+        sortBy: sortBy || undefined,
+        direction: direction || undefined,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }],
+        structuredContent: { rows: result, note },
+      };
+    },
+  );
 }
 
 const SEMANTIC_CATALOG = `# BI Warehouse Semantic Catalog (read-only)
@@ -172,87 +220,65 @@ export function createWarehouseMcpServer() {
     },
   );
 
-  server.registerTool(
-    'get_pop_financials',
-    {
-      title: 'Get per-POP billed vs collected vs outstanding',
-      description:
-        'Total billed, total collected, total refunded, total adjusted, outstanding (billed minus collected), AND active customer count together, one row per POP. Always call this -- instead of get_region_breakdown -- for any question that asks for more than one of billed/collected/refunded/adjusted/outstanding/activeCustomers broken down by POP (e.g. "billed vs collected per POP", "outstanding by POP", "refunded and adjusted by POP", "active customers per POP", "detail for each POP"). Set limit/sortBy/direction from what the user actually asked -- see those arguments\' own descriptions. Do NOT fetch everything and trim it yourself; the tool does the sorting and limiting so the row count you get back is exactly what to report and table.',
-      inputSchema: {
-        dateFrom: z.string().nullable().optional(),
-        dateTo: z.string().nullable().optional(),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .nullable()
-          .optional()
-          .describe('Set this to N whenever the user named an explicit count -- "top 30", "last 30", "bottom 10", "highest 5", "worst 20" all mean limit: that number (30, 30, 10, 5, 20 respectively). Omit only when no count was named, to get the full POP list. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
-        sortBy: z
-          .enum(['billed', 'collected', 'outstanding'])
-          .nullable()
-          .optional()
-          .describe('Which column ranks the rows. Default "billed" fits a plain "top/last N POPs" with no metric named. If the user said "by outstanding"/"by collected", use that instead.'),
-        direction: z
-          .enum(['desc', 'asc'])
-          .nullable()
-          .optional()
-          .describe('"desc" (default) for "top", "highest", "best", "most" -- largest values first. "asc" for "last", "bottom", "lowest", "worst", "smallest" -- smallest values first. Read the user\'s own word, never default to desc when they asked for the bottom/lowest/worst/last.'),
-      },
+  registerRankedTool(server, {
+    name: 'get_pop_financials',
+    title: 'Get per-POP billed vs collected vs outstanding',
+    description:
+      'Total billed, total collected, total refunded, total adjusted, outstanding (billed minus collected), AND active customer count together, one row per POP. Always call this -- instead of get_region_breakdown -- for any question that asks for more than one of billed/collected/refunded/adjusted/outstanding/activeCustomers broken down by POP (e.g. "billed vs collected per POP", "outstanding by POP", "refunded and adjusted by POP", "active customers per POP", "detail for each POP"). Set limit/sortBy/direction from what the user actually asked -- see those arguments\' own descriptions. Do NOT fetch everything and trim it yourself; the tool does the sorting and limiting so the row count you get back is exactly what to report and table.',
+    cap: MAX_RANKED_LIMIT,
+    service: getPopFinancials,
+    inputSchema: {
+      dateFrom: z.string().nullable().optional(),
+      dateTo: z.string().nullable().optional(),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe('Set this to N whenever the user named an explicit count -- "top 30", "last 30", "bottom 10", "highest 5", "worst 20" all mean limit: that number (30, 30, 10, 5, 20 respectively). Omit only when no count was named, to get the full POP list. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
+      sortBy: z
+        .enum(['billed', 'collected', 'outstanding'])
+        .nullable()
+        .optional()
+        .describe('Which column ranks the rows. Default "billed" fits a plain "top/last N POPs" with no metric named. If the user said "by outstanding"/"by collected", use that instead.'),
+      direction: z
+        .enum(['desc', 'asc'])
+        .nullable()
+        .optional()
+        .describe('"desc" (default) for "top", "highest", "best", "most" -- largest values first. "asc" for "last", "bottom", "lowest", "worst", "smallest" -- smallest values first. Read the user\'s own word, never default to desc when they asked for the bottom/lowest/worst/last.'),
     },
-    async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
-      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
-      const result = await getPopFinancials({
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        limit: effectiveLimit,
-        sortBy: sortBy || undefined,
-        direction: direction || undefined,
-      });
-      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
-    },
-  );
+  });
 
-  server.registerTool(
-    'get_package_financials',
-    {
-      title: 'Get per-PACKAGE billed vs active customers',
-      description:
-        'Total billed, total collected, total refunded, total adjusted, outstanding (billed minus collected), AND active customer count together, one row per package (BandwidthName/package plan). Use this for any question that breaks billing, collections, refunds, adjustments, or active customers down by package/plan. Refunded/adjusted resolve via each customer\'s CURRENT package (dim_customer.package_id), not necessarily the package active on the refund/adjustment date.',
-      inputSchema: {
-        dateFrom: z.string().nullable().optional(),
-        dateTo: z.string().nullable().optional(),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .nullable()
-          .optional()
-          .describe('Set to whatever count the user named ("top 10", "last 5", "bottom 3" -> 10, 5, 3). Omit for the full package list. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
-        sortBy: z
-          .enum(['billed', 'collected', 'outstanding', 'activeCustomers'])
-          .nullable()
-          .optional()
-          .describe('Which column ranks the rows. Default "billed".'),
-        direction: z
-          .enum(['desc', 'asc'])
-          .nullable()
-          .optional()
-          .describe('"desc" (default) for top/highest/most; "asc" for last/bottom/lowest/fewest -- read the user\'s own word.'),
-      },
+  registerRankedTool(server, {
+    name: 'get_package_financials',
+    title: 'Get per-PACKAGE billed vs active customers',
+    description:
+      'Total billed, total collected, total refunded, total adjusted, outstanding (billed minus collected), AND active customer count together, one row per package (BandwidthName/package plan). Use this for any question that breaks billing, collections, refunds, adjustments, or active customers down by package/plan. Refunded/adjusted resolve via each customer\'s CURRENT package (dim_customer.package_id), not necessarily the package active on the refund/adjustment date.',
+    cap: MAX_RANKED_LIMIT,
+    service: getPackageFinancials,
+    inputSchema: {
+      dateFrom: z.string().nullable().optional(),
+      dateTo: z.string().nullable().optional(),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe('Set to whatever count the user named ("top 10", "last 5", "bottom 3" -> 10, 5, 3). Omit for the full package list. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
+      sortBy: z
+        .enum(['billed', 'collected', 'outstanding', 'activeCustomers'])
+        .nullable()
+        .optional()
+        .describe('Which column ranks the rows. Default "billed".'),
+      direction: z
+        .enum(['desc', 'asc'])
+        .nullable()
+        .optional()
+        .describe('"desc" (default) for top/highest/most; "asc" for last/bottom/lowest/fewest -- read the user\'s own word.'),
     },
-    async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
-      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
-      const result = await getPackageFinancials({
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        limit: effectiveLimit,
-        sortBy: sortBy || undefined,
-        direction: direction || undefined,
-      });
-      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
-    },
-  );
+  });
 
   server.registerTool(
     'get_revenue_timeseries_financials',
@@ -303,46 +329,35 @@ export function createWarehouseMcpServer() {
     },
   );
 
-  server.registerTool(
-    'get_ticket_type_breakdown',
-    {
-      title: 'Get ticket volume AND avg resolution time by ticket type',
-      description:
-        'Real ticket COUNT and average resolution time TOGETHER, one row per ticket_type_id, with the real ticket_type_name joined in from dim_ticket_type where available (null if a type has no matching dimension row yet). Always call this for "what types of tickets" / "tickets by type" / "breakdown of ticket types" questions -- this breakdown IS available. If ticket_type_name is present, use the real name; if it is null for a row, report that row as "Type <id>" and say its name is not available yet. CRITICAL: avgResolutionHours will be null for every row -- no confirmed "ticket resolved" column exists in the source system yet. NEVER state a resolution-time number; if asked, say plainly it isn\'t available yet.',
-      inputSchema: {
-        dateFrom: z.string().nullable().optional(),
-        dateTo: z.string().nullable().optional(),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .nullable()
-          .optional()
-          .describe('Set to whatever count the user named ("top 10", "last 5") -- see get_pop_financials\' limit for the full convention. Omit for every ticket type. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
-        sortBy: z
-          .enum(['count', 'avgResolutionHours'])
-          .nullable()
-          .optional()
-          .describe('Which column ranks the rows. Default "count".'),
-        direction: z
-          .enum(['desc', 'asc'])
-          .nullable()
-          .optional()
-          .describe('"desc" (default) for top/highest/most; "asc" for last/bottom/lowest/fewest.'),
-      },
+  registerRankedTool(server, {
+    name: 'get_ticket_type_breakdown',
+    title: 'Get ticket volume AND avg resolution time by ticket type',
+    description:
+      'Real ticket COUNT and average resolution time TOGETHER, one row per ticket_type_id, with the real ticket_type_name joined in from dim_ticket_type where available (null if a type has no matching dimension row yet). Always call this for "what types of tickets" / "tickets by type" / "breakdown of ticket types" questions -- this breakdown IS available. If ticket_type_name is present, use the real name; if it is null for a row, report that row as "Type <id>" and say its name is not available yet. CRITICAL: avgResolutionHours will be null for every row -- no confirmed "ticket resolved" column exists in the source system yet. NEVER state a resolution-time number; if asked, say plainly it isn\'t available yet.',
+    cap: MAX_RANKED_LIMIT,
+    service: getTicketTypeBreakdown,
+    inputSchema: {
+      dateFrom: z.string().nullable().optional(),
+      dateTo: z.string().nullable().optional(),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe('Set to whatever count the user named ("top 10", "last 5") -- see get_pop_financials\' limit for the full convention. Omit for every ticket type. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
+      sortBy: z
+        .enum(['count', 'avgResolutionHours'])
+        .nullable()
+        .optional()
+        .describe('Which column ranks the rows. Default "count".'),
+      direction: z
+        .enum(['desc', 'asc'])
+        .nullable()
+        .optional()
+        .describe('"desc" (default) for top/highest/most; "asc" for last/bottom/lowest/fewest.'),
     },
-    async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
-      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
-      const rows = await getTicketTypeBreakdown({
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        limit: effectiveLimit,
-        sortBy: sortBy || undefined,
-        direction: direction || undefined,
-      });
-      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(rows, note)) }], structuredContent: { rows, note } };
-    },
-  );
+  });
 
   server.registerTool(
     'get_customer_financials',
@@ -421,67 +436,46 @@ export function createWarehouseMcpServer() {
     },
   );
 
-  server.registerTool(
-    'get_ticket_pop_breakdown',
-    {
-      title: 'Get ticket volume AND avg resolution time by POP',
-      description:
-        'Real ticket COUNT and average resolution time TOGETHER, one row per POP (resolved via each ticket\'s customer). Use this for "tickets by POP", "which POP has the most tickets", "support ticket breakdown by service area". CRITICAL: avgResolutionHours will be null for every row -- no confirmed "ticket resolved" column exists in the source system yet. NEVER state a resolution-time number; if asked, say plainly it isn\'t available yet.',
-      inputSchema: {
-        dateFrom: z.string().nullable().optional(),
-        dateTo: z.string().nullable().optional(),
-        limit: z.number().int().positive().nullable().optional().describe('Set to whatever count the user named. Omit to return every POP. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
-        sortBy: z.enum(['count', 'avgResolutionHours']).nullable().optional().describe('Default "count".'),
-        direction: z.enum(['desc', 'asc']).nullable().optional().describe('"desc" (default) for most/highest; "asc" for least/lowest.'),
-      },
+  registerRankedTool(server, {
+    name: 'get_ticket_pop_breakdown',
+    title: 'Get ticket volume AND avg resolution time by POP',
+    description:
+      'Real ticket COUNT and average resolution time TOGETHER, one row per POP (resolved via each ticket\'s customer). Use this for "tickets by POP", "which POP has the most tickets", "support ticket breakdown by service area". CRITICAL: avgResolutionHours will be null for every row -- no confirmed "ticket resolved" column exists in the source system yet. NEVER state a resolution-time number; if asked, say plainly it isn\'t available yet.',
+    cap: MAX_RANKED_LIMIT,
+    service: getTicketPopBreakdown,
+    inputSchema: {
+      dateFrom: z.string().nullable().optional(),
+      dateTo: z.string().nullable().optional(),
+      limit: z.number().int().positive().nullable().optional().describe('Set to whatever count the user named. Omit to return every POP. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
+      sortBy: z.enum(['count', 'avgResolutionHours']).nullable().optional().describe('Default "count".'),
+      direction: z.enum(['desc', 'asc']).nullable().optional().describe('"desc" (default) for most/highest; "asc" for least/lowest.'),
     },
-    async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
-      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
-      const result = await getTicketPopBreakdown({
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        limit: effectiveLimit,
-        sortBy: sortBy || undefined,
-        direction: direction || undefined,
-      });
-      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
-    },
-  );
+  });
 
-  server.registerTool(
-    'get_tran_mode_breakdown',
-    {
-      title: 'Get total collected amount broken down by transaction mode',
-      description:
-        'Total COLLECTED amount (never billed -- a transaction mode is how money was actually received, so billed amounts have no mode) broken down by tran_mode_id, one row per mode, ranked and limited. Use this for "revenue/collected by transaction type", "which transaction mode brings the most revenue", "breakdown of collections by payment channel". tran_mode_id is the RAW payment-channel code, NOT yet resolved to a human name (no cash/bKash/Nagad label mapping is synced yet) -- report it as "Mode <id>", never invent what it means.',
-      inputSchema: {
-        dateFrom: z.string().nullable().optional(),
-        dateTo: z.string().nullable().optional(),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .nullable()
-          .optional()
-          .describe('Set to whatever count the user named. Omit to return every transaction mode. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
-        direction: z
-          .enum(['desc', 'asc'])
-          .nullable()
-          .optional()
-          .describe('"desc" (default) for most/highest revenue; "asc" for least/lowest -- read the user\'s own word.'),
-      },
+  registerRankedTool(server, {
+    name: 'get_tran_mode_breakdown',
+    title: 'Get total collected amount broken down by transaction mode',
+    description:
+      'Total COLLECTED amount (never billed -- a transaction mode is how money was actually received, so billed amounts have no mode) broken down by tran_mode_id, one row per mode, ranked and limited. Use this for "revenue/collected by transaction type", "which transaction mode brings the most revenue", "breakdown of collections by payment channel". tran_mode_id is the RAW payment-channel code, NOT yet resolved to a human name (no cash/bKash/Nagad label mapping is synced yet) -- report it as "Mode <id>", never invent what it means.',
+    cap: MAX_RANKED_LIMIT,
+    service: getTranModeBreakdown,
+    inputSchema: {
+      dateFrom: z.string().nullable().optional(),
+      dateTo: z.string().nullable().optional(),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe('Set to whatever count the user named. Omit to return every transaction mode. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
+      direction: z
+        .enum(['desc', 'asc'])
+        .nullable()
+        .optional()
+        .describe('"desc" (default) for most/highest revenue; "asc" for least/lowest -- read the user\'s own word.'),
     },
-    async ({ dateFrom, dateTo, limit, direction }) => {
-      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
-      const result = await getTranModeBreakdown({
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        limit: effectiveLimit,
-        direction: direction || undefined,
-      });
-      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
-    },
-  );
+  });
 
   server.registerTool(
     'get_tran_mode_by_dimension',

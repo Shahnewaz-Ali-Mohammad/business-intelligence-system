@@ -40,7 +40,7 @@ const ResponseSchema = z.object({
     .enum(['answer', 'create_new_page', 'ask_clarification'])
     .describe(
       // NOTE: whether this becomes a saved report/chart page is decided
-      // separately by a dedicated report-intent gate (checkWantsReport), not
+      // separately by a dedicated report-intent gate (part of checkNeedsDataAndReport), not
       // by this field -- this field only controls whether you should ask a
       // clarifying question instead of proceeding.
       'answer for a normal reply once you have (or determined you cannot get) a grounded answer; ask_clarification when the request is genuinely ambiguous or missing information you need to answer correctly -- in that case do NOT call a warehouse tool or guess a default, put your question to the user in narrative instead. create_new_page is accepted but ignored by the app -- always use answer or ask_clarification here.',
@@ -214,46 +214,7 @@ async function checkScope(message, history = []) {
 // the store's actual data" -- and the two must agree before the greeting
 // short-circuit is allowed to fire. See decideEntryRoute, which is the
 // actual (pure, unit-tested) decision logic that combines them.
-const NeedsDataSchema = z.object({
-  needsDataLookup: z
-    .boolean()
-    .describe(
-      'true if answering this message well requires looking up a real number, count, date, or record from this ISP\'s data (billing, collections, outstanding balance, customers, POPs, or tickets) -- even a vague, short, or typo-ridden data question still counts as true. false only if the message could be fully and honestly answered with no data lookup at all -- a greeting, thanks, or a question about the chatbot/dashboard itself and what it can do.',
-    ),
-});
 
-const NEEDS_DATA_PROMPT = `You classify a single user message for a BI dashboard chatbot. Decide ONLY this: to answer this message well, does the chatbot need to look up real data from this ISP business (billing, collections, outstanding balance, customers, POPs, tickets)?
-
-true: any question, however short, vague, or typo-ridden, that is asking about this business's actual numbers or records -- "billing by POP", "how much have we collected this month", "top POPs", "how many tickets last week", "which POP is lowest".
-false: a greeting ("hi", "hello"), thanks/acknowledgement, or a question about the chatbot/dashboard itself and what it can do ("what can you help with", "how does this work", "what data do you have") -- none of these need a data lookup to answer.
-
-Focus only on whether a data lookup is genuinely needed -- ignore spelling, grammar, and phrasing quality entirely.`;
-
-let cachedNeedsDataModel = null;
-
-function getNeedsDataModel() {
-  if (cachedNeedsDataModel) return cachedNeedsDataModel;
-  cachedNeedsDataModel = new ChatOpenAI({
-    model: process.env.OPENAI_SCOPE_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
-    temperature: 0,
-    apiKey: process.env.OPENAI_API_KEY,
-  }).withStructuredOutput(NeedsDataSchema);
-  return cachedNeedsDataModel;
-}
-
-async function checkNeedsDataLookup(message, history = []) {
-  const needsDataModel = getNeedsDataModel();
-  const recentTurns = history.slice(-4);
-  const historyText = recentTurns.length
-    ? recentTurns.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${String(m.content).slice(0, 300)}`).join('\n')
-    : '(no prior messages in this conversation)';
-  const result = await needsDataModel.invoke([
-    new SystemMessage(NEEDS_DATA_PROMPT),
-    new HumanMessage(`Recent conversation (context only):\n${historyText}\n\nCurrent user message to classify: ${JSON.stringify(message)}`),
-  ]);
-  console.log('[agent] needs-data gate result:', JSON.stringify(result));
-  return result;
-}
 
 // Pure decision logic, deliberately separated from the three LLM calls that
 // feed it so it can be unit-tested against a full matrix of
@@ -288,7 +249,23 @@ export function decideEntryRoute({ scope, needsData }) {
   return { route: 'agent' };
 }
 
-const ReportGateSchema = z.object({
+// FIX 2026-09-27: needsDataLookup and wantsReport used to be two entirely
+// separate LLM calls (own schema, own prompt, own cached model, own
+// history-formatting), even though they don't corroborate each other the
+// way scope/needsData deliberately do (see checkScope's own comment) --
+// there is no independence requirement being protected here, just two
+// unrelated yes/no questions about the same message asked twice instead
+// of once. Merged into one schema/prompt/call. checkScope is
+// DELIBERATELY NOT included in this merge -- combining it with
+// needsDataLookup would remove the actual independence a real bug once
+// required (see checkScope's comment above), so that one stays its own
+// separate call.
+const NeedsDataAndReportSchema = z.object({
+  needsDataLookup: z
+    .boolean()
+    .describe(
+      'true if answering this message well requires looking up a real number, count, date, or record from this ISP\'s data (billing, collections, outstanding balance, customers, POPs, or tickets) -- even a vague, short, or typo-ridden data question still counts as true. false only if the message could be fully and honestly answered with no data lookup at all -- a greeting, thanks, or a question about the chatbot/dashboard itself and what it can do.',
+    ),
   wantsReport: z
     .boolean()
     .describe(
@@ -296,39 +273,41 @@ const ReportGateSchema = z.object({
     ),
 });
 
-const REPORT_GATE_PROMPT = `You are a strict classifier gate in front of a BI dashboard chatbot. The chatbot can respond two ways: a plain conversational text answer, or a full report/chart page (a saved report with a visualization attached).
+const NEEDS_DATA_AND_REPORT_PROMPT = `You classify a single user message for a BI dashboard chatbot, answering two independent yes/no questions about it.
 
-Decide ONLY this: does the user want the second kind -- a report, chart, graph, dashboard, or visualization -- rather than just a text answer?
+Question 1 -- needsDataLookup: to answer this message well, does the chatbot need to look up real data from this ISP business (billing, collections, outstanding balance, customers, POPs, tickets)?
+true: any question, however short, vague, or typo-ridden, that is asking about this business's actual numbers or records -- "billing by POP", "how much have we collected this month", "top POPs", "how many tickets last week", "which POP is lowest".
+false: a greeting ("hi", "hello"), thanks/acknowledgement, or a question about the chatbot/dashboard itself and what it can do ("what can you help with", "how does this work", "what data do you have") -- none of these need a data lookup to answer.
+Focus only on whether a data lookup is genuinely needed -- ignore spelling, grammar, and phrasing quality entirely.
 
-This is a request for a report/chart regardless of how it's phrased -- imperative ("generate", "build", "show me", "visualize") and non-imperative ("I need a report for X", "I want a chart of X", "give me a report on X", "can I get a graph of X", "do you have a dashboard for X") both count equally. The user naming the deliverable (report/chart/graph/dashboard/visualization) at all, in any phrasing, means true.
+Question 2 -- wantsReport: does the user want to SEE this as a report, chart, graph, visualization, or dashboard, rather than just a plain text answer?
+This is true regardless of phrasing -- imperative ("generate", "build", "show me", "visualize") and non-imperative ("I need a report for X", "I want a chart of X", "give me a report on X", "can I get a graph of X", "do you have a dashboard for X") both count. The user naming the deliverable (report/chart/graph/dashboard/visualization) at all means true. A direct factual question with no mention of seeing it as a report/chart/graph ("what was revenue last month", "which region is lowest") is false -- they want a spoken answer, not a page. Use the recent conversation only to resolve short follow-ups like "show that as a chart" or "now as a graph" referring back to data just discussed -- those are also true.
 
-If the user is just asking a direct factual question ("what was revenue last month", "which region is lowest") with no mention of seeing it as a report/chart/graph, that is false -- they want a spoken answer, not a page.
+Answer both questions independently -- one does not determine the other (a plain data question with no report language is needsDataLookup: true, wantsReport: false; "show me a chart of X" is both true).`;
 
-Use the recent conversation only to resolve short follow-ups like "show that as a chart" or "now as a graph" referring back to data just discussed -- those are also true.`;
+let cachedNeedsDataAndReportModel = null;
 
-let cachedReportGateModel = null;
-
-function getReportGateModel() {
-  if (cachedReportGateModel) return cachedReportGateModel;
-  cachedReportGateModel = new ChatOpenAI({
+function getNeedsDataAndReportModel() {
+  if (cachedNeedsDataAndReportModel) return cachedNeedsDataAndReportModel;
+  cachedNeedsDataAndReportModel = new ChatOpenAI({
     model: process.env.OPENAI_SCOPE_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
     temperature: 0,
     apiKey: process.env.OPENAI_API_KEY,
-  }).withStructuredOutput(ReportGateSchema);
-  return cachedReportGateModel;
+  }).withStructuredOutput(NeedsDataAndReportSchema);
+  return cachedNeedsDataAndReportModel;
 }
 
-async function checkWantsReport(message, history = []) {
-  const gateModel = getReportGateModel();
+async function checkNeedsDataAndReport(message, history = []) {
+  const model = getNeedsDataAndReportModel();
   const recentTurns = history.slice(-4);
   const historyText = recentTurns.length
     ? recentTurns.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${String(m.content).slice(0, 300)}`).join('\n')
     : '(no prior messages in this conversation)';
-  const result = await gateModel.invoke([
-    new SystemMessage(REPORT_GATE_PROMPT),
+  const result = await model.invoke([
+    new SystemMessage(NEEDS_DATA_AND_REPORT_PROMPT),
     new HumanMessage(`Recent conversation (context only):\n${historyText}\n\nCurrent user message to classify: ${JSON.stringify(message)}`),
   ]);
-  console.log('[agent] report gate result:', JSON.stringify(result));
+  console.log('[agent] needs-data-and-report gate result:', JSON.stringify(result));
   return result;
 }
 
@@ -564,17 +543,20 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   }
 
   console.log('[agent] runBiAgent starting, checking scope, report intent, and data need...');
-  // Run independently of each other -- three small, single-purpose,
-  // temperature-0 classifiers, instead of one big call asked to write the
-  // answer AND decide page-vs-text AND stay in scope AND judge whether data
-  // is needed all at once. checkNeedsDataLookup is a deliberately
-  // independent second opinion on scope.isGreetingOrMeta -- see
-  // decideEntryRoute and the comment above it for why.
-  const [scope, wantsReport, needsData] = await Promise.all([
+  // Two small, temperature-0 classifier calls, run independently -- not
+  // one big call asked to write the answer AND decide page-vs-text AND
+  // stay in scope AND judge whether data is needed all at once. Only two,
+  // not one, on purpose: checkScope's isGreetingOrMeta must stay a
+  // genuinely separate call from needsDataLookup (see checkScope's own
+  // comment for the real bug that independence fixed) -- but
+  // needsDataLookup and wantsReport don't corroborate each other at all,
+  // so those two were merged into one call (checkNeedsDataAndReport).
+  const [scope, needsDataAndReport] = await Promise.all([
     checkScope(message, history),
-    checkWantsReport(message, history),
-    checkNeedsDataLookup(message, history),
+    checkNeedsDataAndReport(message, history),
   ]);
+  const wantsReport = { wantsReport: needsDataAndReport.wantsReport };
+  const needsData = { needsDataLookup: needsDataAndReport.needsDataLookup };
   const { route } = decideEntryRoute({ scope, needsData });
 
   if (route === 'out_of_scope') {

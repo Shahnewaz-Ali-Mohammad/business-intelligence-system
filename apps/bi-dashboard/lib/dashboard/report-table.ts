@@ -62,6 +62,42 @@ function withTotalsRow(table: ReportTable, opts: { avgColumns?: number[] } = {})
   return { headers, rows: [...rows, totalsRow] };
 }
 
+// FIX 2026-09-27: five of the branches below (tickets, packages, trend,
+// ticket_pops, pops) were each hand-writing the exact same shape --
+// a Record<key, {header, get}> column dictionary, filter it down to
+// data.requestedMetrics (falling back to every column, or a smaller
+// sensible default, when nothing specific was asked), build headers/rows
+// from whichever columns survived, and pass the result through
+// withTotalsRow (sometimes with an avg-not-sum column). That wiring is
+// now written once here; each branch below just supplies its own id
+// column, row list, and column dictionary. 'top_customers' is NOT
+// included -- it has genuinely unique extra columns (Package,
+// per-transaction-mode breakdown) beyond a plain metric dictionary, which
+// would make this generic function more convoluted for one outlier
+// rather than simpler.
+function buildColumnTable<Row>(
+  idHeader: string,
+  idGetter: (row: Row) => string | number,
+  rows: Row[],
+  columns: Record<string, { header: string; get: (row: Row) => string | number }>,
+  requestedMetrics: string[] | undefined,
+  opts: { avgKeys?: string[]; defaultMetrics?: string[] } = {},
+): ReportTable {
+  const requested = (requestedMetrics ?? []).filter((m) => m in columns);
+  const activeMetrics = requested.length ? requested : (opts.defaultMetrics ?? Object.keys(columns));
+  const avgKeys = new Set(opts.avgKeys ?? []);
+  // +1 because column 0 is always the id column, added below -- these
+  // indexes are into the FINAL headers/row array withTotalsRow sees.
+  const avgColumns = activeMetrics.map((m, i) => (avgKeys.has(m) ? i + 1 : -1)).filter((i) => i >= 0);
+  return withTotalsRow(
+    {
+      headers: [idHeader, ...activeMetrics.map((m) => columns[m].header)],
+      rows: rows.map((row) => [idGetter(row), ...activeMetrics.map((m) => columns[m].get(row))]),
+    },
+    { avgColumns },
+  );
+}
+
 export function getReportTable(
   topic: string | null | undefined,
   data: DashboardData,
@@ -125,21 +161,16 @@ export function getReportTable(
             : Math.round(row.avgResolutionHours * 10) / 10,
       },
     };
-    const requested = (data.requestedMetrics ?? []).filter((m) => m in TICKET_METRIC_COLUMNS);
-    const activeMetrics = requested.length ? requested : Object.keys(TICKET_METRIC_COLUMNS);
-    const ticketAvgColIndex = activeMetrics.indexOf('avgResolutionHours');
-    return withTotalsRow(
-      {
-        headers: ['Ticket Type', ...activeMetrics.map((m) => TICKET_METRIC_COLUMNS[m].header)],
-        rows: data.ticketBreakdown.map((row) => [
-          row.ticketTypeName ?? `Type ${row.ticketTypeId ?? 'Unknown'}`,
-          ...activeMetrics.map((m) => TICKET_METRIC_COLUMNS[m].get(row)),
-        ]),
-      },
-      // Avg Resolution (hours) gets a real AVERAGE in the totals row, not a
-      // sum -- summing an hours-per-type rate across ticket types would be
-      // meaningless. Every other column (Count) still sums.
-      { avgColumns: ticketAvgColIndex >= 0 ? [ticketAvgColIndex + 1] : [] },
+    // Avg Resolution (hours) gets a real AVERAGE in the totals row, not a
+    // sum -- summing an hours-per-type rate across ticket types would be
+    // meaningless. Every other column (Count) still sums.
+    return buildColumnTable(
+      'Ticket Type',
+      (row) => row.ticketTypeName ?? `Type ${row.ticketTypeId ?? 'Unknown'}`,
+      data.ticketBreakdown,
+      TICKET_METRIC_COLUMNS,
+      data.requestedMetrics,
+      { avgKeys: ['avgResolutionHours'] },
     );
   }
 
@@ -161,15 +192,13 @@ export function getReportTable(
       outstanding: { header: 'Outstanding', get: (row) => row.outstanding },
       activeCustomers: { header: 'Active Customers', get: (row) => row.activeCustomers },
     };
-    const requested = (data.requestedMetrics ?? []).filter((m) => m in PKG_METRIC_COLUMNS);
-    const activeMetrics = requested.length ? requested : Object.keys(PKG_METRIC_COLUMNS);
-    return withTotalsRow({
-      headers: ['Package', ...activeMetrics.map((m) => PKG_METRIC_COLUMNS[m].header)],
-      rows: data.packageFinancials.map((row) => [
-        row.packageName ?? `Package ${row.packageId ?? 'Unknown'}`,
-        ...activeMetrics.map((m) => PKG_METRIC_COLUMNS[m].get(row)),
-      ]),
-    });
+    return buildColumnTable(
+      'Package',
+      (row) => row.packageName ?? `Package ${row.packageId ?? 'Unknown'}`,
+      data.packageFinancials,
+      PKG_METRIC_COLUMNS,
+      data.requestedMetrics,
+    );
   }
 
   // NEW 2026-09-17: 'trend' backs get_revenue_timeseries_financials --
@@ -186,12 +215,13 @@ export function getReportTable(
       refunded: { header: 'Refunded', get: (row) => row.refunded },
       adjusted: { header: 'Adjusted', get: (row) => row.adjusted },
     };
-    const requested = (data.requestedMetrics ?? []).filter((m) => m in TREND_METRIC_COLUMNS);
-    const activeMetrics = requested.length ? requested : Object.keys(TREND_METRIC_COLUMNS);
-    return withTotalsRow({
-      headers: ['Day', ...activeMetrics.map((m) => TREND_METRIC_COLUMNS[m].header)],
-      rows: data.revenueTimeseriesFinancials.map((row) => [row.day, ...activeMetrics.map((m) => TREND_METRIC_COLUMNS[m].get(row))]),
-    });
+    return buildColumnTable(
+      'Day',
+      (row) => row.day,
+      data.revenueTimeseriesFinancials,
+      TREND_METRIC_COLUMNS,
+      data.requestedMetrics,
+    );
   }
 
   // A "line chart"/trend request is about change over time regardless of
@@ -276,15 +306,13 @@ export function getReportTable(
             : Math.round(row.avgResolutionHours * 10) / 10,
       },
     };
-    const requested = (data.requestedMetrics ?? []).filter((m) => m in TICKET_POP_COLUMNS);
-    const activeMetrics = requested.length ? requested : Object.keys(TICKET_POP_COLUMNS);
-    const avgColIndex = activeMetrics.indexOf('avgResolutionHours');
-    return withTotalsRow(
-      {
-        headers: ['POP ID', ...activeMetrics.map((m) => TICKET_POP_COLUMNS[m].header)],
-        rows: data.ticketPopBreakdown.map((row) => [row.pop, ...activeMetrics.map((m) => TICKET_POP_COLUMNS[m].get(row))]),
-      },
-      { avgColumns: avgColIndex >= 0 ? [avgColIndex + 1] : [] },
+    return buildColumnTable(
+      'POP ID',
+      (row) => row.pop,
+      data.ticketPopBreakdown,
+      TICKET_POP_COLUMNS,
+      data.requestedMetrics,
+      { avgKeys: ['avgResolutionHours'] },
     );
   }
 
@@ -357,12 +385,13 @@ export function getReportTable(
       // active_customer_count grouped by pop_id, same as packages already had.
       activeCustomers: { header: 'Active Customers', get: (row) => row.activeCustomers },
     };
-    const requested = (data.requestedMetrics ?? []).filter((m) => m in POP_METRIC_COLUMNS);
-    const activeMetrics = requested.length ? requested : Object.keys(POP_METRIC_COLUMNS);
-    return withTotalsRow({
-      headers: ['POP ID', ...activeMetrics.map((m) => POP_METRIC_COLUMNS[m].header)],
-      rows: data.popFinancials.map((row) => [row.pop, ...activeMetrics.map((m) => POP_METRIC_COLUMNS[m].get(row))]),
-    });
+    return buildColumnTable(
+      'POP ID',
+      (row) => row.pop,
+      data.popFinancials,
+      POP_METRIC_COLUMNS,
+      data.requestedMetrics,
+    );
   }
   if (data.regionRevenue && data.regionRevenue.length) {
     return withTotalsRow({
