@@ -129,6 +129,9 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [reportSaveState, setReportSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  // Reset to collapsed every time a new artifact replaces the old one, so
+  // a fresh question never inherits a previous question's expanded table.
+  const [tableExpanded, setTableExpanded] = useState(false);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const sessionSetupRef = useRef<string | null>(null);
@@ -184,6 +187,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     setMessages([WELCOME_MESSAGE]);
     setArtifact(null);
     setReportSaveState('idle');
+    setTableExpanded(false);
     setSessionId(null);
     setSessionTitle(null);
     sessionSetupRef.current = null;
@@ -284,6 +288,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           tablesUsed: result.tablesUsed,
         });
         setReportSaveState('idle');
+        setTableExpanded(false);
       }
     } catch (error) {
       const errorText =
@@ -530,8 +535,44 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
             ) : null}
 
             {(() => {
+              const rows = inlineTable?.rows ?? [];
+              const totalRows = rows.length;
+              const PREVIEW_ROW_COUNT = 8;
+              // A large result (thousands of customer rows, say) should
+              // never force React to mount that many <tr> elements just
+              // because a chart is open in the side panel -- only the
+              // preview rows render in the DOM until the user actually
+              // asks to see the rest, matching the same "Table Preview (N
+              // of M)" pattern used elsewhere in this app.
+              const visibleRows = tableExpanded ? rows : rows.slice(0, PREVIEW_ROW_COUNT);
+              const isTruncated = !tableExpanded && totalRows > PREVIEW_ROW_COUNT;
+
               return (
                 <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+                  <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      {totalRows
+                        ? `Table Preview (${visibleRows.length} of ${totalRows} row${totalRows === 1 ? '' : 's'})`
+                        : 'Table Preview'}
+                    </p>
+                    {isTruncated ? (
+                      <button
+                        type="button"
+                        onClick={() => setTableExpanded(true)}
+                        className="text-xs font-semibold text-blue-600 hover:text-blue-700"
+                      >
+                        View all {totalRows} rows
+                      </button>
+                    ) : tableExpanded && totalRows > PREVIEW_ROW_COUNT ? (
+                      <button
+                        type="button"
+                        onClick={() => setTableExpanded(false)}
+                        className="text-xs font-semibold text-blue-600 hover:text-blue-700"
+                      >
+                        Collapse
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="max-h-[360px] overflow-auto">
                     <table className="w-full text-left text-sm">
                       <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -542,8 +583,8 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {(inlineTable?.rows.length ?? 0) ? (
-                          inlineTable!.rows.map((row, i) => (
+                        {visibleRows.length ? (
+                          visibleRows.map((row, i) => (
                             <tr key={i}>
                               {row.map((cell, j) => (
                                 <td key={j} className="px-3 py-2 text-slate-700">{cell}</td>

@@ -558,19 +558,6 @@ async function getAgentTools() {
   return cachedTools;
 }
 
-// Deterministic, not another LLM call -- "top N" is an exact literal
-// instruction, not something that needs judgment. Parsed once here and
-// threaded straight through to dashboardData()'s row limit, so the table
-// the user sees is guaranteed to have exactly N rows whenever they asked
-// for an explicit count, instead of relying on the model to both notice
-// the number AND remember to pass it as a tool argument every time.
-export function extractExplicitLimit(message) {
-  const match = String(message).match(/\btop\s+(\d{1,4})\b/i);
-  if (!match) return null;
-  const n = parseInt(match[1], 10);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
 export async function runBiAgent({ message, history = [], pageState = {} }) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not configured.');
@@ -678,7 +665,24 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // reads back what it actually decided, so the saved report/table uses
   // the exact same row count, sort column, and direction the model itself
   // reasoned about, guaranteed to match instead of independently re-guessed.
-  let popFinancialsArgs = null;
+  // FIX 2026-09-27: this used to only recover `limit`/sortBy/direction
+  // when the model's OWN tool call was specifically get_pop_financials --
+  // every other ranked topic (customers, packages, tickets, transaction
+  // modes) fell through to a regex scanning the raw message text for the
+  // literal words "top <number>". That regex only matched one word order
+  // ("top 5000"), so a completely valid request phrased the other way
+  // round ("5000 top customers") silently recovered no limit at all and
+  // the report defaulted to 100 rows with no error or warning. Regex text-
+  // matching is now removed entirely. Every ranked/limited tool the model
+  // can call already parses the count correctly as a real structured
+  // argument (that's the model's job, and it does it fine) -- this loop
+  // simply reads that number back, for WHICHEVER ranked tool actually ran
+  // this turn, not just one. If more than one ranked tool call happens to
+  // fire in a single turn (queries a different topic each), the LAST one
+  // wins, matching extractWinningToolOutputs' own "last call is ground
+  // truth" convention elsewhere in this file.
+  const RANKED_LIMIT_TOOLS = ['get_pop_financials', 'get_package_financials', 'get_ticket_type_breakdown', 'get_customer_financials', 'get_ticket_pop_breakdown', 'get_tran_mode_breakdown'];
+  let rankedToolArgs = null;
   let calledAnyTool = false;
   for (const msg of agentMessages) {
     const calls = msg?.tool_calls;
@@ -695,8 +699,8 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
           usedArgs = { ...usedArgs, days: spanDays };
         }
       }
-      if (call.name === 'get_pop_financials') {
-        popFinancialsArgs = { limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined };
+      if (RANKED_LIMIT_TOOLS.includes(call.name) && typeof limit === 'number' && limit > 0) {
+        rankedToolArgs = { limit, sortBy: sortBy || undefined, direction: direction || undefined };
       }
     }
   }
@@ -750,13 +754,12 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // report gate put on this turn. (The old version tracked this via
   // metricQueriesUsed/comparePreviousPeriodUsed, which no longer exist --
   // calledAnyTool is the direct equivalent for the new fixed-tool set.)
-  // Regex fallback ONLY for the rare case a report was requested but no
-  // tool call happened to run this exact turn (e.g. a plain follow-up that
-  // re-renders a prior breakdown) -- popFinancialsArgs (recovered from the
-  // model's real tool call above) is always preferred when it exists, since
-  // it reflects genuine understanding of the request (limit AND direction),
-  // not just a literal "top N" text match.
-  const fallbackLimit = popFinancialsArgs?.limit ?? extractExplicitLimit(message);
+  // No regex fallback -- if no ranked tool call fired this turn (e.g. a
+  // plain follow-up that just re-renders a prior breakdown with no new
+  // count named), fallbackLimit is simply undefined and dashboardData()/
+  // the underlying service's own default takes over, same as before any
+  // count was ever recovered.
+  const fallbackLimit = rankedToolArgs?.limit;
   // FIX 2026-09-17: this used to be `intent === 'answer' && !calledAnyTool`
   // -- but askedClarification ALSO forces intent to 'answer' (see above),
   // so if the model broke its own "never call a tool while asking a
@@ -773,8 +776,8 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
         windowDays: usedArgs.days,
         region: usedArgs.region,
         limit: fallbackLimit,
-        sortBy: popFinancialsArgs?.sortBy,
-        direction: popFinancialsArgs?.direction,
+        sortBy: rankedToolArgs?.sortBy,
+        direction: rankedToolArgs?.direction,
         // PERF FIX 2026-09-17: pass the model's own chosen topic through so
         // dashboardData only fetches the ONE expensive breakdown this
         // question actually needs, instead of every breakdown in the

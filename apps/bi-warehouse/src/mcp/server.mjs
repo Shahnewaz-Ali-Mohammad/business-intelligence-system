@@ -20,9 +20,58 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+
 import { getRevenueSummary, getRevenueTimeseries, getPopBreakdown, getPopFinancials, getPackageFinancials, getRevenueTimeseriesFinancials, getActiveCustomerCount, getCustomerFinancials, getTranModeBreakdown, getTranModeByDimension } from '../services/revenueService.mjs';
 import { getTicketMetrics, getTicketTypeBreakdown, getTicketPopBreakdown } from '../services/ticketService.mjs';
 import { METRICS } from '../semantic/metrics.mjs';
+
+// FIX 2026-09-26: every ranked/limited tool below let the model pass ANY
+// positive `limit` with no ceiling -- a real request for "1000 top
+// customers" set limit: 1000, which ran fine in SQL (already fixed to
+// push ORDER BY + LIMIT into the query, not aggregate-then-slice in JS),
+// but then serialized all 1000 rows' full JSON -- including each
+// customer's nested per-transaction-mode breakdown object -- straight into
+// the LLM's context TWICE (draft model, then the critique/fact-check
+// model). Confirmed via live error: OpenAI rejected it outright --
+// "maximum context length is 128000 tokens... your messages resulted in
+// 172771 tokens" -- which is exactly the generic, unhelpful "Could not
+// handle chat request" the user saw, ~90 seconds after asking, with no
+// indication of why. These caps make an over-large request fail
+// INSTANTLY, before any DB or OpenAI call, with a schema-validation error
+// the model can see and correct (e.g. by asking for fewer rows or paging),
+// rather than a slow, opaque, expensive full round-trip that was always
+// going to fail anyway.
+//
+// MAX_CUSTOMER_LIMIT is lower than the others because get_customer_financials'
+// rows are the heaviest -- each one carries a full nested
+// collectedByTranMode breakdown object, not just a handful of numbers.
+const MAX_RANKED_LIMIT = 500;
+const MAX_CUSTOMER_LIMIT = 300;
+
+// FIX 2026-09-26 (part 2): a hard `.max()` on the schema made an
+// over-large `limit` REJECT the tool call outright (a Zod validation
+// error), which can abort the whole agent turn instead of degrading
+// gracefully. Soft-clamping here instead means the call always succeeds:
+// it silently returns at most the cap's worth of rows to the LLM (for its
+// own reasoning/narrative -- the real, full-size table and Excel export
+// are built separately, straight from the database, and are NOT limited
+// by this cap at all -- see dashboardData() in
+// apps/bi-dashboard/scripts/lib/dashboard-data.mjs). The LLM is told in
+// plain text when this happened, so it can mention it rather than silently
+// under-reporting.
+function capLimitForLlm(limit, cap) {
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= cap) {
+    return { effectiveLimit: limit ?? undefined, note: null };
+  }
+  return {
+    effectiveLimit: cap,
+    note: `You asked for ${limit} rows; showing the top ${cap} here for analysis to stay within model context limits. This does NOT limit the actual report/table/export the user sees -- that is generated separately from the full ${limit}-row result.`,
+  };
+}
+
+function withLlmNote(rows, note) {
+  return note ? { note, rows } : rows;
+}
 
 const SEMANTIC_CATALOG = `# BI Warehouse Semantic Catalog (read-only)
 
@@ -138,7 +187,7 @@ export function createWarehouseMcpServer() {
           .positive()
           .nullable()
           .optional()
-          .describe('Set this to N whenever the user named an explicit count -- "top 30", "last 30", "bottom 10", "highest 5", "worst 20" all mean limit: that number (30, 30, 10, 5, 20 respectively). Omit only when no count was named, to get the full POP list.'),
+          .describe('Set this to N whenever the user named an explicit count -- "top 30", "last 30", "bottom 10", "highest 5", "worst 20" all mean limit: that number (30, 30, 10, 5, 20 respectively). Omit only when no count was named, to get the full POP list. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
         sortBy: z
           .enum(['billed', 'collected', 'outstanding'])
           .nullable()
@@ -152,14 +201,15 @@ export function createWarehouseMcpServer() {
       },
     },
     async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
+      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
       const result = await getPopFinancials({
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
-        limit: limit || undefined,
+        limit: effectiveLimit,
         sortBy: sortBy || undefined,
         direction: direction || undefined,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: { rows: result } };
+      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
     },
   );
 
@@ -178,7 +228,7 @@ export function createWarehouseMcpServer() {
           .positive()
           .nullable()
           .optional()
-          .describe('Set to whatever count the user named ("top 10", "last 5", "bottom 3" -> 10, 5, 3). Omit for the full package list.'),
+          .describe('Set to whatever count the user named ("top 10", "last 5", "bottom 3" -> 10, 5, 3). Omit for the full package list. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
         sortBy: z
           .enum(['billed', 'collected', 'outstanding', 'activeCustomers'])
           .nullable()
@@ -192,14 +242,15 @@ export function createWarehouseMcpServer() {
       },
     },
     async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
+      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
       const result = await getPackageFinancials({
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
-        limit: limit || undefined,
+        limit: effectiveLimit,
         sortBy: sortBy || undefined,
         direction: direction || undefined,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: { rows: result } };
+      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
     },
   );
 
@@ -267,7 +318,7 @@ export function createWarehouseMcpServer() {
           .positive()
           .nullable()
           .optional()
-          .describe('Set to whatever count the user named ("top 10", "last 5") -- see get_pop_financials\' limit for the full convention. Omit for every ticket type.'),
+          .describe('Set to whatever count the user named ("top 10", "last 5") -- see get_pop_financials\' limit for the full convention. Omit for every ticket type. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
         sortBy: z
           .enum(['count', 'avgResolutionHours'])
           .nullable()
@@ -281,14 +332,15 @@ export function createWarehouseMcpServer() {
       },
     },
     async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
+      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
       const rows = await getTicketTypeBreakdown({
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
-        limit: limit || undefined,
+        limit: effectiveLimit,
         sortBy: sortBy || undefined,
         direction: direction || undefined,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(rows) }], structuredContent: { rows } };
+      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(rows, note)) }], structuredContent: { rows, note } };
     },
   );
 
@@ -307,7 +359,7 @@ export function createWarehouseMcpServer() {
           .positive()
           .nullable()
           .optional()
-          .describe('Set to whatever count the user named ("top 100" -> 100). Defaults to 100 if omitted.'),
+          .describe('Set to whatever count the user named ("top 100" -> 100). Defaults to 100 if omitted. If more than 300 is requested, only the top 300 are used for this analysis -- the full report shown to the user is not limited by this.'),
         sortBy: z
           .enum(['billed', 'collected', 'outstanding'])
           .nullable()
@@ -318,17 +370,54 @@ export function createWarehouseMcpServer() {
           .nullable()
           .optional()
           .describe('"desc" (default) for top/highest/most; "asc" for last/bottom/lowest/fewest -- read the user\'s own word.'),
+        includeTranModeBreakdown: z
+          .boolean()
+          .nullable()
+          .optional()
+          .describe('Only set true if the user specifically asked to see each customer\'s collected amount split by transaction mode/payment channel. Leave false/omitted for an ordinary top-N-by-revenue question -- this breakdown roughly triples each row\'s size for no benefit when it wasn\'t asked for. The real report/table always includes it regardless of this flag; this only controls what is shown to you here for analysis.'),
       },
     },
-    async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
+    async ({ dateFrom, dateTo, limit, sortBy, direction, includeTranModeBreakdown }) => {
+      const { effectiveLimit, note: capNote } = capLimitForLlm(limit, MAX_CUSTOMER_LIMIT);
       const result = await getCustomerFinancials({
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
-        limit: limit || undefined,
+        limit: effectiveLimit,
         sortBy: sortBy || undefined,
         direction: direction || undefined,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: { rows: result } };
+
+      // Strip the nested per-transaction-mode breakdown from what the LLM
+      // sees unless it was actually asked for -- it's real data the user's
+      // table/export always has, it's just unnecessary bulk here.
+      const rowsForLlm = includeTranModeBreakdown
+        ? result
+        : result.map(({ collectedByTranMode, ...rest }) => rest);
+
+      // When the request was capped, hand the model real aggregate totals
+      // across ALL requested rows (not just the visible top N) so it can
+      // still give an accurate "N customers, $X total outstanding" answer
+      // instead of just describing the smaller visible slice.
+      let note = capNote;
+      if (capNote) {
+        const sum = (key) => result.reduce((acc, r) => acc + (Number(r[key]) || 0), 0);
+        const aggregate = {
+          rowsShown: result.length,
+          totals: {
+            billed: sum('billed'),
+            collected: sum('collected'),
+            refunded: sum('refunded'),
+            adjusted: sum('adjusted'),
+            outstanding: sum('outstanding'),
+          },
+        };
+        note = `${capNote} Aggregate totals across the shown top ${result.length} rows: ${JSON.stringify(aggregate.totals)}.`;
+      }
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(withLlmNote(rowsForLlm, note)) }],
+        structuredContent: { rows: rowsForLlm, note },
+      };
     },
   );
 
@@ -341,20 +430,21 @@ export function createWarehouseMcpServer() {
       inputSchema: {
         dateFrom: z.string().nullable().optional(),
         dateTo: z.string().nullable().optional(),
-        limit: z.number().int().positive().nullable().optional().describe('Set to whatever count the user named. Omit to return every POP.'),
+        limit: z.number().int().positive().nullable().optional().describe('Set to whatever count the user named. Omit to return every POP. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
         sortBy: z.enum(['count', 'avgResolutionHours']).nullable().optional().describe('Default "count".'),
         direction: z.enum(['desc', 'asc']).nullable().optional().describe('"desc" (default) for most/highest; "asc" for least/lowest.'),
       },
     },
     async ({ dateFrom, dateTo, limit, sortBy, direction }) => {
+      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
       const result = await getTicketPopBreakdown({
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
-        limit: limit || undefined,
+        limit: effectiveLimit,
         sortBy: sortBy || undefined,
         direction: direction || undefined,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: { rows: result } };
+      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
     },
   );
 
@@ -373,7 +463,7 @@ export function createWarehouseMcpServer() {
           .positive()
           .nullable()
           .optional()
-          .describe('Set to whatever count the user named. Omit to return every transaction mode.'),
+          .describe('Set to whatever count the user named. Omit to return every transaction mode. If more than 500 is requested, only the top 500 are used for this analysis -- the full report shown to the user is not limited by this.'),
         direction: z
           .enum(['desc', 'asc'])
           .nullable()
@@ -382,13 +472,14 @@ export function createWarehouseMcpServer() {
       },
     },
     async ({ dateFrom, dateTo, limit, direction }) => {
+      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_RANKED_LIMIT);
       const result = await getTranModeBreakdown({
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
-        limit: limit || undefined,
+        limit: effectiveLimit,
         direction: direction || undefined,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: { rows: result } };
+      return { content: [{ type: 'text', text: JSON.stringify(withLlmNote(result, note)) }], structuredContent: { rows: result, note } };
     },
   );
 
