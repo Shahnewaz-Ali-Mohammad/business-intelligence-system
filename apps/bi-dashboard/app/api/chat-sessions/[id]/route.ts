@@ -15,6 +15,22 @@ function parseTablesUsed(value: unknown): string[] | null {
   return null;
 }
 
+// report_data comes back from mysql2 already parsed into an object for a
+// real JSON column (same driver behavior tables_used relies on above) --
+// this only needs to handle null/undefined (no report on this message) and
+// the defensive string-that-didn't-get-driver-parsed case.
+function parseReportData(value: unknown): unknown | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value;
+}
+
 // Without ?limit, returns the full transcript (used by /chat?session=ID so a
 // continued conversation has complete context). With ?limit, returns a page
 // of the most recent messages -- optionally older than ?beforeId -- for the
@@ -39,12 +55,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   if (!limitParam) {
     const [messageRows] = await db.execute(
-      'SELECT id, role, content, tables_used, created_at FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY created_at ASC',
+      'SELECT id, role, content, tables_used, report_data, created_at FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY created_at ASC',
       [id, user.id],
     );
-    const messages = (messageRows as Array<{ tables_used: unknown }>).map((row) => ({
+    const messages = (messageRows as Array<{ tables_used: unknown; report_data: unknown }>).map((row) => ({
       ...row,
       tables_used: parseTablesUsed(row.tables_used),
+      report_data: parseReportData(row.report_data),
     }));
     return NextResponse.json({ session: sessions[0], messages, hasMore: false });
   }
@@ -53,15 +70,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const [pageRowsDesc] = beforeId
     ? await db.execute(
-        'SELECT id, role, content, tables_used, created_at FROM chat_messages WHERE session_id = ? AND user_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
+        'SELECT id, role, content, tables_used, report_data, created_at FROM chat_messages WHERE session_id = ? AND user_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
         [id, user.id, beforeId, limit],
       )
     : await db.execute(
-        'SELECT id, role, content, tables_used, created_at FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?',
+        'SELECT id, role, content, tables_used, report_data, created_at FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?',
         [id, user.id, limit],
       );
 
-  const pageDesc = pageRowsDesc as Array<{ id: number; tables_used: unknown }>;
+  const pageDesc = pageRowsDesc as Array<{ id: number; tables_used: unknown; report_data: unknown }>;
   const oldestIdInPage = pageDesc.length ? pageDesc[pageDesc.length - 1].id : null;
 
   let hasMore = false;
@@ -76,7 +93,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const messages = pageDesc
     .slice()
     .reverse()
-    .map((row) => ({ ...row, tables_used: parseTablesUsed(row.tables_used) }));
+    .map((row) => ({ ...row, tables_used: parseTablesUsed(row.tables_used), report_data: parseReportData(row.report_data) }));
 
   return NextResponse.json({ session: sessions[0], messages, hasMore });
 }

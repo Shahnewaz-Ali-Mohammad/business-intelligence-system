@@ -207,3 +207,31 @@ SET @sql_add_chart_spec = IF(@has_chart_spec_col = 0,
 PREPARE stmt FROM @sql_add_chart_spec;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
+
+
+-- ============================================================================
+-- Migration: persist the report (table + chart) generated for a chat
+-- message, not just its text. Previously chat_messages only stored the
+-- narrative -- reopening a saved conversation (Recent Chats / Sessions)
+-- showed the old text but never the table/chart that went with it, even
+-- though it clearly existed when the message was first sent. Stores the
+-- SAME shape the chat UI already builds an inline report from (title,
+-- narrative, topic, chartType, data, days, region, tablesUsed) as one JSON
+-- blob on the assistant message that generated it, so reopening a chat can
+-- render every one of its reports exactly as they looked originally, not
+-- just the latest one. NULL for a message that never had a report (a plain
+-- answer) or one saved before this column existed. Safe to re-run: uses
+-- IF NOT EXISTS everywhere.
+-- ============================================================================
+USE bi_app;
+
+SET @has_report_data_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_messages' AND COLUMN_NAME = 'report_data'
+);
+SET @sql_add_report_data = IF(@has_report_data_col = 0,
+  'ALTER TABLE chat_messages ADD COLUMN report_data JSON NULL AFTER tables_used',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_report_data;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

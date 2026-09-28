@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ saved: false, reason: 'not logged in' });
 
   try {
-    const { sessionId, role, content, tablesUsed } = await req.json();
+    const { sessionId, role, content, tablesUsed, reportData } = await req.json();
     if (role !== 'user' && role !== 'assistant') {
       return NextResponse.json({ error: 'role must be "user" or "assistant".' }, { status: 400 });
     }
@@ -32,9 +32,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unknown session.' }, { status: 404 });
     }
 
+    // reportData is the same shape the chat UI already builds an inline
+    // report from (title, narrative, topic, chartType, data, days, region,
+    // tablesUsed) -- stored verbatim as JSON so reopening this conversation
+    // can render the exact same report again, not just this message's
+    // plain text. Only ever present on an assistant message that actually
+    // generated one; undefined/null for a plain answer.
     await db.execute(
-      'INSERT INTO chat_messages (user_id, session_id, role, content, tables_used) VALUES (?, ?, ?, ?, ?)',
-      [user.id, sessionId, role, content, tablesUsed ? JSON.stringify(tablesUsed) : null],
+      'INSERT INTO chat_messages (user_id, session_id, role, content, tables_used, report_data) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        user.id,
+        sessionId,
+        role,
+        content,
+        tablesUsed ? JSON.stringify(tablesUsed) : null,
+        reportData ? JSON.stringify(reportData) : null,
+      ],
     );
 
     // Auto-title the conversation from the first user message.

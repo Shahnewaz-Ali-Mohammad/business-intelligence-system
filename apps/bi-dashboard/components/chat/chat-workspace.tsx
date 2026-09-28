@@ -41,12 +41,22 @@ const WELCOME_MESSAGE: Message = {
   text: 'Hi. Ask about billing, collections, POPs, active customers, or support tickets, or request a report.',
 };
 
-async function saveMessage(sessionId: number, role: 'user' | 'assistant', text: string, tablesUsed?: string[]) {
+async function saveMessage(
+  sessionId: number,
+  role: 'user' | 'assistant',
+  text: string,
+  tablesUsed?: string[],
+  // The report this specific message generated, if any -- persisted
+  // verbatim so reopening this conversation later can render the exact
+  // same table/chart again instead of just the plain text (see the
+  // report_data column added to chat_messages).
+  reportData?: Artifact,
+) {
   try {
     await fetch('/api/chat-history', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, role, content: text, tablesUsed }),
+      body: JSON.stringify({ sessionId, role, content: text, tablesUsed, reportData }),
     });
   } catch {
     // Best-effort persistence -- a failed save should never block the chat UI.
@@ -161,13 +171,25 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
 
     fetch(`/api/chat-sessions/${requestedSessionId}`)
       .then((res) => res.json())
-      .then((body: { session: { id: number; title: string } | null; messages: Array<{ role: 'user' | 'assistant'; content: string; tables_used: string[] | null }> }) => {
+      .then((body: { session: { id: number; title: string } | null; messages: Array<{ role: 'user' | 'assistant'; content: string; tables_used: string[] | null; report_data: Artifact | null }> }) => {
         if (!body.session) return;
         setSessionId(body.session.id);
         setSessionTitle(body.session.title);
         if (body.messages.length) {
           setMessages(
-            body.messages.map((m) => ({ role: m.role, text: m.content, tablesUsed: m.tables_used ?? undefined })),
+            body.messages.map((m) => ({
+              role: m.role,
+              text: m.content,
+              tablesUsed: m.tables_used ?? undefined,
+              // Restores the report that generated this message, if one was
+              // saved for it -- reopening a conversation now shows the same
+              // tables/charts it had originally while scrolling, not just
+              // text. Undefined for a plain answer, or a message saved
+              // before this column existed.
+              artifact: (m.report_data as Artifact | null | undefined) ?? undefined,
+              reportSaveState: m.report_data ? 'idle' : undefined,
+              tableExpanded: false,
+            })),
           );
         }
       })
@@ -299,7 +321,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           tableExpanded: false,
         },
       ]);
-      if (user && activeSessionId) saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed);
+      if (user && activeSessionId) saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed, newArtifact);
     } catch (error) {
       const errorText =
         error instanceof Error
