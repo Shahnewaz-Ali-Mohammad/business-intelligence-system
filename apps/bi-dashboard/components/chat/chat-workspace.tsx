@@ -449,7 +449,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/90 shadow-[0_22px_60px_rgb(15_23_42/12%)] ring-1 ring-slate-950/5 backdrop-blur">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/90 shadow-[0_6px_18px_rgb(15_23_42/9%)] ring-1 ring-slate-950/5 backdrop-blur">
       <div className="shrink-0 border-b border-slate-200/70 bg-white/70 px-5 py-4">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
@@ -688,7 +688,7 @@ function ReportBlock({
   const isTruncated = !tableExpanded && totalRows > PREVIEW_ROW_COUNT;
 
   return (
-    <section className="space-y-5 rounded-2xl border border-white/70 bg-white/90 p-6 shadow-[0_16px_40px_rgb(15_23_42/10%)] ring-1 ring-slate-950/5 backdrop-blur">
+    <section className="space-y-5 rounded-2xl border border-white/70 bg-white/90 p-6 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur">
       <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
           <BarChart3 size={16} />
