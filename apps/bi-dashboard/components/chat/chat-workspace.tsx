@@ -532,7 +532,14 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               </div>
 
               {message.artifact ? (
-                <div className="ml-12">
+                // No left offset to "line up under the avatar" here on
+                // purpose -- that used to leave a big gap on the left
+                // (ml-12) but nothing matching on the right, so the report
+                // card visibly hugged the right edge while floating away
+                // from the left one. Full-width within the same p-5
+                // gutter the whole scroll region already uses gives it
+                // real, equal breathing room on both sides instead.
+                <div>
                   <ChartErrorBoundary key={`chart-${index}`}>
                     <ReportBlock
                       artifact={message.artifact}
@@ -660,12 +667,12 @@ function ReportBlock({
   const isTruncated = !tableExpanded && totalRows > PREVIEW_ROW_COUNT;
 
   return (
-    <section className="space-y-4 rounded-2xl border border-white/70 bg-white/90 p-5 shadow-[0_16px_40px_rgb(15_23_42/10%)] ring-1 ring-slate-950/5 backdrop-blur">
-      <div>
-        <div className="mb-1 flex items-center gap-2">
-          <BarChart3 size={18} className="text-teal-600" />
-          <p className="font-semibold">{artifact.title}</p>
+    <section className="space-y-5 rounded-2xl border border-white/70 bg-white/90 p-6 shadow-[0_16px_40px_rgb(15_23_42/10%)] ring-1 ring-slate-950/5 backdrop-blur">
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
+          <BarChart3 size={16} />
         </div>
+        <p className="text-base font-semibold tracking-tight text-slate-900">{artifact.title}</p>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -711,8 +718,8 @@ function ReportBlock({
       ) : null}
 
       <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
-        <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-4 py-2.5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             {totalRows
               ? `Table Preview (${visibleRows.length} of ${totalRows} row${totalRows === 1 ? '' : 's'})`
               : 'Table Preview'}
@@ -729,25 +736,25 @@ function ReportBlock({
         </div>
         <div className="max-h-[360px] overflow-auto">
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
               <tr>
                 {inlineTable.headers.map((header, i) => (
-                  <th key={`${header}-${i}`} className="px-3 py-2 font-semibold">{header}</th>
+                  <th key={`${header}-${i}`} className="px-4 py-2.5 font-semibold">{header}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {visibleRows.length ? (
                 visibleRows.map((row, i) => (
-                  <tr key={i}>
+                  <tr key={i} className="odd:bg-white even:bg-slate-50/40">
                     {row.map((cell, j) => (
-                      <td key={j} className="px-3 py-2 text-slate-700">{cell}</td>
+                      <td key={j} className="px-4 py-2.5 text-slate-700">{cell}</td>
                     ))}
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={inlineTable.headers.length} className="px-3 py-6 text-center text-slate-400">
+                  <td colSpan={inlineTable.headers.length} className="px-4 py-6 text-center text-slate-400">
                     No data available for this view.
                   </td>
                 </tr>
@@ -768,9 +775,11 @@ function ReportBlock({
         </div>
       ) : effectiveChartSpec.groups.length > 0 ? (
         <div>
-          <div className="mb-3 flex items-center gap-2">
-            <BarChart3 size={18} className="text-teal-600" />
-            <p className="font-semibold">{artifact.title} -- Chart</p>
+          <div className="mb-3 flex items-center gap-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
+              <BarChart3 size={16} />
+            </div>
+            <p className="text-base font-semibold tracking-tight text-slate-900">{artifact.title} -- Chart</p>
           </div>
           <AutoReportChart
             table={{ headers: inlineTable.headers, rows: chartRows }}

@@ -49,7 +49,20 @@ export function WorkspacePage({
               overflow-y-auto technically let you scroll to it. pb-10 gives
               real clearance below the last element on every scrollable
               page, regardless of window height. */}
-          <div className={`min-h-0 flex-1 overflow-x-hidden px-4 pt-6 pb-10 sm:px-6 ${scroll ? 'overflow-y-auto' : 'overflow-hidden'}`}>{children}</div>
+          <div
+            className={`min-h-0 flex-1 overflow-x-hidden p-4 sm:p-6 lg:p-8 ${
+              // Scrollable content-flow pages (Reports/Sessions) still get
+              // extra bottom clearance below their last row/pagination
+              // control (see the FIX above this component) -- but a fixed-
+              // height page like Chat, which owns its own internal scroll
+              // region, gets a real EQUAL margin on all four sides instead,
+              // so its content area reads as centered/balanced rather than
+              // padded more on one side than another.
+              scroll ? 'overflow-y-auto pb-10' : 'overflow-hidden'
+            }`}
+          >
+            {children}
+          </div>
         </section>
       </div>
     </main>

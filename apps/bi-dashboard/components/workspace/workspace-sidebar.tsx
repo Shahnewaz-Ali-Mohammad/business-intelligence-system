@@ -285,8 +285,9 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                 <p className="px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                   {bucket.label}
                 </p>
-                {bucket.sessions.map((session) =>
-                  renamingId === session.id ? (
+                {bucket.sessions.map((session) => {
+                  const isActiveSession = currentChatSessionId === String(session.id);
+                  return renamingId === session.id ? (
                     <input
                       key={session.id}
                       autoFocus
@@ -307,16 +308,26 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                   ) : (
                     <div
                       key={session.id}
-                      className="group flex items-center gap-1 rounded-lg pr-1 transition hover:bg-white hover:shadow-sm"
+                      className={`group flex items-center gap-1 rounded-lg pr-1 transition ${
+                        isActiveSession
+                          ? 'bg-white shadow-sm ring-1 ring-slate-200'
+                          : 'hover:bg-white hover:shadow-sm'
+                      }`}
                     >
                       <Link
                         href={`/chat?session=${session.id}`}
                         onClick={onNavigate}
-                        className="flex min-w-0 flex-1 items-baseline gap-2 truncate px-3 py-2 text-sm text-slate-600 hover:text-slate-950"
+                        className="block min-w-0 flex-1 px-3 py-2"
                         title={session.title}
                       >
-                        <span className="min-w-0 flex-1 truncate">{session.title}</span>
-                        <span className="shrink-0 text-[11px] font-medium text-slate-400">
+                        <span
+                          className={`block truncate text-sm font-medium leading-tight ${
+                            isActiveSession ? 'text-slate-950' : 'text-slate-700 group-hover:text-slate-950'
+                          }`}
+                        >
+                          {session.title}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] font-medium leading-tight text-slate-400">
                           {formatRelativeShort(session.updated_at)}
                         </span>
                       </Link>
@@ -344,8 +355,8 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
-                  ),
-                )}
+                  );
+                })}
               </div>
             ))}
             {hasMoreSessions ? (
