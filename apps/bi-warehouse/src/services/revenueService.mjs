@@ -230,6 +230,48 @@ export async function getTranModeByDimension({ dimension, dateFrom, dateTo, filt
  * JS. See server.mjs's get_pop_financials tool description for exactly how
  * the model is told to set these.
  */
+// FIX 2026-09-28 (PERF): this used to run FOUR separate live queries,
+// each one a full join of a multi-million-row fact table
+// (fact_billing/fact_collection/fact_refund/fact_adjustment) against
+// dim_customer -- fact_billing/fact_collection/fact_refund/fact_adjustment
+// have no real pop_id of their own (see JOIN_DIMENSIONS' comment in
+// metrics.mjs), so "group by POP" always meant that join, live, on every
+// request. At 20M+ rows this is what actually caused report requests to
+// time out (see chat/route.ts's own timeout history) -- no proxy timeout
+// setting can fix an unbounded scan, and it only gets slower as more data
+// syncs in. Real fix: mart_pop_daily_financials (see PATCH 3 in
+// database/warehouse-schema.sql) pre-computes that exact join+aggregation
+// once per ETL sync, so this now does one SUM/GROUP BY over a rollup
+// table sized by (POPs x days-with-activity) -- tens of thousands of rows
+// at most, not tens of millions, and it stays that size regardless of how
+// much raw transaction volume the warehouse accumulates.
+async function queryPopDailyRollup({ dateFrom, dateTo } = {}) {
+  const pool = getWarehousePool();
+  const conditions = [];
+  const params = [];
+  if (dateFrom) {
+    params.push(dateFrom);
+    conditions.push(`ref_date >= $${params.length}`);
+  }
+  if (dateTo) {
+    params.push(dateTo);
+    conditions.push(`ref_date <= $${params.length}`);
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const { rows } = await pool.query(
+    `SELECT pop_id,
+            SUM(billed) AS billed,
+            SUM(collected) AS collected,
+            SUM(refunded) AS refunded,
+            SUM(adjusted) AS adjusted
+     FROM mart_pop_daily_financials
+     ${whereClause}
+     GROUP BY pop_id`,
+    params,
+  );
+  return rows;
+}
+
 export async function getPopFinancials({
   dateFrom,
   dateTo,
@@ -244,13 +286,14 @@ export async function getPopFinancials({
   // (only by package_id, in getPackageFinancials below). Real, same
   // point-in-time snapshot semantics as getActiveCustomerCount (no date
   // range applies to it -- see that function's own comment).
-  const [billedRows, collectedRows, refundedRows, adjustedRows, activeCustomerRows] = await Promise.all([
-    queryMetric('total_billed', { groupBy: 'pop_id', dateFrom, dateTo, filters }),
-    queryMetric('total_collected', { groupBy: 'pop_id', dateFrom, dateTo, filters }),
-    queryMetric('total_refunded', { groupBy: 'pop_id', dateFrom, dateTo, filters }),
-    queryMetric('total_adjusted', { groupBy: 'pop_id', dateFrom, dateTo, filters }),
+  const [rollupRows, activeCustomerRows] = await Promise.all([
+    queryPopDailyRollup({ dateFrom, dateTo }),
     queryMetric('active_customer_count', { groupBy: 'pop_id', filters }),
   ]);
+  const billedRows = rollupRows.map((r) => ({ pop_id: r.pop_id, value: r.billed }));
+  const collectedRows = rollupRows.map((r) => ({ pop_id: r.pop_id, value: r.collected }));
+  const refundedRows = rollupRows.map((r) => ({ pop_id: r.pop_id, value: r.refunded }));
+  const adjustedRows = rollupRows.map((r) => ({ pop_id: r.pop_id, value: r.adjusted }));
 
   const collectedByPop = new Map(collectedRows.map((r) => [r.pop_id ?? 'Unassigned', Number(r.value || 0)]));
   const refundedByPop = new Map(refundedRows.map((r) => [r.pop_id ?? 'Unassigned', Number(r.value || 0)]));

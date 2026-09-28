@@ -12,6 +12,7 @@ import { syncPopMaster, syncPackageMaster, syncStatusMaster, syncRegion, syncTic
 import { syncCustomerMaster } from './tables/customerMaster.mjs';
 import { syncBillingMaster } from './tables/billingMaster.mjs';
 import { syncTickets } from './tables/tickets.mjs';
+import { refreshMaterializedViews } from './lib/materializedViews.mjs';
 
 async function runSync() {
   const startedAt = new Date();
@@ -31,6 +32,11 @@ async function runSync() {
     { name: 'Dimension: CustomerMaster', fn: syncCustomerMaster },
     { name: 'Fact: BillingMaster (billing/collection/refund/adjustment)', fn: syncBillingMaster },
     { name: 'Fact: Tickets', fn: syncTickets },
+    // Must run AFTER BillingMaster -- it re-aggregates straight from
+    // fact_billing/fact_collection/fact_refund/fact_adjustment, so it has
+    // to see this run's fresh rows, not yesterday's. See PATCH 3 in
+    // database/warehouse-schema.sql for why this rollup exists at all.
+    { name: 'Materialized views: refresh POP daily rollup', fn: refreshMaterializedViews },
   ];
 
   const results = [];

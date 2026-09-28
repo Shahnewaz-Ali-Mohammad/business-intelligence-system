@@ -291,3 +291,84 @@ ALTER TABLE fact_collection ALTER COLUMN pop_id TYPE TEXT;
 
 ALTER TABLE fact_refund ALTER COLUMN customer_id TYPE TEXT;
 ALTER TABLE fact_adjustment ALTER COLUMN customer_id TYPE TEXT;
+
+-- ============================================================================
+-- PATCH 3 (2026-09-28): pre-aggregated POP rollup + covering indexes.
+--
+-- ROOT CAUSE of "the request took too long" on "all POPs, revenue, and
+-- customer count per POP" type reports: fact_billing/fact_collection/
+-- fact_refund/fact_adjustment.pop_id is ALWAYS NULL (see JOIN_DIMENSIONS'
+-- own comment in src/semantic/metrics.mjs) -- the only real way to group
+-- any of these tables by POP is a JOIN to dim_customer on customer_id.
+-- getPopFinancials ran that join FOUR TIMES (once per metric), each one a
+-- full scan of a multi-million-row fact table (fact_billing alone was
+-- confirmed at 6.3M+ rows well before the 20M scale mentioned here),
+-- joined to dim_customer, grouped by pop_id -- live, on every single
+-- request, no matter how many times the same question gets asked. This
+-- is exactly the "Pre-Aggregation" gap called out in the project's own
+-- architecture doc (a dual-tier cache/pre-aggregation layer to keep
+-- response times under 2s) -- it was never actually built. Bumping a
+-- request timeout never fixes this: it only changes how long you wait
+-- before the SAME unbounded scan either finishes or fails again, and it
+-- gets strictly worse as more data is synced in.
+--
+-- THE FIX: pre-compute the join+aggregation ONCE, at ETL-sync time (see
+-- refreshPopFinancialsRollup in src/etl/lib/materializedViews.mjs, wired
+-- into src/etl/sync.mjs right after BillingMaster syncs), into a
+-- materialized view keyed by (pop_id, ref_date) -- at most
+-- (#pops x #distinct calendar days with activity) rows, i.e. a few tens of
+-- thousands of rows total, regardless of whether the underlying fact
+-- tables hold 20 million rows or 200 million. Any real user question
+-- ("all POPs for the last 30 days", "top 30 POPs this quarter") then
+-- aggregates over a SUM/GROUP BY on this small rollup instead of the raw
+-- fact tables -- milliseconds instead of tens of seconds, and it stays
+-- that fast as the warehouse grows, because the rollup's size is driven
+-- by (POPs x days), not by transaction volume.
+-- ============================================================================
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mart_pop_daily_financials AS
+SELECT
+  pop_id,
+  ref_date,
+  SUM(billed) AS billed,
+  SUM(collected) AS collected,
+  SUM(refunded) AS refunded,
+  SUM(adjusted) AS adjusted
+FROM (
+  SELECT dc.pop_id, f.ref_date, f.amount AS billed, 0::numeric AS collected, 0::numeric AS refunded, 0::numeric AS adjusted
+  FROM fact_billing f
+  JOIN dim_customer dc ON f.customer_id = dc.customer_id
+  UNION ALL
+  SELECT dc.pop_id, f.ref_date, 0::numeric, f.amount, 0::numeric, 0::numeric
+  FROM fact_collection f
+  JOIN dim_customer dc ON f.customer_id = dc.customer_id
+  UNION ALL
+  SELECT dc.pop_id, f.ref_date, 0::numeric, 0::numeric, f.amount, 0::numeric
+  FROM fact_refund f
+  JOIN dim_customer dc ON f.customer_id = dc.customer_id
+  UNION ALL
+  SELECT dc.pop_id, f.ref_date, 0::numeric, 0::numeric, 0::numeric, f.amount
+  FROM fact_adjustment f
+  JOIN dim_customer dc ON f.customer_id = dc.customer_id
+) combined
+GROUP BY pop_id, ref_date;
+
+-- A materialized view has no PRIMARY KEY, but a UNIQUE index is what lets
+-- REFRESH MATERIALIZED VIEW CONCURRENTLY run (see materializedViews.mjs) --
+-- CONCURRENTLY means the nightly refresh never blocks a report that's
+-- reading this view at that exact moment, which a plain REFRESH would.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mart_pop_daily_financials_pk ON mart_pop_daily_financials(pop_id, ref_date);
+CREATE INDEX IF NOT EXISTS idx_mart_pop_daily_financials_date ON mart_pop_daily_financials(ref_date);
+
+-- Covering indexes as a second layer of defense: any question this rollup
+-- doesn't already answer (a breakdown this project adds later, an ad-hoc
+-- date-range query, or a report run before the very first nightly refresh
+-- populates the view) still hits the raw fact tables -- these let Postgres
+-- satisfy a ref_date-range scan straight from the index (customer_id and
+-- amount are carried in the index itself via INCLUDE, so a query that only
+-- needs those two columns plus the range never has to touch the table's
+-- actual heap pages at all).
+CREATE INDEX IF NOT EXISTS idx_fact_billing_date_covering ON fact_billing(ref_date) INCLUDE (customer_id, amount);
+CREATE INDEX IF NOT EXISTS idx_fact_collection_date_covering ON fact_collection(ref_date) INCLUDE (customer_id, amount);
+CREATE INDEX IF NOT EXISTS idx_fact_refund_date_covering ON fact_refund(ref_date) INCLUDE (customer_id, amount);
+CREATE INDEX IF NOT EXISTS idx_fact_adjustment_date_covering ON fact_adjustment(ref_date) INCLUDE (customer_id, amount);
