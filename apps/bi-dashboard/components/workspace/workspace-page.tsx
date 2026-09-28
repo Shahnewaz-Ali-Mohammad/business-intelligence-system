@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { WorkspaceSidebar } from './workspace-sidebar';
+import { MobileSidebarTrigger, WorkspaceSidebar } from './workspace-sidebar';
 
 export function WorkspacePage({
   active,
@@ -27,10 +27,17 @@ export function WorkspacePage({
       <div className="flex h-screen overflow-hidden">
         <WorkspaceSidebar active={active} />
         <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <header className="flex h-20 shrink-0 items-center justify-between gap-4 border-b border-white/70 bg-white/85 px-6 shadow-[0_12px_34px_rgb(15_23_42/8%)] backdrop-blur-xl">
-            <div className="min-w-0">
-              <h1 className="truncate text-2xl font-bold tracking-tight">{title}</h1>
-              <p className="truncate text-sm text-slate-500">{subtitle}</p>
+          <header className="flex h-20 shrink-0 items-center justify-between gap-4 border-b border-white/70 bg-white/85 px-4 shadow-[0_12px_34px_rgb(15_23_42/8%)] backdrop-blur-xl sm:px-6">
+            <div className="flex min-w-0 items-center gap-2">
+              {/* Only rendered below the lg breakpoint -- WorkspaceSidebar
+                  itself is a fixed, always-visible column at lg and up, so
+                  this stays hidden there instead of sitting next to it
+                  doing nothing. */}
+              <MobileSidebarTrigger active={active} />
+              <div className="min-w-0">
+                <h1 className="truncate text-2xl font-bold tracking-tight">{title}</h1>
+                <p className="truncate text-sm text-slate-500">{subtitle}</p>
+              </div>
             </div>
             {action}
           </header>

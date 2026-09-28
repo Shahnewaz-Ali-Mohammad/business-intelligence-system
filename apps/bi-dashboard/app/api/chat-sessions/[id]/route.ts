@@ -107,3 +107,31 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   await db.execute('DELETE FROM chat_sessions WHERE id = ? AND user_id = ?', [id, user.id]);
   return NextResponse.json({ deleted: true });
 }
+
+// Renames a conversation -- the sidebar/Sessions list's own "..." menu ->
+// Rename action. Only ever changes `title`; nothing else about the
+// session (its messages, updated_at) is touched by a rename.
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: 'Not signed in.' }, { status: 401 });
+
+  const { id } = await params;
+  const body = await req.json().catch(() => ({}));
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 255) : '';
+  if (!title) {
+    return NextResponse.json({ error: 'title is required.' }, { status: 400 });
+  }
+
+  const db = getAppDb();
+  const [result] = await db.execute('UPDATE chat_sessions SET title = ? WHERE id = ? AND user_id = ?', [
+    title,
+    id,
+    user.id,
+  ]);
+  const affectedRows = (result as { affectedRows: number }).affectedRows;
+  if (!affectedRows) {
+    return NextResponse.json({ error: 'Unknown session.' }, { status: 404 });
+  }
+
+  return NextResponse.json({ renamed: true, title });
+}
