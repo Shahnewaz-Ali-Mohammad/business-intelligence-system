@@ -60,21 +60,55 @@ function bucketSessions(sessions: RecentSession[]) {
 export function WorkspaceSidebar({ active }: { active: string }) {
   const { user, loading, logout } = useAuth();
   const [recentSessions, setRecentSessions] = useState<RecentSession[] | null>(null);
+  // FIX 2026-09-28: this used to fetch page 1 once and stop -- with 6
+  // sessions a page, anything past the 6 most recently updated chats was
+  // only reachable via the separate /sessions page, with no way to see
+  // more right here. Tracks its own page/total (same page/total contract
+  // /api/chat-sessions already returns for the full Sessions page) so a
+  // "Load more" click can append the next page onto this same list in
+  // place, same behavior as scrolling further down a real chat history
+  // list.
+  const [sessionsPage, setSessionsPage] = useState(1);
+  const [sessionsTotal, setSessionsTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  function fetchSessionsPage(page: number) {
+    return fetch(`/api/chat-sessions?page=${page}`).then(
+      (res) => res.json() as Promise<{ sessions: RecentSession[]; total: number; page: number }>,
+    );
+  }
+
+  function handleLoadMore() {
+    setLoadingMore(true);
+    fetchSessionsPage(sessionsPage + 1)
+      .then((body) => {
+        setRecentSessions((prev) => [...(prev ?? []), ...(body.sessions ?? [])]);
+        setSessionsTotal(body.total ?? 0);
+        setSessionsPage(body.page ?? sessionsPage + 1);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  }
 
   useEffect(() => {
     // No signed-out branch here calling setState -- any stale data from a
     // previous signed-in session simply never renders once signed out,
     // since the render below already requires `user` to be truthy before
-    // showing this section at all. Avoids a synchronous setState directly
-    // in the effect body for a case the render already guards against.
+    // showing this section at all. This effect's own setState calls all
+    // happen inside the fetch's .then/.catch (async), never synchronously
+    // in the effect body itself.
     if (!user) return;
-    fetch('/api/chat-sessions?page=1')
-      .then((res) => res.json())
-      .then((body: { sessions: RecentSession[] }) => setRecentSessions(body.sessions ?? []))
+    fetchSessionsPage(1)
+      .then((body) => {
+        setRecentSessions(body.sessions ?? []);
+        setSessionsTotal(body.total ?? 0);
+        setSessionsPage(body.page ?? 1);
+      })
       .catch(() => setRecentSessions([]));
   }, [user]);
 
   const buckets = recentSessions ? bucketSessions(recentSessions) : [];
+  const hasMoreSessions = (recentSessions?.length ?? 0) < sessionsTotal;
 
   return (
     <aside className="hidden h-screen w-[280px] shrink-0 overflow-y-auto border-r border-white/70 bg-white/90 shadow-[10px_0_36px_rgb(15_23_42/8%)] backdrop-blur-xl lg:block">
@@ -135,6 +169,16 @@ export function WorkspaceSidebar({ active }: { active: string }) {
                 ))}
               </div>
             ))}
+            {hasMoreSessions ? (
+              <button
+                type="button"
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                className="w-full rounded-lg px-3 py-2 text-center text-xs font-semibold text-blue-600 transition hover:bg-white hover:text-blue-700 disabled:opacity-50"
+              >
+                {loadingMore ? 'Loading...' : 'Load more'}
+              </button>
+            ) : null}
           </nav>
         ) : null}
 
