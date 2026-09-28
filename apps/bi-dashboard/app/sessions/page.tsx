@@ -2,9 +2,15 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, LogIn, MessageSquareText, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, LogIn, MessageSquareText, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { useAuth } from '@/components/auth/auth-provider';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 type SessionRow = {
   id: number;
@@ -21,6 +27,12 @@ export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  // Which card is currently showing an inline rename input, and its
+  // in-progress text -- same pattern as the sidebar's Recent Chats rename
+  // (see workspace-sidebar.tsx), kept consistent across both places a
+  // conversation can be renamed from.
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   // FIX 2026-09-17: standardized with /reports -- both list pages now show
   // 6 per page with the same page/total contract from their API route,
   // instead of Sessions loading every row in one unpaginated request.
@@ -43,14 +55,37 @@ export default function SessionsPage() {
     loadPage(1);
   }, [authLoading, user, loadPage]);
 
-  async function handleDelete(id: number, event: React.MouseEvent) {
-    event.preventDefault();
-    event.stopPropagation();
+  async function handleDeleteById(id: number) {
     if (!confirm('Delete this conversation? This cannot be undone.')) return;
     await fetch(`/api/chat-sessions/${id}`, { method: 'DELETE' }).catch(() => {});
     const remainingOnPage = (sessions?.length ?? 1) - 1;
     const nextPage = remainingOnPage === 0 && page > 1 ? page - 1 : page;
     loadPage(nextPage);
+  }
+
+  function startRename(session: SessionRow) {
+    setRenamingId(session.id);
+    setRenameValue(session.title);
+  }
+
+  function cancelRename() {
+    setRenamingId(null);
+    setRenameValue('');
+  }
+
+  async function commitRename(id: number) {
+    const title = renameValue.trim();
+    cancelRename();
+    if (!title) return;
+    // Optimistic -- same pattern as the sidebar's rename: updates the card
+    // instantly, only reverted if the request actually fails.
+    setSessions((prev) => (prev ? prev.map((s) => (s.id === id ? { ...s, title } : s)) : prev));
+    const res = await fetch(`/api/chat-sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    }).catch(() => null);
+    if (!res || !res.ok) loadPage(page);
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -87,18 +122,54 @@ export default function SessionsPage() {
                 className="group rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgb(15_23_42/10%)]"
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
                     <MessageSquareText size={18} className="shrink-0 text-blue-600" />
-                    <h2 className="font-bold text-slate-950">{session.title}</h2>
+                    {renamingId === session.id ? (
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onClick={(e) => e.preventDefault()}
+                        onBlur={() => commitRename(session.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            commitRename(session.id);
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            cancelRename();
+                          }
+                        }}
+                        className="min-w-0 flex-1 rounded-md border border-blue-300 bg-white px-2 py-1 font-bold text-slate-950 outline-none ring-2 ring-blue-100"
+                      />
+                    ) : (
+                      <h2 className="min-w-0 flex-1 truncate font-bold text-slate-950">{session.title}</h2>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={(event) => handleDelete(session.id, event)}
-                    className="shrink-0 rounded-md p-1.5 text-slate-300 opacity-0 transition hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
-                    aria-label="Delete conversation"
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <button
+                          type="button"
+                          onClick={(e) => e.preventDefault()}
+                          aria-label={`Options for ${session.title}`}
+                          className="shrink-0 rounded-md p-1.5 text-slate-300 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100"
+                        />
+                      }
+                    >
+                      <MoreVertical size={16} />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => startRename(session)}>
+                        <Pencil size={14} />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem variant="destructive" onClick={() => handleDeleteById(session.id)}>
+                        <Trash2 size={14} />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
 
                 {session.last_question ? (
