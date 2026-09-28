@@ -486,21 +486,22 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-auto bg-gradient-to-b from-slate-50/70 to-white p-5">
         {messages.map((message, index) =>
           message.role === 'user' ? (
-            <div key={`${message.role}-${index}`} className="flex max-w-[76%] flex-col items-end gap-1 ml-auto">
-              {/* FIX: this row is capped to max-w-76% of the chat column
-                  and pushed flush right (ml-auto on the wrapper above) --
-                  but a flex row's children pack to its START by default,
-                  not its end, so the bubble+icon only reached the row's
-                  own right edge when their combined content happened to be
-                  almost exactly 76% wide. Anything shorter left empty
-                  space AFTER the icon, inside that 76% box, so the icon
-                  landed short of the true right edge the assistant's
-                  full-width reply reaches below it. justify-end packs
-                  bubble+icon against the box's own right edge every time,
-                  regardless of message length, so the icon always lines
-                  up with the exact same right boundary as the assistant
-                  content underneath. */}
-              <div className="flex items-start justify-end gap-3">
+            <div key={`${message.role}-${index}`} className="flex flex-col items-end gap-1">
+              {/* FIX: dropped the max-w-76% + ml-auto wrapper entirely --
+                  that put a SEPARATE width-constrained box between this
+                  row and the true container edge, and relied on that
+                  box's own right edge coinciding with the container's
+                  right edge (correct in theory, but one more layer that
+                  can be undermined by any later change). This row is now
+                  the same full-width row the assistant's reply uses --
+                  no intermediate box, nothing to ever get out of sync.
+                  The bubble itself still isn't full-width (it has no
+                  width class, so it sizes to its own text, same as
+                  before) -- only the ROW is full-width, and justify-end
+                  packs the bubble+icon flush against that row's true
+                  right edge, which is now, structurally, the exact same
+                  coordinate the assistant content ends at. */}
+              <div className="flex w-full items-start justify-end gap-3">
                 <div className="rounded-2xl rounded-tr-md bg-gradient-to-br from-blue-600 to-indigo-600 px-4 py-3 text-sm font-medium leading-6 text-white shadow-lg shadow-blue-600/20">
                   {message.text}
                 </div>
