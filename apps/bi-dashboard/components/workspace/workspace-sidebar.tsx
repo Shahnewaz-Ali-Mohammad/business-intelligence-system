@@ -5,7 +5,6 @@ import { useEffect, useState } from 'react';
 import {
   Download,
   FileText,
-  Home,
   LayoutDashboard,
   LogIn,
   LogOut,
@@ -15,7 +14,6 @@ import {
 import { useAuth } from '@/components/auth/auth-provider';
 
 const navItems = [
-  { label: 'Home', href: '/', icon: Home },
   { label: 'Chat', href: '/chat', icon: MessageSquareText },
   { label: 'Sessions', href: '/sessions', icon: LayoutDashboard },
   { label: 'Reports', href: '/reports', icon: FileText },
