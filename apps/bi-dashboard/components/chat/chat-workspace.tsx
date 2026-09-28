@@ -592,7 +592,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
       </div>
 
       <form onSubmit={handleSubmit} className="shrink-0 border-t border-slate-200/80 bg-white/90 p-4">
-        <div className="flex items-end gap-3 rounded-2xl border border-blue-200 bg-white p-3 shadow-[0_14px_34px_rgb(37_99_235/12%)] ring-4 ring-blue-50">
+        <div className="flex items-end gap-3 rounded-2xl border border-indigo-200 bg-white p-3 shadow-[0_14px_34px_rgb(79_70_229/14%)] ring-4 ring-indigo-50">
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
@@ -608,7 +608,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           <Button
             type="submit"
             disabled={loading || !input.trim()}
-            className="h-11 gap-2 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 px-5 font-semibold shadow-lg shadow-blue-600/20 hover:from-blue-700 hover:to-indigo-700"
+            className="h-11 gap-2 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 px-5 font-semibold shadow-lg shadow-indigo-600/25 hover:from-indigo-700 hover:to-violet-700"
           >
             <Send size={16} />
             {loading ? 'Working' : 'Ask'}
