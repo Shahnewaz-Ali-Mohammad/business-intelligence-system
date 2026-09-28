@@ -75,12 +75,36 @@ const MAX_CUSTOMER_LIMIT = 300;
 // plain text when this happened, so it can mention it rather than silently
 // under-reporting.
 function capLimitForLlm(limit, cap) {
-  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= cap) {
-    return { effectiveLimit: limit ?? undefined, note: null };
+  // FIX 2026-09-28: an OMITTED limit (the LLM correctly leaves it out for
+  // "every POP" / "detail for each POP" / "the whole report" -- see each
+  // tool's own limit description) used to fall through this function
+  // completely uncapped, because `typeof undefined !== 'number'` short-
+  // circuited the check below before it ever got a chance to compare
+  // against `cap`. That dumped the FULL, unbounded row set into the
+  // draft AND critique LLM calls for a big warehouse (hundreds of POPs,
+  // thousands of customers) -- slow enough on its own to blow past
+  // readonly-api.mjs's 150s timeout, and for a large enough result the
+  // same shape of bug as the ContextOverflowError already seen in
+  // chat-errors.log for a different unbounded query. An omitted limit
+  // now defaults to the cap for what the LLM sees, exactly like an
+  // explicit over-cap limit does -- the real report/table/export the
+  // user sees is still built separately from the full, uncapped result
+  // (see dashboardData() in apps/bi-dashboard/scripts/lib/dashboard-data.mjs),
+  // so nothing the user actually sees gets smaller, only what's fed back
+  // into the model.
+  const requested = typeof limit === 'number' && Number.isFinite(limit) ? limit : null;
+  if (requested !== null && requested <= cap) {
+    return { effectiveLimit: requested, note: null };
+  }
+  if (requested === null) {
+    return {
+      effectiveLimit: cap,
+      note: `Showing the top ${cap} (by the default sort) here for analysis to stay within model context limits, since no specific count was requested. This does NOT limit the actual report/table/export the user sees -- that is generated separately from the complete, unbounded result.`,
+    };
   }
   return {
     effectiveLimit: cap,
-    note: `You asked for ${limit} rows; showing the top ${cap} here for analysis to stay within model context limits. This does NOT limit the actual report/table/export the user sees -- that is generated separately from the full ${limit}-row result.`,
+    note: `You asked for ${requested} rows; showing the top ${cap} here for analysis to stay within model context limits. This does NOT limit the actual report/table/export the user sees -- that is generated separately from the full ${requested}-row result.`,
   };
 }
 
