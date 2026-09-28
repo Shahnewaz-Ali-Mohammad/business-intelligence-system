@@ -553,13 +553,11 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                 // Same left inset as the bubble above (avatar width + the
                 // row's own gap-3 -- h-9 avatar is 36px, gap-3 is 12px,
                 // ml-12 is 48px, so this lines up exactly under the text,
-                // not under the avatar icon itself) -- and since the
-                // bubble above is now full-width (flex-1, no max-w cap),
-                // both end at the exact same right edge too. One
-                // consistent column for everything the assistant produced
-                // this turn, instead of the report card starting further
-                // left and reaching further right than the reply above it.
-                <div className="ml-12">
+                // not under the avatar icon itself). mr-12 mirrors that on
+                // the right, so the report card leaves the same gap before
+                // the row's right edge that the capped reply bubble does,
+                // instead of stretching out further than the text above it.
+                <div className="ml-12 mr-12">
                   <ChartErrorBoundary key={`chart-${index}`}>
                     <ReportBlock
                       artifact={message.artifact}
