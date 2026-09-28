@@ -90,6 +90,16 @@ export function WorkspaceSidebar({ active }: { active: string }) {
       .finally(() => setLoadingMore(false));
   }
 
+  function refreshFromPageOne() {
+    fetchSessionsPage(1)
+      .then((body) => {
+        setRecentSessions(body.sessions ?? []);
+        setSessionsTotal(body.total ?? 0);
+        setSessionsPage(body.page ?? 1);
+      })
+      .catch(() => setRecentSessions([]));
+  }
+
   useEffect(() => {
     // No signed-out branch here calling setState -- any stale data from a
     // previous signed-in session simply never renders once signed out,
@@ -98,13 +108,30 @@ export function WorkspaceSidebar({ active }: { active: string }) {
     // happen inside the fetch's .then/.catch (async), never synchronously
     // in the effect body itself.
     if (!user) return;
-    fetchSessionsPage(1)
-      .then((body) => {
-        setRecentSessions(body.sessions ?? []);
-        setSessionsTotal(body.total ?? 0);
-        setSessionsPage(body.page ?? 1);
-      })
-      .catch(() => setRecentSessions([]));
+    refreshFromPageOne();
+    // refreshFromPageOne is a plain function recreated every render (not
+    // memoized) -- listing it as a dep would refire this effect every
+    // render, not just when `user` actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  useEffect(() => {
+    // The chat workspace fires this the moment a brand-new conversation's
+    // first exchange is actually saved (see chat-workspace.tsx) -- without
+    // it, a chat started in THIS tab only ever appeared here after a full
+    // page reload, since nothing else tells this sidebar its list is now
+    // stale. Resets back to page 1 (the newest conversation always lands
+    // there) rather than trying to merge it into whatever page count was
+    // previously loaded.
+    if (!user) return;
+    function handleSessionCreated() {
+      refreshFromPageOne();
+    }
+    window.addEventListener('bi:chat-session-created', handleSessionCreated);
+    return () => window.removeEventListener('bi:chat-session-created', handleSessionCreated);
+    // Same reasoning as the effect above -- refreshFromPageOne is a plain,
+    // non-memoized function; only `user` should re-subscribe this listener.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const buckets = recentSessions ? bucketSessions(recentSessions) : [];

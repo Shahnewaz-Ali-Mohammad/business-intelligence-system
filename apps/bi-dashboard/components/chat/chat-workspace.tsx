@@ -243,6 +243,12 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     // refresh the inline report instead of only a create_new_page turn
     // being allowed to. See the result-handling block below.
     const hadOpenReport = messages.some((m) => m.artifact);
+    // Captured before ensureSession -- true only when this send is the one
+    // that creates a brand-new chat_sessions row (New chat -> first
+    // message). Used below to tell the sidebar's Recent Chats list to
+    // pick up the new conversation once it's actually saved, instead of
+    // only ever appearing there after a full page reload.
+    const wasNewSession = !sessionId;
     setMessages((prev) => [...prev, { role: 'user', text: message }]);
     const activeSessionId = await ensureSession(message);
     if (user && activeSessionId) {
@@ -322,6 +328,14 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
         },
       ]);
       if (user && activeSessionId) saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed, newArtifact);
+      // A brand-new chat's first exchange is done and saved (including
+      // the auto-title-from-first-message update /api/chat-history makes
+      // server-side) -- tell the sidebar's Recent Chats list to refresh so
+      // this conversation shows up there right away, without the user
+      // having to reload the page or navigate away and back.
+      if (wasNewSession && activeSessionId) {
+        window.dispatchEvent(new Event('bi:chat-session-created'));
+      }
     } catch (error) {
       const errorText =
         error instanceof Error
