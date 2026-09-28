@@ -29,6 +29,12 @@ type Message = {
   // exact chart the user is looking at, not always the auto-picked
   // default. Undefined means "use the auto-picked default."
   chartSpecOverride?: ChartSpec;
+  // When this message was sent/received -- an ISO string. Hydrated
+  // messages get the real `created_at` the DB stored; a message just sent
+  // this session is stamped client-side at push time (it's saved to the
+  // DB a moment later, but the chat should show a time immediately, not
+  // wait on that round trip).
+  createdAt?: string;
 };
 
 type Artifact = {
@@ -46,6 +52,23 @@ const WELCOME_MESSAGE: Message = {
   role: 'assistant',
   text: 'Hi. Ask about billing, collections, POPs, active customers, or support tickets, or request a report.',
 };
+
+// A time under every message, so scrolling back through a long
+// conversation actually tells you when each turn happened, not just their
+// order. Same-day messages show just the time; anything older also shows
+// the date, since "3:45 PM" alone is ambiguous a week later.
+function formatMessageTime(iso?: string): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const now = new Date();
+  const isToday =
+    date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  const time = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (isToday) return time;
+  const day = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${day}, ${time}`;
+}
 
 async function saveMessage(
   sessionId: number,
@@ -177,7 +200,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
 
     fetch(`/api/chat-sessions/${requestedSessionId}`)
       .then((res) => res.json())
-      .then((body: { session: { id: number; title: string } | null; messages: Array<{ role: 'user' | 'assistant'; content: string; tables_used: string[] | null; report_data: Artifact | null }> }) => {
+      .then((body: { session: { id: number; title: string } | null; messages: Array<{ role: 'user' | 'assistant'; content: string; tables_used: string[] | null; report_data: Artifact | null; created_at: string }> }) => {
         if (!body.session) return;
         setSessionId(body.session.id);
         setSessionTitle(body.session.title);
@@ -195,6 +218,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               artifact: (m.report_data as Artifact | null | undefined) ?? undefined,
               reportSaveState: m.report_data ? 'idle' : undefined,
               tableExpanded: false,
+              createdAt: m.created_at,
             })),
           );
         }
@@ -221,7 +245,17 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     }
   }
 
+  // Only auto-scroll for an actual new turn (a message was appended) or
+  // the loading indicator appearing/disappearing -- NOT for every
+  // `messages` change. An in-place edit to an existing message (e.g. the
+  // user switching a chart's type/measure inline, which calls
+  // updateMessage on the SAME message count) must never yank the scroll
+  // position out from under them while they're still looking at it.
+  const prevMessageCountRef = useRef(messages.length);
   useEffect(() => {
+    const grew = messages.length > prevMessageCountRef.current;
+    prevMessageCountRef.current = messages.length;
+    if (!grew && !loading) return;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, loading]);
 
@@ -255,7 +289,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     // pick up the new conversation once it's actually saved, instead of
     // only ever appearing there after a full page reload.
     const wasNewSession = !sessionId;
-    setMessages((prev) => [...prev, { role: 'user', text: message }]);
+    setMessages((prev) => [...prev, { role: 'user', text: message, createdAt: new Date().toISOString() }]);
     const activeSessionId = await ensureSession(message);
     if (user && activeSessionId) {
       saveMessage(activeSessionId, 'user', message);
@@ -331,6 +365,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           artifact: newArtifact,
           reportSaveState: newArtifact ? 'idle' : undefined,
           tableExpanded: false,
+          createdAt: new Date().toISOString(),
         },
       ]);
       if (user && activeSessionId) saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed, newArtifact);
@@ -347,7 +382,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
         error instanceof Error
           ? `I could not complete that request: ${error.message}`
           : 'I could not complete that request.';
-      setMessages((prev) => [...prev, { role: 'assistant', text: errorText }]);
+      setMessages((prev) => [...prev, { role: 'assistant', text: errorText, createdAt: new Date().toISOString() }]);
     } finally {
       if (slowRequestTimerRef.current) {
         clearTimeout(slowRequestTimerRef.current);
@@ -451,13 +486,18 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-auto bg-gradient-to-b from-slate-50/70 to-white p-5">
         {messages.map((message, index) =>
           message.role === 'user' ? (
-            <div key={`${message.role}-${index}`} className="flex max-w-[76%] items-start justify-end gap-3 ml-auto">
-              <div className="rounded-2xl rounded-tr-md bg-gradient-to-br from-blue-600 to-indigo-600 px-4 py-3 text-sm font-medium leading-6 text-white shadow-lg shadow-blue-600/20">
-                {message.text}
+            <div key={`${message.role}-${index}`} className="flex max-w-[76%] flex-col items-end gap-1 ml-auto">
+              <div className="flex items-start gap-3">
+                <div className="rounded-2xl rounded-tr-md bg-gradient-to-br from-blue-600 to-indigo-600 px-4 py-3 text-sm font-medium leading-6 text-white shadow-lg shadow-blue-600/20">
+                  {message.text}
+                </div>
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-700 to-slate-900 text-white shadow-md">
+                  <User size={16} />
+                </div>
               </div>
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-700 to-slate-900 text-white shadow-md">
-                <User size={16} />
-              </div>
+              {formatMessageTime(message.createdAt) ? (
+                <p className="mr-12 text-[11px] text-slate-400">{formatMessageTime(message.createdAt)}</p>
+              ) : null}
             </div>
           ) : (
             <div key={`${message.role}-${index}`} className="space-y-3">
@@ -465,6 +505,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
                   <Sparkles size={16} />
                 </div>
+                <div className="min-w-0">
                 <div className="rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
                   <p className="whitespace-pre-line">{message.text}</p>
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
@@ -483,6 +524,10 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                       ))}
                     </div>
                   ) : null}
+                </div>
+                {formatMessageTime(message.createdAt) ? (
+                  <p className="mt-1 ml-1 text-[11px] text-slate-400">{formatMessageTime(message.createdAt)}</p>
+                ) : null}
                 </div>
               </div>
 
