@@ -501,11 +501,16 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
             </div>
           ) : (
             <div key={`${message.role}-${index}`} className="space-y-3">
-              <div className="flex max-w-[76%] items-start gap-3">
+              {/* No max-w cap here (unlike the user bubble above) -- the
+                  assistant's reply fills the full remaining width of the
+                  chat column, right up to the same edge the report card
+                  below it uses, instead of stopping as a narrow bubble
+                  while the report spans the whole row underneath it. */}
+              <div className="flex items-start gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
                   <Sparkles size={16} />
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                 <div className="rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
                   <p className="whitespace-pre-line">{message.text}</p>
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
@@ -532,14 +537,16 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               </div>
 
               {message.artifact ? (
-                // No left offset to "line up under the avatar" here on
-                // purpose -- that used to leave a big gap on the left
-                // (ml-12) but nothing matching on the right, so the report
-                // card visibly hugged the right edge while floating away
-                // from the left one. Full-width within the same p-5
-                // gutter the whole scroll region already uses gives it
-                // real, equal breathing room on both sides instead.
-                <div>
+                // Same left inset as the bubble above (avatar width + the
+                // row's own gap-3 -- h-9 avatar is 36px, gap-3 is 12px,
+                // ml-12 is 48px, so this lines up exactly under the text,
+                // not under the avatar icon itself) -- and since the
+                // bubble above is now full-width (flex-1, no max-w cap),
+                // both end at the exact same right edge too. One
+                // consistent column for everything the assistant produced
+                // this turn, instead of the report card starting further
+                // left and reaching further right than the reply above it.
+                <div className="ml-12">
                   <ChartErrorBoundary key={`chart-${index}`}>
                     <ReportBlock
                       artifact={message.artifact}

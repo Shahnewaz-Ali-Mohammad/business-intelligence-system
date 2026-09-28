@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { formatDistanceToNowStrict } from 'date-fns';
 import {
   Download,
   FileText,
@@ -45,50 +44,17 @@ type RecentSession = {
   updated_at: string;
 };
 
-// Groups the same real chat_sessions rows the /sessions page already lists
-// (title + updated_at, nothing invented) into recency buckets -- Today,
-// Yesterday, Last 7 Days, Older -- so the sidebar reads as a real dated
-// history instead of a flat, unordered list. Pure date-arithmetic, no
-// text parsing of any kind.
-function bucketSessions(sessions: RecentSession[]) {
-  const now = new Date();
-  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const today = startOfDay(now);
-  const yesterday = today - 86_400_000;
-  const weekAgo = today - 7 * 86_400_000;
-
-  const buckets: { label: string; sessions: RecentSession[] }[] = [
-    { label: 'Today', sessions: [] },
-    { label: 'Yesterday', sessions: [] },
-    { label: 'Last 7 Days', sessions: [] },
-    { label: 'Older', sessions: [] },
-  ];
-
-  for (const session of sessions) {
-    const updatedAt = startOfDay(new Date(session.updated_at));
-    if (updatedAt >= today) buckets[0].sessions.push(session);
-    else if (updatedAt >= yesterday) buckets[1].sessions.push(session);
-    else if (updatedAt >= weekAgo) buckets[2].sessions.push(session);
-    else buckets[3].sessions.push(session);
-  }
-
-  return buckets.filter((bucket) => bucket.sessions.length > 0);
-}
-
-// A compact "5d ago" / "2h ago" -- date-fns' own formatDistanceToNowStrict
-// already computes the real elapsed time (minutes/hours/days/weeks/months),
-// this just shortens its unit words to match a chat app's usual compact
-// timestamp instead of the full "5 days ago" prose form.
-function formatRelativeShort(iso: string): string {
-  const full = formatDistanceToNowStrict(new Date(iso));
-  return full
-    .replace(/ seconds?$/, 's')
-    .replace(/ minutes?$/, 'm')
-    .replace(/ hours?$/, 'h')
-    .replace(/ days?$/, 'd')
-    .replace(/ weeks?$/, 'w')
-    .replace(/ months?$/, 'mo')
-    .replace(/ years?$/, 'y');
+// FIX 2026-09-28: this used to group sessions into recency buckets
+// (Today/Yesterday/Last 7 Days/Older) with each session's own timestamp
+// shown as a relative "5d ago" label -- explicitly asked to be removed:
+// no bucket headers, just each chat's real date, plain. Sessions are
+// already returned newest-first by the API, so a flat list keeps that
+// same real chronological order without any grouping on top of it.
+function formatSessionTimestamp(iso: string): string {
+  const date = new Date(iso);
+  const datePart = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const timePart = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `${datePart}, ${timePart}`;
 }
 
 // The actual sidebar UI (nav, dated/actionable Recent Chats, account) --
@@ -234,7 +200,6 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
     }
   }
 
-  const buckets = recentSessions ? bucketSessions(recentSessions) : [];
   const hasMoreSessions = (recentSessions?.length ?? 0) < sessionsTotal;
 
   return (
@@ -272,7 +237,7 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
           })}
         </nav>
 
-        {user && buckets.length > 0 ? (
+        {user && recentSessions && recentSessions.length > 0 ? (
           <nav className="space-y-4 border-t border-slate-200 pt-5">
             <div className="flex items-center justify-between px-2">
               <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Recent Chats</p>
@@ -280,12 +245,8 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                 View all
               </Link>
             </div>
-            {buckets.map((bucket) => (
-              <div key={bucket.label} className="space-y-1">
-                <p className="px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  {bucket.label}
-                </p>
-                {bucket.sessions.map((session) => {
+            <div className="space-y-1">
+              {(recentSessions ?? []).map((session) => {
                   const isActiveSession = currentChatSessionId === String(session.id);
                   return renamingId === session.id ? (
                     <input
@@ -328,7 +289,7 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                           {session.title}
                         </span>
                         <span className="mt-0.5 block text-[11px] font-medium leading-tight text-slate-400">
-                          {formatRelativeShort(session.updated_at)}
+                          {formatSessionTimestamp(session.updated_at)}
                         </span>
                       </Link>
                       <DropdownMenu>
@@ -356,9 +317,8 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                       </DropdownMenu>
                     </div>
                   );
-                })}
-              </div>
-            ))}
+              })}
+            </div>
             {hasMoreSessions ? (
               <button
                 type="button"
