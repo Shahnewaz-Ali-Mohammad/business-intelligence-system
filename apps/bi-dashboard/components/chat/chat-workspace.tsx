@@ -520,13 +520,13 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                   chat column, right up to the same edge the report card
                   below it uses, instead of stopping as a narrow bubble
                   while the report spans the whole row underneath it. */}
-              <div className="flex items-start gap-3">
+              <div className="flex w-full max-w-full items-start gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
                   <Sparkles size={16} />
                 </div>
                 <div className="min-w-0 flex-1">
-                <div className="rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
-                  <p className="whitespace-pre-line">{message.text}</p>
+                <div className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
+                  <p className="whitespace-pre-line break-words">{message.text}</p>
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
                     <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2">
                       <Database size={12} className="text-slate-400" />
