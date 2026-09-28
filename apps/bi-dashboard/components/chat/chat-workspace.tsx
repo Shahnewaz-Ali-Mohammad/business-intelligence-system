@@ -525,7 +525,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                   <Sparkles size={16} />
                 </div>
                 <div className="min-w-0 flex-1 mr-12">
-                <div className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
+                <div className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-white/70 bg-white/90 px-4 py-3 text-sm leading-6 text-slate-700 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur">
                   <p className="whitespace-pre-line break-words">{message.text}</p>
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
                     <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2">
@@ -582,7 +582,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
               <Sparkles size={16} />
             </div>
-            <div className="rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-500 shadow-sm">
+            <div className="rounded-2xl rounded-tl-md border border-white/70 bg-white/90 px-4 py-3 text-sm leading-6 text-slate-500 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur">
               {slowRequest
                 ? 'Still working -- this question needs more than one real database lookup, so it is taking longer than usual (up to ~90s for a heavy or multi-part question).'
                 : 'Reading the database and preparing a grounded answer...'}
