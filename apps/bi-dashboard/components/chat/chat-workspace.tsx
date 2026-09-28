@@ -515,16 +515,15 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
             </div>
           ) : (
             <div key={`${message.role}-${index}`} className="space-y-3">
-              {/* No max-w cap here (unlike the user bubble above) -- the
-                  assistant's reply fills the full remaining width of the
-                  chat column, right up to the same edge the report card
-                  below it uses, instead of stopping as a narrow bubble
-                  while the report spans the whole row underneath it. */}
+              {/* Sized to its own content, same as the user bubble --
+                  capped at 76% of the row so it never has a reason to
+                  reach the icon's edge unless the text genuinely needs
+                  that much room. */}
               <div className="flex w-full max-w-full items-start gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
                   <Sparkles size={16} />
                 </div>
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 max-w-[76%]">
                 <div className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
                   <p className="whitespace-pre-line break-words">{message.text}</p>
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
