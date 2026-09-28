@@ -267,7 +267,7 @@ function ChartGroupCard({
 
   return (
     <section className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-[0_12px_30px_rgb(15_23_42/7%)] ring-1 ring-white">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-3 space-y-2">
         <p className="text-sm font-semibold text-slate-700">
           {displayTitle}
           {(override.kind === 'donut' || override.kind === 'pareto') && group.measureIndices.length > 1 ? (
@@ -275,6 +275,10 @@ function ChartGroupCard({
           ) : null}
         </p>
 
+        {/* Controls always sit on their own row below the title -- never
+            beside it -- so switching chart kind (which can add/remove a
+            dedicated measure selector) never shifts the title's position
+            or wraps controls unpredictably next to it. */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Chart type switcher */}
           <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">

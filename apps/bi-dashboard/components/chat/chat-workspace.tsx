@@ -7,7 +7,7 @@ import { BarChart3, Check, Database, FileSpreadsheet, LogIn, Plus, Save, Send, S
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/components/auth/auth-provider';
 import { getReportTable, stripTotalsRow } from '@/lib/dashboard/report-table';
-import { getChartSpec } from '@/lib/dashboard/chart-spec';
+import { getChartSpec, type ChartSpec } from '@/lib/dashboard/chart-spec';
 import { AutoReportChart } from '@/components/dashboard/charts/auto-report-chart';
 import { ChartErrorBoundary } from '@/components/dashboard/charts/chart-error-boundary';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
@@ -23,6 +23,12 @@ type Message = {
   artifact?: Artifact;
   reportSaveState?: 'idle' | 'saving' | 'saved' | 'error';
   tableExpanded?: boolean;
+  // A chart-type/measure edit made to this message's OWN inline chart in
+  // the chat panel -- captured here (instead of being pure local state
+  // inside ReportBlock/AutoReportChart) so Save Report can persist the
+  // exact chart the user is looking at, not always the auto-picked
+  // default. Undefined means "use the auto-picked default."
+  chartSpecOverride?: ChartSpec;
 };
 
 type Artifact = {
@@ -353,19 +359,23 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   }
 
   async function handleSaveReport(index: number) {
-    const target = messages[index]?.artifact;
+    const message = messages[index];
+    const target = message?.artifact;
     if (!target || !user) return;
     updateMessage(index, { reportSaveState: 'saving' });
-    // Recomputed fresh from this message's own artifact rather than reused
-    // from render -- deterministic from the same table data ReportBlock
-    // renders from, so it can never disagree with what's on screen.
-    const table = getReportTable(target.topic, target.data, target.chartType);
-    let spec: ReturnType<typeof getChartSpec> = { groups: [] };
-    try {
-      spec = getChartSpec({ headers: table.headers, rows: stripTotalsRow(table) });
-    } catch {
-      // A chart-spec failure shouldn't block saving the report itself --
-      // ReportBlock already surfaces this loudly in the UI.
+    // If the user edited this message's chart (type/measure/row-count) in
+    // the chat panel itself, that edit is what gets saved -- otherwise
+    // fall back to recomputing the same auto-picked default ReportBlock
+    // renders from, so Save never disagrees with what's on screen.
+    let spec: ReturnType<typeof getChartSpec> = message?.chartSpecOverride ?? { groups: [] };
+    if (!message?.chartSpecOverride) {
+      const table = getReportTable(target.topic, target.data, target.chartType);
+      try {
+        spec = getChartSpec({ headers: table.headers, rows: stripTotalsRow(table) });
+      } catch {
+        // A chart-spec failure shouldn't block saving the report itself --
+        // ReportBlock already surfaces this loudly in the UI.
+      }
     }
     const ok = await saveReport(target, spec);
     updateMessage(index, { reportSaveState: ok ? 'saved' : 'error' });
@@ -428,10 +438,6 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                 Sign in to save history
               </Link>
             ) : null}
-            <span className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-              <Database size={11} className="mr-1 inline" />
-              DB connected
-            </span>
           </div>
         </div>
       </div>
@@ -488,9 +494,11 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                       user={!!user}
                       reportSaveState={message.reportSaveState ?? 'idle'}
                       tableExpanded={!!message.tableExpanded}
+                      chartSpecOverride={message.chartSpecOverride ?? null}
                       onSave={() => handleSaveReport(index)}
                       onExport={() => handleExportArtifact(index)}
                       onToggleExpand={() => toggleTableExpanded(index)}
+                      onSpecChange={(spec) => updateMessage(index, { chartSpecOverride: spec })}
                     />
                   </ChartErrorBoundary>
                 </div>
@@ -554,17 +562,21 @@ function ReportBlock({
   user,
   reportSaveState,
   tableExpanded,
+  chartSpecOverride,
   onSave,
   onExport,
   onToggleExpand,
+  onSpecChange,
 }: {
   artifact: Artifact;
   user: boolean;
   reportSaveState: 'idle' | 'saving' | 'saved' | 'error';
   tableExpanded: boolean;
+  chartSpecOverride: ChartSpec | null;
   onSave: () => void;
   onExport: () => void;
   onToggleExpand: () => void;
+  onSpecChange: (spec: ChartSpec) => void;
 }) {
   const inlineTable = getReportTable(artifact.topic, artifact.data, artifact.chartType);
   // Chart is generated from the SAME table data, minus the Totals row (a
@@ -587,6 +599,10 @@ function ReportBlock({
     chartSpecError = err instanceof Error ? err.message : String(err);
     console.error('[chart] getChartSpec failed for topic', artifact.topic, err);
   }
+  // An edit the user already made to this message's chart (type, measure,
+  // row count) wins over the freshly-recomputed default -- otherwise every
+  // render would silently discard whatever the user picked.
+  const effectiveChartSpec = chartSpecOverride ?? chartSpec;
 
   const rows = inlineTable.rows;
   const totalRows = rows.length;
@@ -605,7 +621,6 @@ function ReportBlock({
           <BarChart3 size={18} className="text-teal-600" />
           <p className="font-semibold">{artifact.title}</p>
         </div>
-        <p className="text-sm text-slate-500">{artifact.narrative}</p>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -706,13 +721,17 @@ function ReportBlock({
           <p className="text-sm text-rose-600">{chartSpecError}</p>
           <p className="mt-1 text-xs text-rose-400">The table above is unaffected -- this only stopped the chart. Check the browser console for the full error.</p>
         </div>
-      ) : chartSpec.groups.length > 0 ? (
+      ) : effectiveChartSpec.groups.length > 0 ? (
         <div>
           <div className="mb-3 flex items-center gap-2">
             <BarChart3 size={18} className="text-teal-600" />
             <p className="font-semibold">{artifact.title} -- Chart</p>
           </div>
-          <AutoReportChart table={{ headers: inlineTable.headers, rows: chartRows }} spec={chartSpec} />
+          <AutoReportChart
+            table={{ headers: inlineTable.headers, rows: chartRows }}
+            spec={effectiveChartSpec}
+            onSpecChange={onSpecChange}
+          />
         </div>
       ) : null}
     </section>
