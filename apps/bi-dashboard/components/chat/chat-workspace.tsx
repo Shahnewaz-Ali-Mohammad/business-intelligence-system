@@ -515,15 +515,16 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
             </div>
           ) : (
             <div key={`${message.role}-${index}`} className="space-y-3">
-              {/* Sized to its own content, same as the user bubble --
-                  capped at 76% of the row so it never has a reason to
-                  reach the icon's edge unless the text genuinely needs
-                  that much room. */}
+              {/* mr-12 (48px) is the exact same fixed right margin the
+                  report card below uses -- a percentage cap still let a
+                  long reply crowd the edge, so both now stop the same
+                  fixed distance short of the row's right edge no matter
+                  how much text there is. */}
               <div className="flex w-full max-w-full items-start gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
                   <Sparkles size={16} />
                 </div>
-                <div className="min-w-0 max-w-[76%]">
+                <div className="min-w-0 flex-1 mr-12">
                 <div className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
                   <p className="whitespace-pre-line break-words">{message.text}</p>
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
