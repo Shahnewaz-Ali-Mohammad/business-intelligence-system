@@ -204,7 +204,7 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
 
   return (
     <>
-      <div className="sticky top-0 z-10 flex h-16 items-center gap-3 border-b border-slate-200/70 bg-white/90 px-5 backdrop-blur-xl">
+      <div className="sticky top-0 z-10 flex h-20 items-center gap-3 border-b border-slate-200/70 bg-white/90 px-5 backdrop-blur-xl">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-slate-950 to-blue-950 text-white shadow-lg shadow-slate-950/20">
           <LayoutDashboard size={19} />
         </div>
