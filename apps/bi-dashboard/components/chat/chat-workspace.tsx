@@ -487,7 +487,20 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
         {messages.map((message, index) =>
           message.role === 'user' ? (
             <div key={`${message.role}-${index}`} className="flex max-w-[76%] flex-col items-end gap-1 ml-auto">
-              <div className="flex items-start gap-3">
+              {/* FIX: this row is capped to max-w-76% of the chat column
+                  and pushed flush right (ml-auto on the wrapper above) --
+                  but a flex row's children pack to its START by default,
+                  not its end, so the bubble+icon only reached the row's
+                  own right edge when their combined content happened to be
+                  almost exactly 76% wide. Anything shorter left empty
+                  space AFTER the icon, inside that 76% box, so the icon
+                  landed short of the true right edge the assistant's
+                  full-width reply reaches below it. justify-end packs
+                  bubble+icon against the box's own right edge every time,
+                  regardless of message length, so the icon always lines
+                  up with the exact same right boundary as the assistant
+                  content underneath. */}
+              <div className="flex items-start justify-end gap-3">
                 <div className="rounded-2xl rounded-tr-md bg-gradient-to-br from-blue-600 to-indigo-600 px-4 py-3 text-sm font-medium leading-6 text-white shadow-lg shadow-blue-600/20">
                   {message.text}
                 </div>
