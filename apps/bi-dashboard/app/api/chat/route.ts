@@ -44,7 +44,15 @@ function isRateLimited(userId: number): boolean {
 // timeout (bumped 55s -> 90s there for the same reason) so that
 // server's own specific error is what the user sees, not this proxy
 // aborting first.
-const REQUEST_TIMEOUT_MS = 95_000;
+// FIX 2026-09-28: readonly-api.mjs's own timeout was later raised again,
+// 90s -> 150s (fact_collection's real 6.1M-row aggregations plus up to 3
+// draft/critique/redraft round-trips can genuinely take that long), but
+// this proxy's timeout was never raised to match -- it kept aborting at
+// 95s, BEFORE the backend's own 150s timeout could ever fire, so every
+// heavy multi-POP/multi-table report ("all pops, revenue, and customer
+// count for each") hit this generic "took too long" message instead of
+// either succeeding or surfacing the backend's own specific error.
+const REQUEST_TIMEOUT_MS = 155_000;
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
