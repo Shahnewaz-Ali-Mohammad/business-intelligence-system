@@ -297,18 +297,16 @@ const NeedsDataAndReportSchema = z.object({
     ),
   fastPathArgs: z
     .object({
-      dateFrom: z.string().nullable().optional().describe('ISO date, e.g. "2026-01-01". Omit for all-time / no start bound.'),
-      dateTo: z.string().nullable().optional().describe('ISO date. Omit for up to today / no end bound.'),
-      limit: z.number().int().positive().nullable().optional().describe('Set to N whenever the user named an explicit count ("top 30", "last 10", "bottom 5" all mean limit: that number). Omit for the full unranked list. Only meaningful for a ranked/breakdown tool.'),
-      sortBy: z.string().nullable().optional().describe('Which column ranks the rows, exactly as that tool\'s own sortBy enum names it (e.g. "billed", "collected", "outstanding", "activeCustomers", "count", "avgResolutionHours"). Omit to use that tool\'s own default.'),
-      direction: z.enum(['desc', 'asc']).nullable().optional().describe('"desc" for top/highest/most/best; "asc" for last/bottom/lowest/worst/fewest -- read the user\'s own word, never default to desc when they asked for the bottom/lowest/worst.'),
-      metric: z.enum(['total_billed', 'total_collected']).nullable().optional().describe('Only for get_revenue_timeseries / get_region_breakdown -- which single amount to trend/break down.'),
-      groupBy: z.enum(['department_id', 'ticket_type_id']).nullable().optional().describe('Only for get_ticket_metrics -- how to group ticket metrics, if the user asked for a breakdown rather than one overall number.'),
-      dimension: z.enum(['pop_id', 'package_id']).nullable().optional().describe('Only for get_tran_mode_by_dimension (required for it) -- "pop_id" for "transaction mode by POP", "package_id" for "transaction mode by package".'),
+      dateFrom: z.string().nullable().describe('ISO date, e.g. "2026-01-01", or null for all-time / no start bound.'),
+      dateTo: z.string().nullable().describe('ISO date, or null for up to today / no end bound.'),
+      limit: z.number().int().positive().nullable().describe('N whenever the user named an explicit count ("top 30", "last 10", "bottom 5" all mean limit: that number), or null for the full unranked list. Only meaningful for a ranked/breakdown tool.'),
+      sortBy: z.string().nullable().describe('Which column ranks the rows, exactly as that tool\'s own sortBy enum names it (e.g. "billed", "collected", "outstanding", "activeCustomers", "count", "avgResolutionHours"), or null to use that tool\'s own default.'),
+      direction: z.enum(['desc', 'asc']).nullable().describe('"desc" for top/highest/most/best; "asc" for last/bottom/lowest/worst/fewest -- read the user\'s own word, never default to desc when they asked for the bottom/lowest/worst. Null if not a ranked question.'),
+      metric: z.enum(['total_billed', 'total_collected']).nullable().describe('Only for get_revenue_timeseries / get_region_breakdown -- which single amount to trend/break down. Null otherwise.'),
+      groupBy: z.enum(['department_id', 'ticket_type_id']).nullable().describe('Only for get_ticket_metrics -- how to group ticket metrics, if the user asked for a breakdown rather than one overall number. Null otherwise.'),
+      dimension: z.enum(['pop_id', 'package_id']).nullable().describe('Only for get_tran_mode_by_dimension (required for it) -- "pop_id" for "transaction mode by POP", "package_id" for "transaction mode by package". Null for every other tool.'),
     })
-    .nullable()
-    .optional()
-    .describe('Arguments for whichever tool fastPathTool names -- set only the fields that tool actually uses (see its own inputSchema/description), leave the rest null/omitted. Ignored entirely when fastPathTool is "none".'),
+    .describe('Arguments for whichever tool fastPathTool names -- set every field, using null for whichever ones that specific tool does not use (see its own inputSchema/description). Every field is ignored entirely when fastPathTool is "none".'),
 });
 
 const NEEDS_DATA_AND_REPORT_PROMPT = `You classify a single user message for a BI dashboard chatbot, answering two independent yes/no questions about it.
