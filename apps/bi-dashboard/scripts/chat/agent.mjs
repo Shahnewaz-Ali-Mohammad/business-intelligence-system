@@ -274,14 +274,41 @@ const NeedsDataAndReportSchema = z.object({
       'true if the user is asking to SEE this data as a report, chart, graph, visualization, or dashboard view -- in any phrasing ("generate a report", "I need a report for X", "can I get a chart of X", "show that as a graph", "give me a dashboard for X"). false if they are just asking a plain question and expect a spoken/text answer, with no report or visual deliverable implied.',
     ),
   fastPathTool: z
-    .enum(['get_customer_financials_summary', 'get_revenue_summary', 'get_active_customer_count', 'none'])
+    .enum([
+      'get_customer_financials_summary',
+      'get_revenue_summary',
+      'get_active_customer_count',
+      'get_pop_financials',
+      'get_region_breakdown',
+      'get_package_financials',
+      'get_revenue_timeseries',
+      'get_revenue_timeseries_financials',
+      'get_ticket_metrics',
+      'get_ticket_type_breakdown',
+      'get_customer_financials',
+      'get_ticket_pop_breakdown',
+      'get_tran_mode_breakdown',
+      'get_tran_mode_by_dimension',
+      'none',
+    ])
     .describe(
-      'PERFORMANCE FAST LANE -- set this to a specific tool ONLY when you are fully confident the message needs EXACTLY that one tool and NOTHING else: no POP/package/ticket/transaction-mode breakdown, no top-N list, no comparison, no specific date range or period named (this fastest of all lookups is only for all-time, single-number/single-summary questions). ' +
-      '"get_customer_financials_summary" -- the question is about the WHOLE customer base\'s financials (every customer, all customers, total billed/collected/outstanding across everyone) with no date range named. ' +
-      '"get_revenue_summary" -- the question is only about total billed/collected/outstanding/refunded/adjusted overall, with no date range, no breakdown by POP/package/customer. ' +
-      '"get_active_customer_count" -- the question is only "how many active customers do we have" with nothing else asked. ' +
-      '"none" -- anything else, including when unsure: a POP/package/ticket/transaction-mode question, a top-N list, a specific date range or time period, a multi-part question, or ANY doubt at all. When in doubt, always choose "none" -- a wrong "none" just costs a few extra seconds on the full pipeline; a wrong tool choice here skips that pipeline\'s safety checks entirely.',
+      'PERFORMANCE FAST LANE -- set this to a specific tool ONLY when you are fully confident this single message needs EXACTLY that one tool and nothing else (no comparison across two different breakdowns, no multi-part question mixing topics, not a clarifying/ambiguous message). Match the SAME tool-choice rules the warehouse tools\' own descriptions already give (get_pop_financials for a per-POP breakdown, get_customer_financials for a real top-N customer list, get_customer_financials_summary for the WHOLE customer base instead, get_revenue_timeseries_financials over get_revenue_timeseries when more than one of billed/collected/refunded/adjusted is named, etc.) -- set fastPathArgs with whatever dateFrom/dateTo/limit/sortBy/direction/metric/groupBy/dimension the user actually named, exactly the way a normal tool call would, using each field\'s own description below. ' +
+      '"none" -- anything genuinely ambiguous, a follow-up that depends on earlier conversation state in a way a single fresh tool call can\'t resolve, a question mixing more than one breakdown/topic, or ANY real doubt. When in doubt, always choose "none" -- a wrong "none" just costs a few extra seconds on the full careful pipeline; a wrong tool/args choice here skips that pipeline\'s narrative and fact-check safety net entirely, so only commit to a tool here when you would have picked the exact same tool and args if this were a normal tool-calling turn.',
     ),
+  fastPathArgs: z
+    .object({
+      dateFrom: z.string().nullable().optional().describe('ISO date, e.g. "2026-01-01". Omit for all-time / no start bound.'),
+      dateTo: z.string().nullable().optional().describe('ISO date. Omit for up to today / no end bound.'),
+      limit: z.number().int().positive().nullable().optional().describe('Set to N whenever the user named an explicit count ("top 30", "last 10", "bottom 5" all mean limit: that number). Omit for the full unranked list. Only meaningful for a ranked/breakdown tool.'),
+      sortBy: z.string().nullable().optional().describe('Which column ranks the rows, exactly as that tool\'s own sortBy enum names it (e.g. "billed", "collected", "outstanding", "activeCustomers", "count", "avgResolutionHours"). Omit to use that tool\'s own default.'),
+      direction: z.enum(['desc', 'asc']).nullable().optional().describe('"desc" for top/highest/most/best; "asc" for last/bottom/lowest/worst/fewest -- read the user\'s own word, never default to desc when they asked for the bottom/lowest/worst.'),
+      metric: z.enum(['total_billed', 'total_collected']).nullable().optional().describe('Only for get_revenue_timeseries / get_region_breakdown -- which single amount to trend/break down.'),
+      groupBy: z.enum(['department_id', 'ticket_type_id']).nullable().optional().describe('Only for get_ticket_metrics -- how to group ticket metrics, if the user asked for a breakdown rather than one overall number.'),
+      dimension: z.enum(['pop_id', 'package_id']).nullable().optional().describe('Only for get_tran_mode_by_dimension (required for it) -- "pop_id" for "transaction mode by POP", "package_id" for "transaction mode by package".'),
+    })
+    .nullable()
+    .optional()
+    .describe('Arguments for whichever tool fastPathTool names -- set only the fields that tool actually uses (see its own inputSchema/description), leave the rest null/omitted. Ignored entirely when fastPathTool is "none".'),
 });
 
 const NEEDS_DATA_AND_REPORT_PROMPT = `You classify a single user message for a BI dashboard chatbot, answering two independent yes/no questions about it.
@@ -296,7 +323,7 @@ This is true regardless of phrasing -- imperative ("generate", "build", "show me
 
 Answer both questions independently -- one does not determine the other (a plain data question with no report language is needsDataLookup: true, wantsReport: false; "show me a chart of X" is both true).
 
-Question 3 -- fastPathTool: see that field's own description below for exactly when to set it versus "none". Default to "none" whenever there is any doubt.`;
+Question 3 -- fastPathTool/fastPathArgs: see those fields' own descriptions below for exactly when to set a tool versus "none". Default to "none" whenever there is any doubt -- it only costs a few extra seconds, never a wrong answer.`;
 
 let cachedNeedsDataAndReportModel = null;
 
@@ -468,31 +495,56 @@ function buildDeterministicInsight(topic, data) {
 // number here comes straight from the tool's own already-computed result
 // object (formatMoney/formatPct, both already used elsewhere in this file
 // for the same purpose), never invented.
-function buildFastPathStructured(toolName, result) {
+// toolName -> topic, mirroring EXACTLY the mapping ResponseSchema's own
+// `topic` field documents for a normal (non-fast-lane) tool call -- see
+// that field's description above draftNode. get_tran_mode_by_dimension is
+// the one case that needs its args (dimension) to pick a topic, so it's
+// handled separately at the call site instead of in this flat map.
+const FAST_PATH_TOPIC_BY_TOOL = {
+  get_customer_financials_summary: 'customer_summary',
+  get_revenue_summary: 'billing',
+  get_active_customer_count: 'customers',
+  get_pop_financials: 'pops',
+  get_region_breakdown: 'pops',
+  get_package_financials: 'packages',
+  get_revenue_timeseries: 'trend',
+  get_revenue_timeseries_financials: 'trend',
+  get_ticket_metrics: 'tickets',
+  get_ticket_type_breakdown: 'tickets',
+  get_customer_financials: 'top_customers',
+  get_ticket_pop_breakdown: 'ticket_pops',
+  get_tran_mode_breakdown: 'tran_modes',
+};
+
+// Builds the SAME `structured` shape draftNode's LLM call would normally
+// produce (topic/narrative/tablesUsed/requestedMetrics), but from a plain
+// code template instead of asking a model to compose prose -- see the fast
+// lane comment at its call site in runBiAgent for why this exists. For the
+// three purely-aggregate topics (customer_summary/billing/customers) the
+// narrative states the real headline numbers directly, straight from the
+// tool's own already-computed result object (formatMoney, already used
+// elsewhere in this file for the same purpose) -- never invented. For the
+// row-list/breakdown topics, the narrative is intentionally a short,
+// honest pointer to the real table rendered alongside it (report-table.ts
+// builds that table from `data`, fetched separately by dashboardData()
+// further down in runBiAgent, same as the full pipeline) rather than a
+// composed summary -- deterministic per-topic insight sentences already
+// exist for pops/packages (buildDeterministicInsight, called unconditionally
+// further down on the real fetched data) and get appended automatically;
+// nothing here needs to duplicate that.
+function buildFastPathStructured(toolName, result, args) {
   if (toolName === 'get_customer_financials_summary') {
     const narrative =
       `Across all ${Number(result.customerCount ?? 0).toLocaleString()} customers, total billed is ${formatMoney(result.totalBilled)} and total collected is ${formatMoney(result.totalCollected)}, ` +
       `leaving ${formatMoney(result.totalOutstanding)} outstanding overall (average ${formatMoney(result.avgOutstanding)} per customer). ` +
       `${Number(result.customersWithOutstanding ?? 0).toLocaleString()} customers currently carry a positive outstanding balance.`;
-    return {
-      intent: 'answer',
-      topic: 'customer_summary',
-      narrative,
-      tablesUsed: [],
-      requestedMetrics: [],
-    };
+    return { intent: 'answer', topic: 'customer_summary', narrative, tablesUsed: [], requestedMetrics: [] };
   }
   if (toolName === 'get_revenue_summary') {
     const narrative =
       `Total billed is ${formatMoney(result.totalBilled)} and total collected is ${formatMoney(result.totalCollected)}, leaving ${formatMoney(result.outstandingBalance)} outstanding. ` +
       `Total refunded is ${formatMoney(result.totalRefunded)} and total adjusted is ${formatMoney(result.totalAdjusted)}.`;
-    return {
-      intent: 'answer',
-      topic: 'billing',
-      narrative,
-      tablesUsed: [],
-      requestedMetrics: [],
-    };
+    return { intent: 'answer', topic: 'billing', narrative, tablesUsed: [], requestedMetrics: [] };
   }
   if (toolName === 'get_active_customer_count') {
     return {
@@ -503,7 +555,35 @@ function buildFastPathStructured(toolName, result) {
       requestedMetrics: [],
     };
   }
-  return null;
+  if (toolName === 'get_tran_mode_by_dimension') {
+    const topic = args?.dimension === 'package_id' ? 'tran_mode_by_package' : 'tran_mode_by_pop';
+    const label = args?.dimension === 'package_id' ? 'package' : 'POP';
+    return {
+      intent: 'answer',
+      topic,
+      narrative: `Here is the collected-amount breakdown by transaction mode and ${label} below.`,
+      tablesUsed: [],
+      requestedMetrics: [],
+    };
+  }
+  const topic = FAST_PATH_TOPIC_BY_TOOL[toolName];
+  if (!topic) return null;
+  const NARRATIVE_BY_TOPIC = {
+    pops: 'Here is the per-POP breakdown below.',
+    packages: 'Here is the per-package breakdown below.',
+    trend: 'Here is the day-by-day trend below.',
+    tickets: 'Here is the ticket breakdown below.',
+    top_customers: 'Here are the ranked customers below.',
+    ticket_pops: 'Here is the ticket volume breakdown by POP below.',
+    tran_modes: 'Here is the collected-amount breakdown by transaction mode below.',
+  };
+  return {
+    intent: 'answer',
+    topic,
+    narrative: NARRATIVE_BY_TOPIC[topic] ?? 'Here is the breakdown below.',
+    tablesUsed: [],
+    requestedMetrics: [],
+  };
 }
 
 async function draftNode(state) {
@@ -700,18 +780,52 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   let calledAnyTool;
 
   if (fastPathTool && fastPathTool !== 'none') {
-    console.log('[agent] fast lane matched:', fastPathTool);
+    console.log('[agent] fast lane matched:', fastPathTool, JSON.stringify(needsDataAndReport.fastPathArgs));
     const tool = tools.find((t) => t.name === fastPathTool);
     if (!tool) {
       console.log('[agent] fast lane tool not found in loaded MCP tools, falling back to full pipeline:', fastPathTool);
     } else {
+      // Only pass through the args this SPECIFIC tool actually declares --
+      // handing a ranked tool's `sortBy`/`limit` to a tool with no such
+      // parameter (e.g. get_revenue_summary) is harmless with the MCP SDK's
+      // own zod validation (extra keys are just ignored), but building the
+      // exact shape per tool here keeps what gets logged/recovered below
+      // honest about what this tool call actually used.
+      const a = needsDataAndReport.fastPathArgs ?? {};
+      const dateArgs = { dateFrom: a.dateFrom || undefined, dateTo: a.dateTo || undefined };
+      const rankedArgs = { ...dateArgs, limit: a.limit ?? undefined, sortBy: a.sortBy || undefined, direction: a.direction || undefined };
+      const toolArgs =
+        fastPathTool === 'get_active_customer_count' ? {}
+        : fastPathTool === 'get_revenue_summary' ? dateArgs
+        : fastPathTool === 'get_customer_financials_summary' ? dateArgs
+        : fastPathTool === 'get_revenue_timeseries_financials' ? dateArgs
+        : fastPathTool === 'get_revenue_timeseries' ? { ...dateArgs, metric: a.metric || 'total_billed' }
+        : fastPathTool === 'get_region_breakdown' ? { ...dateArgs, metric: a.metric || 'total_billed' }
+        : fastPathTool === 'get_ticket_metrics' ? { ...dateArgs, groupBy: a.groupBy || undefined }
+        : fastPathTool === 'get_tran_mode_by_dimension' ? { ...dateArgs, dimension: a.dimension || 'pop_id' }
+        : rankedArgs; // get_pop_financials, get_package_financials, get_ticket_type_breakdown,
+                       // get_customer_financials, get_ticket_pop_breakdown, get_tran_mode_breakdown
+
       try {
-        const rawResult = await tool.invoke({});
+        const rawResult = await tool.invoke(toolArgs);
         const parsed = JSON.parse(typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult));
-        structured = buildFastPathStructured(fastPathTool, parsed);
-        agentMessages = [];
-        calledAnyTool = true;
-        console.log('[agent] fast lane structuredResponse:', JSON.stringify(structured));
+        structured = buildFastPathStructured(fastPathTool, parsed, toolArgs);
+        if (structured) {
+          // Synthetic tool-call message, in the EXACT shape a real
+          // ChatOpenAI tool-calling turn would have produced -- this is
+          // fed into the SAME agentMessages-scanning loop just below
+          // (usedArgs.days from dateFrom/dateTo, rankedToolArgs from
+          // limit/sortBy/direction) so that recovery logic runs completely
+          // unchanged for the fast lane instead of being reimplemented
+          // here a second time, which is exactly the kind of duplicated
+          // logic this file's own comments elsewhere warn drifts out of
+          // sync.
+          agentMessages = [{ tool_calls: [{ name: fastPathTool, args: toolArgs }] }];
+          calledAnyTool = true;
+          console.log('[agent] fast lane structuredResponse:', JSON.stringify(structured));
+        } else {
+          console.log('[agent] fast lane had no narrative template for topic, falling back to full pipeline:', fastPathTool);
+        }
       } catch (error) {
         console.error('[agent] fast lane tool call failed, falling back to full pipeline:', error);
         structured = undefined;
