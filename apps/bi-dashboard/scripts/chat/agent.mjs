@@ -273,6 +273,15 @@ const NeedsDataAndReportSchema = z.object({
     .describe(
       'true if the user is asking to SEE this data as a report, chart, graph, visualization, or dashboard view -- in any phrasing ("generate a report", "I need a report for X", "can I get a chart of X", "show that as a graph", "give me a dashboard for X"). false if they are just asking a plain question and expect a spoken/text answer, with no report or visual deliverable implied.',
     ),
+  fastPathTool: z
+    .enum(['get_customer_financials_summary', 'get_revenue_summary', 'get_active_customer_count', 'none'])
+    .describe(
+      'PERFORMANCE FAST LANE -- set this to a specific tool ONLY when you are fully confident the message needs EXACTLY that one tool and NOTHING else: no POP/package/ticket/transaction-mode breakdown, no top-N list, no comparison, no specific date range or period named (this fastest of all lookups is only for all-time, single-number/single-summary questions). ' +
+      '"get_customer_financials_summary" -- the question is about the WHOLE customer base\'s financials (every customer, all customers, total billed/collected/outstanding across everyone) with no date range named. ' +
+      '"get_revenue_summary" -- the question is only about total billed/collected/outstanding/refunded/adjusted overall, with no date range, no breakdown by POP/package/customer. ' +
+      '"get_active_customer_count" -- the question is only "how many active customers do we have" with nothing else asked. ' +
+      '"none" -- anything else, including when unsure: a POP/package/ticket/transaction-mode question, a top-N list, a specific date range or time period, a multi-part question, or ANY doubt at all. When in doubt, always choose "none" -- a wrong "none" just costs a few extra seconds on the full pipeline; a wrong tool choice here skips that pipeline\'s safety checks entirely.',
+    ),
 });
 
 const NEEDS_DATA_AND_REPORT_PROMPT = `You classify a single user message for a BI dashboard chatbot, answering two independent yes/no questions about it.
@@ -285,7 +294,9 @@ Focus only on whether a data lookup is genuinely needed -- ignore spelling, gram
 Question 2 -- wantsReport: does the user want to SEE this as a report, chart, graph, visualization, or dashboard, rather than just a plain text answer?
 This is true regardless of phrasing -- imperative ("generate", "build", "show me", "visualize") and non-imperative ("I need a report for X", "I want a chart of X", "give me a report on X", "can I get a graph of X", "do you have a dashboard for X") both count. The user naming the deliverable (report/chart/graph/dashboard/visualization) at all means true. A direct factual question with no mention of seeing it as a report/chart/graph ("what was revenue last month", "which region is lowest") is false -- they want a spoken answer, not a page. Use the recent conversation only to resolve short follow-ups like "show that as a chart" or "now as a graph" referring back to data just discussed -- those are also true.
 
-Answer both questions independently -- one does not determine the other (a plain data question with no report language is needsDataLookup: true, wantsReport: false; "show me a chart of X" is both true).`;
+Answer both questions independently -- one does not determine the other (a plain data question with no report language is needsDataLookup: true, wantsReport: false; "show me a chart of X" is both true).
+
+Question 3 -- fastPathTool: see that field's own description below for exactly when to set it versus "none". Default to "none" whenever there is any doubt.`;
 
 let cachedNeedsDataAndReportModel = null;
 
@@ -450,6 +461,51 @@ function buildDeterministicInsight(topic, data) {
   return null;
 }
 
+// Builds the SAME `structured` shape draftNode's LLM call would normally
+// produce (topic/narrative/tablesUsed/requestedMetrics), but from a plain
+// code template instead of asking a model to compose prose -- see the fast
+// lane comment at its call site in runBiAgent for why this exists. Every
+// number here comes straight from the tool's own already-computed result
+// object (formatMoney/formatPct, both already used elsewhere in this file
+// for the same purpose), never invented.
+function buildFastPathStructured(toolName, result) {
+  if (toolName === 'get_customer_financials_summary') {
+    const narrative =
+      `Across all ${Number(result.customerCount ?? 0).toLocaleString()} customers, total billed is ${formatMoney(result.totalBilled)} and total collected is ${formatMoney(result.totalCollected)}, ` +
+      `leaving ${formatMoney(result.totalOutstanding)} outstanding overall (average ${formatMoney(result.avgOutstanding)} per customer). ` +
+      `${Number(result.customersWithOutstanding ?? 0).toLocaleString()} customers currently carry a positive outstanding balance.`;
+    return {
+      intent: 'answer',
+      topic: 'customer_summary',
+      narrative,
+      tablesUsed: [],
+      requestedMetrics: [],
+    };
+  }
+  if (toolName === 'get_revenue_summary') {
+    const narrative =
+      `Total billed is ${formatMoney(result.totalBilled)} and total collected is ${formatMoney(result.totalCollected)}, leaving ${formatMoney(result.outstandingBalance)} outstanding. ` +
+      `Total refunded is ${formatMoney(result.totalRefunded)} and total adjusted is ${formatMoney(result.totalAdjusted)}.`;
+    return {
+      intent: 'answer',
+      topic: 'billing',
+      narrative,
+      tablesUsed: [],
+      requestedMetrics: [],
+    };
+  }
+  if (toolName === 'get_active_customer_count') {
+    return {
+      intent: 'answer',
+      topic: 'customers',
+      narrative: `You currently have ${Number(result.activeCustomers ?? 0).toLocaleString()} active customers.`,
+      tablesUsed: [],
+      requestedMetrics: [],
+    };
+  }
+  return null;
+}
+
 async function draftNode(state) {
   const tools = await getAgentTools();
   // FIX 2026-09-17: was temperature 0.2 -- every gate classifier in this
@@ -478,8 +534,27 @@ async function draftNode(state) {
   };
 }
 
+// Topics backed by exactly one deterministic aggregate-SQL tool call
+// (get_customer_financials_summary, get_revenue_summary alone,
+// get_active_customer_count alone) -- the model has no rows to pick from,
+// nothing to select or summarize on its own judgment, just a handful of
+// already-computed numbers (COUNT/SUM/AVG/percentile from Postgres) to
+// restate in prose. That's the opposite of the free-text, pick-a-notable-
+// row narratives the critique pass exists to catch (see the FIX 2026-09-19
+// note above draftNode about two runs of the same POP question
+// highlighting different POPs). Skipping critique here removes one whole
+// sequential OpenAI round trip -- and the chance of a full redraft round
+// trip on top of it -- from exactly the "give me a report for every X"
+// style question that was timing out, with negligible added hallucination
+// risk for this narrow, low-surface-area case.
+const CRITIQUE_SKIP_TOPICS = new Set(['customer_summary', 'customers', 'billing']);
+
 async function critiqueNode(state) {
   if (!state.structured?.narrative) {
+    return { critique: { grounded: true, issues: [] } };
+  }
+  if (CRITIQUE_SKIP_TOPICS.has(state.structured?.topic)) {
+    console.log('[agent] critique skipped (deterministic single-aggregate topic):', state.structured.topic);
     return { critique: { grounded: true, issues: [] } };
   }
   const critiqueModel = getCritiqueModel();
@@ -601,29 +676,75 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   const tools = await getAgentTools();
   console.log(`[agent] MCP tools loaded: ${tools.map((t) => t.name).join(', ')}`);
 
-  const historyMessages = history
-    .slice(-12)
-    .map((m) => (m.role === 'user' ? new HumanMessage(m.content) : new AIMessage(m.content)));
+  // PERFORMANCE FAST LANE -- see NeedsDataAndReportSchema.fastPathTool's own
+  // comment for exactly when the classifier is allowed to set this. When it
+  // does, this question needs exactly ONE deterministic aggregate-SQL tool
+  // call and nothing else -- no tool-selection reasoning, no free-text
+  // narrative composition, no fact-check pass, because there is nothing for
+  // any of those three steps to actually decide: the tool is already known,
+  // and its output is a small dict of already-computed numbers (COUNT/SUM/
+  // AVG/percentile, straight from Postgres) with only one honest way to
+  // state them in a sentence. Skipping straight to that removes THREE
+  // sequential OpenAI round trips (tool-pick, narrative-write, critique) --
+  // the actual cause of a multi-part "give me a report for X" question
+  // taking 15-40+ seconds when the underlying SQL itself runs in well under
+  // one second. Everything below this branch (tablesUsed, dashboardData()
+  // fetch, deterministic insight, requestedMetrics, final return shape)
+  // is the EXACT SAME code the full pipeline already uses -- this only
+  // substitutes how `structured`/`calledAnyTool` get produced, so a wrong
+  // "none" from the classifier (the safe default) falls straight through
+  // to the unchanged full pipeline with zero behavior change.
+  const fastPathTool = needsDataAndReport.fastPathTool;
+  let structured;
+  let agentMessages;
+  let calledAnyTool;
 
-  const contextNote = `Current page state: days=${pageState.days ?? 30}, region=${pageState.region ?? 'null'}, availableRegions=${JSON.stringify(pageState.availableRegions ?? [])}.`;
+  if (fastPathTool && fastPathTool !== 'none') {
+    console.log('[agent] fast lane matched:', fastPathTool);
+    const tool = tools.find((t) => t.name === fastPathTool);
+    if (!tool) {
+      console.log('[agent] fast lane tool not found in loaded MCP tools, falling back to full pipeline:', fastPathTool);
+    } else {
+      try {
+        const rawResult = await tool.invoke({});
+        const parsed = JSON.parse(typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult));
+        structured = buildFastPathStructured(fastPathTool, parsed);
+        agentMessages = [];
+        calledAnyTool = true;
+        console.log('[agent] fast lane structuredResponse:', JSON.stringify(structured));
+      } catch (error) {
+        console.error('[agent] fast lane tool call failed, falling back to full pipeline:', error);
+        structured = undefined;
+      }
+    }
+  }
 
-  console.log('[agent] invoking draft -> critique graph...');
-  const graphResult = await getBiGraph().invoke({
-    messages: [
-      new SystemMessage(`${GUARDRAIL_SYSTEM_PROMPT}\n\n${contextNote}`),
-      ...historyMessages,
-      new HumanMessage(message),
-    ],
-  });
-  console.log(
-    '[agent] graph completed. redraft attempts:', graphResult.retries,
-    'final grounded:', graphResult.critique?.grounded,
-    'message count:', graphResult.lastAgentMessages?.length,
-  );
+  if (!structured) {
+    const historyMessages = history
+      .slice(-12)
+      .map((m) => (m.role === 'user' ? new HumanMessage(m.content) : new AIMessage(m.content)));
 
-  const structured = graphResult.structured;
-  const agentMessages = graphResult.lastAgentMessages ?? [];
-  console.log('[agent] structuredResponse:', JSON.stringify(structured));
+    const contextNote = `Current page state: days=${pageState.days ?? 30}, region=${pageState.region ?? 'null'}, availableRegions=${JSON.stringify(pageState.availableRegions ?? [])}.`;
+
+    console.log('[agent] invoking draft -> critique graph...');
+    const graphResult = await getBiGraph().invoke({
+      messages: [
+        new SystemMessage(`${GUARDRAIL_SYSTEM_PROMPT}\n\n${contextNote}`),
+        ...historyMessages,
+        new HumanMessage(message),
+      ],
+    });
+    console.log(
+      '[agent] graph completed. redraft attempts:', graphResult.retries,
+      'final grounded:', graphResult.critique?.grounded,
+      'message count:', graphResult.lastAgentMessages?.length,
+    );
+
+    structured = graphResult.structured;
+    agentMessages = graphResult.lastAgentMessages ?? [];
+    calledAnyTool = false; // recomputed from agentMessages by the existing loop below
+    console.log('[agent] structuredResponse:', JSON.stringify(structured));
+  }
 
   // Recover the (days, region) the agent actually queried with, from its own
   // tool call, so we can pull the FULL chart-ready dataset (not just the
@@ -667,7 +788,10 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // truth" convention elsewhere in this file.
   const RANKED_LIMIT_TOOLS = ['get_pop_financials', 'get_package_financials', 'get_ticket_type_breakdown', 'get_customer_financials', 'get_ticket_pop_breakdown', 'get_tran_mode_breakdown'];
   let rankedToolArgs = null;
-  let calledAnyTool = false;
+  // calledAnyTool is already initialized above (true for the fast lane,
+  // false for the full pipeline) -- this loop only ever ADDS true when a
+  // real tool call is found in agentMessages, never resets it, so the fast
+  // lane's true survives this loop running over its empty agentMessages.
   for (const msg of agentMessages) {
     const calls = msg?.tool_calls;
     if (!Array.isArray(calls)) continue;
