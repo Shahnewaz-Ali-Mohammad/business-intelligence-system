@@ -464,6 +464,119 @@ async function queryMetricForIds(metricName, ids, { dateFrom, dateTo } = {}) {
 }
 
 /**
+ * Aggregate, whole-customer-base financial summary -- NOT a per-row list.
+ *
+ * WHY THIS EXISTS: "give me a report for every customer" / "all 386,000
+ * customers" cannot be answered by returning 386,000 rows -- that blows
+ * past any LLM's context window immediately (this is the exact shape of
+ * bug behind the ContextOverflowError already seen in chat-errors.log),
+ * and separately is not something a browser tab or an Excel sheet should
+ * try to hold/render either. The fix isn't to raise a limit further, it's
+ * to answer a whole-population question with whole-population STATISTICS
+ * instead of a row per customer: this runs ONE aggregate query (Postgres
+ * does the summarizing, not Node, not the LLM) and returns a small,
+ * constant-size object -- true whether the customer base is 386 or
+ * 38,600,000 rows, since the response size never grows with row count.
+ *
+ * Uses the SAME metric SQL fragments (getMetric('total_billed'/
+ * 'total_collected')) and the same FULL OUTER JOIN "outstanding" definition
+ * queryOutstandingTopN already uses, so "outstanding" means identically the
+ * same thing here as it does in the top-N tools -- one formula, every
+ * consumer, per this file's own header rule.
+ *
+ * A caller that genuinely needs the full row-by-row data (a real export,
+ * not an LLM answer) should use a streaming export path instead of this or
+ * getCustomerFinancials -- see apps/bi-dashboard's /api/exports/customers
+ * route, which reads via a server-side cursor rather than one big query.
+ */
+export async function getCustomerFinancialsSummary({ dateFrom, dateTo, filters } = {}) {
+  // `filters` (region/RLS scoping) isn't wired into this aggregate query yet --
+  // accepted here anyway, unused, same as every other service function in
+  // this file, so a future RLS filter is a small change here too, not a
+  // call-site signature change everywhere this is invoked from.
+  const pool = getWarehousePool();
+  const billedMetric = getMetric('total_billed');
+  const collectedMetric = getMetric('total_collected');
+
+  const params = [];
+  const dateCond = (col) => {
+    const conditions = [];
+    if (dateFrom) {
+      params.push(dateFrom);
+      conditions.push(`${col} >= $${params.length}`);
+    }
+    if (dateTo) {
+      params.push(dateTo);
+      conditions.push(`${col} <= $${params.length}`);
+    }
+    return conditions;
+  };
+  const billedConditions = ['customer_id IS NOT NULL', ...dateCond('ref_date')];
+  const collectedConditions = ['customer_id IS NOT NULL', ...dateCond('ref_date')];
+
+  const { rows } = await pool.query(
+    `
+    WITH b AS (
+      SELECT customer_id, ${billedMetric.sql} AS billed
+      FROM ${billedMetric.table}
+      WHERE ${billedConditions.join(' AND ')}
+      GROUP BY customer_id
+    ),
+    c AS (
+      SELECT customer_id, ${collectedMetric.sql} AS collected
+      FROM ${collectedMetric.table}
+      WHERE ${collectedConditions.join(' AND ')}
+      GROUP BY customer_id
+    ),
+    combined AS (
+      SELECT
+        COALESCE(b.customer_id, c.customer_id) AS customer_id,
+        COALESCE(b.billed, 0) AS billed,
+        COALESCE(c.collected, 0) AS collected,
+        COALESCE(b.billed, 0) - COALESCE(c.collected, 0) AS outstanding
+      FROM b FULL OUTER JOIN c ON b.customer_id = c.customer_id
+    )
+    SELECT
+      COUNT(*)::int AS customer_count,
+      COALESCE(SUM(billed), 0) AS total_billed,
+      COALESCE(SUM(collected), 0) AS total_collected,
+      COALESCE(SUM(outstanding), 0) AS total_outstanding,
+      COALESCE(AVG(billed), 0) AS avg_billed,
+      COALESCE(AVG(collected), 0) AS avg_collected,
+      COALESCE(AVG(outstanding), 0) AS avg_outstanding,
+      COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY billed), 0) AS median_billed,
+      COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY outstanding), 0) AS median_outstanding,
+      COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY outstanding), 0) AS p90_outstanding,
+      COUNT(*) FILTER (WHERE outstanding > 0)::int AS customers_with_outstanding
+    FROM combined
+    `,
+    params,
+  );
+
+  const summary = rows[0] ?? {};
+  const [topOutstanding, bottomOutstanding] = await Promise.all([
+    queryOutstandingTopN({ dateFrom, dateTo, limit: 10, direction: 'desc' }),
+    queryOutstandingTopN({ dateFrom, dateTo, limit: 10, direction: 'asc' }),
+  ]);
+
+  return {
+    customerCount: Number(summary.customer_count || 0),
+    totalBilled: Number(summary.total_billed || 0),
+    totalCollected: Number(summary.total_collected || 0),
+    totalOutstanding: Number(summary.total_outstanding || 0),
+    avgBilled: Number(summary.avg_billed || 0),
+    avgCollected: Number(summary.avg_collected || 0),
+    avgOutstanding: Number(summary.avg_outstanding || 0),
+    medianBilled: Number(summary.median_billed || 0),
+    medianOutstanding: Number(summary.median_outstanding || 0),
+    p90Outstanding: Number(summary.p90_outstanding || 0),
+    customersWithOutstanding: Number(summary.customers_with_outstanding || 0),
+    topOutstanding: topOutstanding.map((r) => ({ customerId: r.customer_id, outstanding: Number(r.value || 0) })),
+    bottomOutstanding: bottomOutstanding.map((r) => ({ customerId: r.customer_id, outstanding: Number(r.value || 0) })),
+  };
+}
+
+/**
  * Real per-CUSTOMER breakdown: total billed, total collected, and
  * outstanding (billed - collected) for the top N customers by revenue,
  * PLUS a real split of each customer's collected amount by tran_mode_id
@@ -566,6 +679,150 @@ export async function getCustomerFinancials({
   }
 
   return rows;
+}
+
+/**
+ * Streams EVERY customer's financials (billed/collected/outstanding/
+ * refunded/adjusted + name/pop/package) to `onBatch` in fixed-size chunks,
+ * via a real server-side Postgres CURSOR -- never builds the full result
+ * array in this process's memory, and never hands the caller anything
+ * bigger than one batch at a time. This is the row-by-row counterpart to
+ * getCustomerFinancialsSummary above: the summary answers "what does the
+ * whole customer base look like" with statistics; this answers "give me
+ * the actual rows" for a real export, at whatever size the customer base
+ * actually is (386 rows today, still correct at 38,600,000).
+ *
+ * Deliberately NOT ranked/limited -- a real export is the full population
+ * in a stable order (customer_id), not a top-N slice; top-N ranking is
+ * what getCustomerFinancials is for. Deliberately does NOT resolve the
+ * per-transaction-mode breakdown (collectedByTranMode) -- that's a real
+ * per-customer object, fine to resolve for a top-100 slice, but multiplying
+ * it across the whole customer base would make an already-large export
+ * needlessly larger for a column most exports of "every customer" don't
+ * actually need; name/pop/package are cheap flat columns and stay.
+ *
+ * Uses a raw `pg` client + SQL cursor (DECLARE/FETCH/CLOSE) rather than a
+ * separate cursor library -- Postgres's own cursor support needs no extra
+ * dependency, and it's the one thing that actually bounds memory here: each
+ * FETCH only ever pulls `batchSize` rows off the server at a time.
+ */
+export async function streamAllCustomerFinancials({ dateFrom, dateTo, batchSize = 5000 } = {}, onBatch) {
+  const pool = getWarehousePool();
+  const billedMetric = getMetric('total_billed');
+  const collectedMetric = getMetric('total_collected');
+  const refundedMetric = getMetric('total_refunded');
+  const adjustedMetric = getMetric('total_adjusted');
+
+  const client = await pool.connect();
+  try {
+    const params = [];
+    const dateCond = (col) => {
+      const conditions = [];
+      if (dateFrom) {
+        params.push(dateFrom);
+        conditions.push(`${col} >= $${params.length}`);
+      }
+      if (dateTo) {
+        params.push(dateTo);
+        conditions.push(`${col} <= $${params.length}`);
+      }
+      return conditions;
+    };
+    const billedConditions = ['customer_id IS NOT NULL', ...dateCond('ref_date')];
+    const collectedConditions = ['customer_id IS NOT NULL', ...dateCond('ref_date')];
+    const refundedConditions = ['customer_id IS NOT NULL', ...dateCond('ref_date')];
+    const adjustedConditions = ['customer_id IS NOT NULL', ...dateCond('ref_date')];
+
+    await client.query('BEGIN');
+    await client.query(
+      `
+      DECLARE all_customer_financials CURSOR FOR
+      WITH b AS (
+        SELECT customer_id, ${billedMetric.sql} AS billed
+        FROM ${billedMetric.table}
+        WHERE ${billedConditions.join(' AND ')}
+        GROUP BY customer_id
+      ),
+      c AS (
+        SELECT customer_id, ${collectedMetric.sql} AS collected
+        FROM ${collectedMetric.table}
+        WHERE ${collectedConditions.join(' AND ')}
+        GROUP BY customer_id
+      ),
+      r AS (
+        SELECT customer_id, ${refundedMetric.sql} AS refunded
+        FROM ${refundedMetric.table}
+        WHERE ${refundedConditions.join(' AND ')}
+        GROUP BY customer_id
+      ),
+      a AS (
+        SELECT customer_id, ${adjustedMetric.sql} AS adjusted
+        FROM ${adjustedMetric.table}
+        WHERE ${adjustedConditions.join(' AND ')}
+        GROUP BY customer_id
+      ),
+      combined AS (
+        SELECT
+          COALESCE(b.customer_id, c.customer_id, r.customer_id, a.customer_id) AS customer_id,
+          COALESCE(b.billed, 0) AS billed,
+          COALESCE(c.collected, 0) AS collected,
+          COALESCE(r.refunded, 0) AS refunded,
+          COALESCE(a.adjusted, 0) AS adjusted,
+          COALESCE(b.billed, 0) - COALESCE(c.collected, 0) AS outstanding
+        FROM b
+        FULL OUTER JOIN c ON b.customer_id = c.customer_id
+        FULL OUTER JOIN r ON COALESCE(b.customer_id, c.customer_id) = r.customer_id
+        FULL OUTER JOIN a ON COALESCE(b.customer_id, c.customer_id, r.customer_id) = a.customer_id
+      )
+      SELECT
+        combined.customer_id,
+        dc.customer_name,
+        dc.pop_id,
+        dc.package_id,
+        dp.package_name,
+        combined.billed,
+        combined.collected,
+        combined.refunded,
+        combined.adjusted,
+        combined.outstanding
+      FROM combined
+      LEFT JOIN dim_customer dc ON dc.customer_id = combined.customer_id
+      LEFT JOIN dim_package dp ON dp.package_id = dc.package_id
+      ORDER BY combined.customer_id
+      `,
+      params,
+    );
+
+    let totalRows = 0;
+    for (;;) {
+      const { rows } = await client.query(`FETCH ${batchSize} FROM all_customer_financials`);
+      if (!rows.length) break;
+      totalRows += rows.length;
+      await onBatch(
+        rows.map((r) => ({
+          customerId: r.customer_id,
+          customerName: r.customer_name ?? null,
+          popId: r.pop_id ?? null,
+          packageId: r.package_id ?? null,
+          packageName: r.package_name ?? null,
+          billed: Number(r.billed || 0),
+          collected: Number(r.collected || 0),
+          refunded: Number(r.refunded || 0),
+          adjusted: Number(r.adjusted || 0),
+          outstanding: Number(r.outstanding || 0),
+        })),
+      );
+      if (rows.length < batchSize) break;
+    }
+    await client.query('CLOSE all_customer_financials');
+    await client.query('COMMIT');
+    return { totalRows };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

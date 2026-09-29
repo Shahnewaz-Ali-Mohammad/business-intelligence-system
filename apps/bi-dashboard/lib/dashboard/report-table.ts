@@ -235,6 +235,31 @@ export function getReportTable(
     });
   }
 
+  // NEW 2026-09-29: 'customer_summary' backs get_customer_financials_summary
+  // -- a whole-customer-base question ("every customer", "the whole
+  // customer base") answered with aggregate statistics rather than a
+  // per-row list (see getCustomerFinancialsSummary's own comment on why).
+  // Rendered as a plain Metric/Value table -- withTotalsRow is skipped
+  // here on purpose: a "Total" row summing already-aggregate numbers
+  // (an average of an average, a sum of a count) would be meaningless.
+  if (topic === 'customer_summary' && data.customerFinancialsSummary) {
+    const s = data.customerFinancialsSummary;
+    const rows: (string | number)[][] = [
+      ['Customer Count', s.customerCount],
+      ['Total Billed', s.totalBilled],
+      ['Total Collected', s.totalCollected],
+      ['Total Outstanding', s.totalOutstanding],
+      ['Average Billed / Customer', Math.round(s.avgBilled * 100) / 100],
+      ['Average Collected / Customer', Math.round(s.avgCollected * 100) / 100],
+      ['Average Outstanding / Customer', Math.round(s.avgOutstanding * 100) / 100],
+      ['Median Billed', Math.round(s.medianBilled * 100) / 100],
+      ['Median Outstanding', Math.round(s.medianOutstanding * 100) / 100],
+      ['90th Percentile Outstanding', Math.round(s.p90Outstanding * 100) / 100],
+      ['Customers With Outstanding Balance', s.customersWithOutstanding],
+    ];
+    return { headers: ['Metric', 'Value'], rows };
+  }
+
   // NEW 2026-09-17: 'top_customers' backs get_customer_financials -- top N
   // customers by billed/collected/outstanding, plus each customer's
   // collected amount split by tran_mode_id (raw payment-channel CODE, not

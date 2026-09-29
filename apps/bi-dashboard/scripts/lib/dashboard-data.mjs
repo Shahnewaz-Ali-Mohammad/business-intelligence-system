@@ -31,6 +31,7 @@ import {
   getRevenueTimeseriesFinancials,
   getActiveCustomerCount,
   getCustomerFinancials,
+  getCustomerFinancialsSummary,
   getTranModeBreakdown,
   getTranModeByDimension,
 } from '../../../bi-warehouse/src/services/revenueService.mjs';
@@ -142,7 +143,7 @@ function computeAnomalies(days, billedSeries, collectedSeries) {
 // its own explicit table branch (see report-table.ts) -- nothing is
 // allowed to fall through to a default that renders different data than
 // what was actually asked for.
-const ALLOWED_TOPICS = ['billing', 'collections', 'customers', 'tickets', 'pops', 'packages', 'trend', 'top_customers', 'tran_modes', 'ticket_pops', 'tran_mode_by_pop', 'tran_mode_by_package'];
+const ALLOWED_TOPICS = ['billing', 'collections', 'customers', 'tickets', 'pops', 'packages', 'trend', 'top_customers', 'customer_summary', 'tran_modes', 'ticket_pops', 'tran_mode_by_pop', 'tran_mode_by_package'];
 
 const TOPIC_TABLES = {
   billing: ['fact_billing'],
@@ -160,6 +161,11 @@ const TOPIC_TABLES = {
   packages: ['fact_billing', 'fact_collection', 'dim_customer', 'dim_package'],
   trend: ['fact_billing', 'fact_collection', 'fact_refund', 'fact_adjustment'],
   top_customers: ['fact_billing', 'fact_collection', 'dim_customer'],
+  // NEW 2026-09-29: whole-customer-base aggregate summary -- same source
+  // tables as top_customers (fact_billing/fact_collection for the money,
+  // dim_customer only implicitly via customer_id grouping), just aggregated
+  // across all of them instead of a ranked top-N slice.
+  customer_summary: ['fact_billing', 'fact_collection'],
   // NEW 2026-09-17: total collected by transaction mode only queries
   // fact_collection (tran_mode_id is a real column on it) -- no billing,
   // customer, or POP join involved.
@@ -268,6 +274,7 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       activeCustomerCount,
       ticketTypeBreakdown,
       customerFinancials,
+      customerFinancialsSummary,
       ticketPopBreakdown,
       tranModeBreakdown,
       tranModeByPop,
@@ -313,6 +320,12 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       // report-table.ts's 'top_customers' branch and
       // revenueService.getCustomerFinancials' own comment.
       need('top_customers') ? getCustomerFinancials({ filters, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      // NEW 2026-09-29: aggregate whole-base stats, not a row list -- see
+      // getCustomerFinancialsSummary's own comment. Cheap (a handful of
+      // aggregate SQL queries, not a per-row scan), but still gated behind
+      // need() like every other breakdown so an unrelated topic doesn't pay
+      // for it on every turn.
+      need('customer_summary') ? getCustomerFinancialsSummary({ filters }) : Promise.resolve(null),
       // NEW 2026-09-17: real ticket count/avg resolution by POP.
       need('ticket_pops') ? getTicketPopBreakdown({ limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
       // NEW 2026-09-17: real total COLLECTED amount broken down by
@@ -549,6 +562,33 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
           Object.entries(row.collectedByTranMode ?? {}).map(([modeId, amount]) => [modeId, toNumber(amount)]),
         ),
       })),
+      // NEW 2026-09-29: whole-customer-base aggregate stats (customer_summary
+      // topic) -- see getCustomerFinancialsSummary's own comment for why this
+      // is statistics, not a per-row list. null when that topic wasn't asked
+      // for this turn (need('customer_summary') resolved to false above).
+      customerFinancialsSummary: customerFinancialsSummary
+        ? {
+            customerCount: toNumber(customerFinancialsSummary.customerCount),
+            totalBilled: toNumber(customerFinancialsSummary.totalBilled),
+            totalCollected: toNumber(customerFinancialsSummary.totalCollected),
+            totalOutstanding: toNumber(customerFinancialsSummary.totalOutstanding),
+            avgBilled: toNumber(customerFinancialsSummary.avgBilled),
+            avgCollected: toNumber(customerFinancialsSummary.avgCollected),
+            avgOutstanding: toNumber(customerFinancialsSummary.avgOutstanding),
+            medianBilled: toNumber(customerFinancialsSummary.medianBilled),
+            medianOutstanding: toNumber(customerFinancialsSummary.medianOutstanding),
+            p90Outstanding: toNumber(customerFinancialsSummary.p90Outstanding),
+            customersWithOutstanding: toNumber(customerFinancialsSummary.customersWithOutstanding),
+            topOutstanding: (customerFinancialsSummary.topOutstanding ?? []).map((r) => ({
+              customerId: r.customerId,
+              outstanding: toNumber(r.outstanding),
+            })),
+            bottomOutstanding: (customerFinancialsSummary.bottomOutstanding ?? []).map((r) => ({
+              customerId: r.customerId,
+              outstanding: toNumber(r.outstanding),
+            })),
+          }
+        : null,
       // NEW 2026-09-17: real total COLLECTED amount broken down by
       // tran_mode_id, one row per transaction mode -- backs "revenue by
       // transaction type" questions. tranModeId is the raw code, not yet

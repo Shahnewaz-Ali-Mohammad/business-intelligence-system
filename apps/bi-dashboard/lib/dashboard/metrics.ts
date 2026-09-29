@@ -31,6 +31,26 @@ export type DashboardData = {
   packageFinancials: { packageId: string | number | null; packageName: string | null; billed: number; collected: number; outstanding: number; activeCustomers: number; collectionRate: number | null; billedShare: number | null; revenuePerActiveCustomer: number | null }[];
   revenueTimeseriesFinancials: { day: string; billed: number; collected: number; refunded: number; adjusted: number }[];
   customerFinancials: { customerId: string; customerName: string | null; billed: number; collected: number; outstanding: number; refunded: number; adjusted: number; packageId: string | null; packageName: string | null; collectedByTranMode: Record<string, number> }[];
+  // Whole-customer-base aggregate stats (customer_summary topic) -- NOT a
+  // per-row list, see revenueService.getCustomerFinancialsSummary's own
+  // comment on why a "give me every customer" question is answered with
+  // statistics instead of one row per customer. null until that topic is
+  // actually requested (see dashboard-data.mjs's need('customer_summary') gate).
+  customerFinancialsSummary: {
+    customerCount: number;
+    totalBilled: number;
+    totalCollected: number;
+    totalOutstanding: number;
+    avgBilled: number;
+    avgCollected: number;
+    avgOutstanding: number;
+    medianBilled: number;
+    medianOutstanding: number;
+    p90Outstanding: number;
+    customersWithOutstanding: number;
+    topOutstanding: { customerId: string; outstanding: number }[];
+    bottomOutstanding: { customerId: string; outstanding: number }[];
+  } | null;
   tranModeBreakdown: { tranModeId: string | number; collected: number }[];
   tranModeByPop: { dimValue: string | number; byTranMode: Record<string, number> }[];
   tranModeByPackage: { dimValue: string | number; byTranMode: Record<string, number> }[];

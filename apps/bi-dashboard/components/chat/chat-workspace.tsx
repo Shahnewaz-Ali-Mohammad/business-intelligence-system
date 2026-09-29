@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BarChart3, Check, Database, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
+import { BarChart3, Check, Database, Download, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/components/auth/auth-provider';
 import { getReportTable, stripTotalsRow } from '@/lib/dashboard/report-table';
@@ -731,6 +731,29 @@ function ReportBlock({
           <FileSpreadsheet size={14} />
           Export Excel
         </Button>
+        {artifact.topic === 'top_customers' || artifact.topic === 'customer_summary' ? (
+          // FIX 2026-09-29: "top_customers"/"customer_summary" only ever
+          // show a bounded slice (a real top-N list, or aggregate stats) --
+          // neither one is the full, row-by-row customer base, and the
+          // regular Export Excel button above builds its file FROM
+          // whatever's already on screen, so it can't produce that either.
+          // This link goes to a dedicated server-streamed CSV export
+          // (app/api/exports/customers) that re-queries and streams every
+          // customer directly from the database via a cursor -- correct
+          // and memory-safe at any customer-base size, unlike building the
+          // file in the browser from an already-loaded row set.
+          // This is a file download from an API route, not a page to
+          // navigate to, so a plain <a> (not next/link's client-side
+          // routing) is deliberate here.
+          // eslint-disable-next-line @next/next/no-html-link-for-pages
+          <a
+            href="/api/exports/customers"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            <Download size={14} />
+            Download Full Customer List (CSV)
+          </a>
+        ) : null}
       </div>
       {reportSaveState !== 'saved' ? (
         <p className="text-xs text-slate-400">This chart is not saved yet -- click Save Report to keep it.</p>

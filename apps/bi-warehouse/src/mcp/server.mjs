@@ -36,7 +36,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-import { getRevenueSummary, getRevenueTimeseries, getPopBreakdown, getPopFinancials, getPackageFinancials, getRevenueTimeseriesFinancials, getActiveCustomerCount, getCustomerFinancials, getTranModeBreakdown, getTranModeByDimension } from '../services/revenueService.mjs';
+import { getRevenueSummary, getRevenueTimeseries, getPopBreakdown, getPopFinancials, getPackageFinancials, getRevenueTimeseriesFinancials, getActiveCustomerCount, getCustomerFinancials, getCustomerFinancialsSummary, getTranModeBreakdown, getTranModeByDimension } from '../services/revenueService.mjs';
 import { getTicketMetrics, getTicketTypeBreakdown, getTicketPopBreakdown } from '../services/ticketService.mjs';
 import { METRICS } from '../semantic/metrics.mjs';
 
@@ -388,7 +388,7 @@ export function createWarehouseMcpServer() {
     {
       title: 'Get per-CUSTOMER billed vs collected (top N by revenue)',
       description:
-        'Total billed, total collected, total refunded, total adjusted, outstanding (billed minus collected), each customer\'s CURRENT package (packageId/packageName, from dim_customer.package_id -- this is the customer\'s present package, not a historical per-transaction package), and each customer\'s collected amount split by tran_mode_id (raw payment-channel code -- NOT yet resolved to a human name like "cash"/"bKash", no TranModeMaster reference table is synced yet), one row per customer, ranked and limited. Use this for any "top N customers by revenue/billed/collected/outstanding/refunded/adjusted" question, "customer-level breakdown by transaction mode", or "top customers ... their package". customer_id is a real direct column on fact_billing, fact_collection, fact_refund, AND fact_adjustment.',
+        'Total billed, total collected, total refunded, total adjusted, outstanding (billed minus collected), each customer\'s CURRENT package (packageId/packageName, from dim_customer.package_id -- this is the customer\'s present package, not a historical per-transaction package), and each customer\'s collected amount split by tran_mode_id (raw payment-channel code -- NOT yet resolved to a human name like "cash"/"bKash", no TranModeMaster reference table is synced yet), one row per customer, ranked and limited. Use this for a genuine "top N customers by revenue/billed/collected/outstanding/refunded/adjusted" question, "customer-level breakdown by transaction mode", or "top customers ... their package" -- i.e. whenever N is a realistic, specific count someone would actually read row by row. Do NOT use this for "every customer", "the whole customer base", "all 386,000 customers", or any count so large it is really asking about the ENTIRE population rather than a real top-N list -- use get_customer_financials_summary instead for those; this tool\'s own row cap would otherwise silently answer a whole-population question from a small, arbitrary slice. customer_id is a real direct column on fact_billing, fact_collection, fact_refund, AND fact_adjustment.',
       inputSchema: {
         dateFrom: z.string().nullable().optional(),
         dateTo: z.string().nullable().optional(),
@@ -456,6 +456,26 @@ export function createWarehouseMcpServer() {
       return {
         content: [{ type: 'text', text: JSON.stringify(withLlmNote(rowsForLlm, note)) }],
         structuredContent: { rows: rowsForLlm, note },
+      };
+    },
+  );
+
+  server.registerTool(
+    'get_customer_financials_summary',
+    {
+      title: 'Get whole-customer-base financial summary (aggregate stats, not a row list)',
+      description:
+        'Aggregate statistics across the ENTIRE customer base (or the entire date-filtered slice of it) -- customer count, total/average/median billed, collected, and outstanding, the 90th-percentile outstanding balance, how many customers currently have a positive outstanding balance, and the real top-10 AND bottom-10 customers by outstanding. This does NOT return one row per customer -- it is the right tool whenever the question is really about the WHOLE population ("every customer", "all customers", "the whole customer base", "give me a report for every one of our 386,000 customers") rather than a specific top-N list (use get_customer_financials for a real top-N). Never estimate these numbers yourself from a smaller sample -- this tool computes them directly in the database across every matching row, so they are exact regardless of how many customers that is. A user who wants the actual full row-by-row list exported (not just insight) should be told the export happens separately (a server-generated file), since a row-by-row list of the whole customer base cannot be shown here or fit in this conversation.',
+      inputSchema: {
+        dateFrom: z.string().nullable().optional(),
+        dateTo: z.string().nullable().optional(),
+      },
+    },
+    async ({ dateFrom, dateTo }) => {
+      const result = await getCustomerFinancialsSummary({ dateFrom: dateFrom || undefined, dateTo: dateTo || undefined });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result,
       };
     },
   );
