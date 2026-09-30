@@ -1,0 +1,24 @@
+# Self-hosted Cube (https://cube.dev, open source) -- the actual semantic
+# layer / query engine. Zero custom code: this is the official image,
+# pointed at the existing warehouse Postgres and this repo's model
+# directory. Cube's own file-based model loader reads model/workspaces/*.yml
+# directly -- those files are written by
+# apps/bi-dashboard/app/api/workspaces/[id]/confirm-model/route.ts whenever
+# a human confirms an AI-drafted model, nothing here writes to them.
+services:
+  cube:
+    image: cubejs/cube:latest
+    ports:
+      - "4001:4000"   # Cube's own API/playground -- kept off 4000 since
+                       # apps/bi-warehouse's readonly-api.mjs already uses it
+    environment:
+      CUBEJS_DB_TYPE: postgres
+      CUBEJS_DB_HOST: ${WAREHOUSE_PG_HOST}
+      CUBEJS_DB_PORT: ${WAREHOUSE_PG_PORT}
+      CUBEJS_DB_NAME: ${WAREHOUSE_PG_DATABASE}
+      CUBEJS_DB_USER: ${WAREHOUSE_PG_USER}
+      CUBEJS_DB_PASS: ${WAREHOUSE_PG_PASSWORD}
+      CUBEJS_API_SECRET: ${CUBEJS_API_SECRET}
+      CUBEJS_DEV_MODE: "true"
+    volumes:
+      - ./model:/cube/conf/model

@@ -1,0 +1,493 @@
+cubes:
+  - name: Customer
+    sql_table: dim_customer
+    measures:
+      - name: customer_count
+        sql: customer_id
+        type: count
+        # confidence: high -- Count of unique customers based on customer_id.
+      - name: activated_count
+        sql: activated_date
+        type: count
+        # confidence: high -- Count of customers who have activated their service.
+      - name: entry_count
+        sql: entry_date
+        type: count
+        # confidence: high -- Count of customers who have an entry date.
+    dimensions:
+      - name: customer_id
+        sql: customer_id
+        type: string
+        # confidence: high -- Primary key for customer identification.
+      - name: customer_name
+        sql: customer_name
+        type: string
+        # confidence: high -- Name of the customer.
+      - name: pop_id
+        sql: pop_id
+        type: string
+        # confidence: medium -- Refers to the point of presence, but its business meaning is not clear.
+      - name: package_id
+        sql: package_id
+        type: string
+        # confidence: medium -- Refers to the package associated with the customer, but its business meaning is not clear.
+      - name: status_id
+        sql: status_id
+        type: string
+        # confidence: medium -- Refers to the status of the customer, but its business meaning is not clear.
+      - name: connection_type
+        sql: connection_type
+        type: string
+        # confidence: medium -- Type of connection, but its business meaning is not clear.
+      - name: resident_type
+        sql: resident_type
+        type: string
+        # confidence: medium -- Type of residency, but its business meaning is not clear.
+      - name: entry_date
+        sql: entry_date
+        type: time
+        # confidence: high -- Date when the customer entered the system.
+      - name: activated_date
+        sql: activated_date
+        type: time
+        # confidence: high -- Date when the customer activated their service.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Date
+    sql_table: dim_date
+    measures:
+    dimensions:
+      - name: date_key
+        sql: date_key
+        type: time
+        # confidence: high -- Primary key for date dimension.
+      - name: year
+        sql: year
+        type: number
+        # confidence: high -- Year part of the date.
+      - name: quarter
+        sql: quarter
+        type: number
+        # confidence: high -- Quarter part of the date.
+      - name: month
+        sql: month
+        type: number
+        # confidence: high -- Month part of the date.
+      - name: month_name
+        sql: month_name
+        type: string
+        # confidence: high -- Name of the month.
+      - name: day
+        sql: day
+        type: number
+        # confidence: high -- Day part of the date.
+      - name: day_of_week
+        sql: day_of_week
+        type: number
+        # confidence: high -- Day of the week.
+      - name: week_of_year
+        sql: week_of_year
+        type: number
+        # confidence: high -- Week number of the year.
+  - name: Department
+    sql_table: dim_department
+    measures:
+    dimensions:
+      - name: department_id
+        sql: department_id
+        type: string
+        # confidence: high -- Primary key for department.
+      - name: department_name
+        sql: department_name
+        type: string
+        # confidence: medium -- Name of the department, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Package
+    sql_table: dim_package
+    measures:
+      - name: package_count
+        sql: package_id
+        type: count
+        # confidence: high -- Count of unique packages.
+      - name: average_price
+        sql: price
+        type: avg
+        # confidence: high -- Average price of packages.
+    dimensions:
+      - name: package_id
+        sql: package_id
+        type: string
+        # confidence: high -- Primary key for package.
+      - name: package_name
+        sql: package_name
+        type: string
+        # confidence: medium -- Name of the package, but its business meaning is not clear.
+      - name: bandwidth
+        sql: bandwidth
+        type: string
+        # confidence: medium -- Bandwidth associated with the package, but its business meaning is not clear.
+      - name: price
+        sql: price
+        type: number
+        # confidence: high -- Price of the package.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: POP
+    sql_table: dim_pop
+    measures:
+    dimensions:
+      - name: pop_id
+        sql: pop_id
+        type: string
+        # confidence: high -- Primary key for POP.
+      - name: pop_name
+        sql: pop_name
+        type: string
+        # confidence: medium -- Name of the POP, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Region
+    sql_table: dim_region
+    measures:
+    dimensions:
+      - name: region_id
+        sql: region_id
+        type: string
+        # confidence: high -- Primary key for region.
+      - name: division_name
+        sql: division_name
+        type: string
+        # confidence: medium -- Name of the division, but its business meaning is not clear.
+      - name: district_name
+        sql: district_name
+        type: string
+        # confidence: medium -- Name of the district, but its business meaning is not clear.
+      - name: city_corporation
+        sql: city_corporation
+        type: string
+        # confidence: medium -- Name of the city corporation, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Status
+    sql_table: dim_status
+    measures:
+    dimensions:
+      - name: status_id
+        sql: status_id
+        type: string
+        # confidence: high -- Primary key for status.
+      - name: status_name
+        sql: status_name
+        type: string
+        # confidence: medium -- Name of the status, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: TicketType
+    sql_table: dim_ticket_type
+    measures:
+    dimensions:
+      - name: ticket_type_id
+        sql: ticket_type_id
+        type: string
+        # confidence: high -- Primary key for ticket type.
+      - name: ticket_type_name
+        sql: ticket_type_name
+        type: string
+        # confidence: high -- Name of the ticket type.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: ETLSyncLog
+    sql_table: etl_sync_log
+    measures:
+    dimensions:
+      - name: source_table
+        sql: source_table
+        type: string
+        # confidence: high -- Primary key for the source table.
+      - name: last_synced_at
+        sql: last_synced_at
+        type: time
+        # confidence: medium -- Timestamp for the last sync, but its business meaning is not clear.
+      - name: last_run_started_at
+        sql: last_run_started_at
+        type: time
+        # confidence: medium -- Timestamp for when the last run started, but its business meaning is not clear.
+      - name: last_run_finished_at
+        sql: last_run_finished_at
+        type: time
+        # confidence: medium -- Timestamp for when the last run finished, but its business meaning is not clear.
+      - name: last_run_status
+        sql: last_run_status
+        type: string
+        # confidence: medium -- Status of the last run, but its business meaning is not clear.
+      - name: last_run_row_count
+        sql: last_run_row_count
+        type: number
+        # confidence: medium -- Row count from the last run, but its business meaning is not clear.
+      - name: last_error
+        sql: last_error
+        type: string
+        # confidence: medium -- Last error message, but its business meaning is not clear.
+  - name: Adjustment
+    sql_table: fact_adjustment
+    measures:
+      - name: total_adjustment_amount
+        sql: amount
+        type: sum
+        # confidence: high -- Total amount of adjustments.
+      - name: adjustment_count
+        sql: adjustment_sk
+        type: count
+        # confidence: high -- Count of adjustments.
+    dimensions:
+      - name: adjustment_sk
+        sql: adjustment_sk
+        type: number
+        # confidence: high -- Primary key for adjustment.
+      - name: source_snid
+        sql: source_snid
+        type: number
+        # confidence: high -- Source identifier for the adjustment.
+      - name: customer_id
+        sql: customer_id
+        type: string
+        # confidence: high -- Customer associated with the adjustment.
+      - name: ref_date
+        sql: ref_date
+        type: time
+        # confidence: high -- Reference date for the adjustment.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Billing
+    sql_table: fact_billing
+    measures:
+      - name: total_billing_amount
+        sql: amount
+        type: sum
+        # confidence: high -- Total amount billed.
+      - name: billing_count
+        sql: billing_sk
+        type: count
+        # confidence: high -- Count of billing records.
+    dimensions:
+      - name: billing_sk
+        sql: billing_sk
+        type: number
+        # confidence: high -- Primary key for billing.
+      - name: source_snid
+        sql: source_snid
+        type: number
+        # confidence: high -- Source identifier for the billing.
+      - name: customer_id
+        sql: customer_id
+        type: string
+        # confidence: high -- Customer associated with the billing.
+      - name: ref_type_id
+        sql: ref_type_id
+        type: number
+        # confidence: medium -- Reference type ID, but its business meaning is not clear.
+      - name: ref_type_name
+        sql: ref_type_name
+        type: string
+        # confidence: medium -- Reference type name, but its business meaning is not clear.
+      - name: ref_date
+        sql: ref_date
+        type: time
+        # confidence: high -- Reference date for the billing.
+      - name: tran_id
+        sql: tran_id
+        type: string
+        # confidence: medium -- Transaction ID, but its business meaning is not clear.
+      - name: pop_id
+        sql: pop_id
+        type: string
+        # confidence: medium -- Point of presence ID, but its business meaning is not clear.
+      - name: package_id
+        sql: package_id
+        type: string
+        # confidence: medium -- Package ID, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Collection
+    sql_table: fact_collection
+    measures:
+      - name: total_collection_amount
+        sql: amount
+        type: sum
+        # confidence: high -- Total amount collected.
+      - name: collection_count
+        sql: collection_sk
+        type: count
+        # confidence: high -- Count of collection records.
+    dimensions:
+      - name: collection_sk
+        sql: collection_sk
+        type: number
+        # confidence: high -- Primary key for collection.
+      - name: source_snid
+        sql: source_snid
+        type: number
+        # confidence: high -- Source identifier for the collection.
+      - name: customer_id
+        sql: customer_id
+        type: string
+        # confidence: high -- Customer associated with the collection.
+      - name: ref_date
+        sql: ref_date
+        type: time
+        # confidence: high -- Reference date for the collection.
+      - name: tran_id
+        sql: tran_id
+        type: string
+        # confidence: medium -- Transaction ID, but its business meaning is not clear.
+      - name: tran_mode_id
+        sql: tran_mode_id
+        type: string
+        # confidence: medium -- Transaction mode ID, but its business meaning is not clear.
+      - name: tran_mode_name
+        sql: tran_mode_name
+        type: string
+        # confidence: medium -- Transaction mode name, but its business meaning is not clear.
+      - name: pop_id
+        sql: pop_id
+        type: string
+        # confidence: medium -- Point of presence ID, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+      - name: package_id
+        sql: package_id
+        type: string
+        # confidence: medium -- Package ID, but its business meaning is not clear.
+  - name: CustomerLifecycleEvent
+    sql_table: fact_customer_lifecycle_event
+    measures:
+    dimensions:
+      - name: event_sk
+        sql: event_sk
+        type: number
+        # confidence: high -- Primary key for lifecycle event.
+      - name: source_event_id
+        sql: source_event_id
+        type: number
+        # confidence: high -- Source identifier for the lifecycle event.
+      - name: customer_id
+        sql: customer_id
+        type: string
+        # confidence: high -- Customer associated with the lifecycle event.
+      - name: package_id
+        sql: package_id
+        type: string
+        # confidence: medium -- Package ID, but its business meaning is not clear.
+      - name: event_type
+        sql: event_type
+        type: string
+        # confidence: medium -- Type of event, but its business meaning is not clear.
+      - name: effective_from
+        sql: effective_from
+        type: time
+        # confidence: high -- Start date of the event.
+      - name: effective_to
+        sql: effective_to
+        type: time
+        # confidence: medium -- End date of the event, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Refund
+    sql_table: fact_refund
+    measures:
+      - name: total_refund_amount
+        sql: amount
+        type: sum
+        # confidence: high -- Total amount refunded.
+      - name: refund_count
+        sql: refund_sk
+        type: count
+        # confidence: high -- Count of refund records.
+    dimensions:
+      - name: refund_sk
+        sql: refund_sk
+        type: number
+        # confidence: high -- Primary key for refund.
+      - name: source_snid
+        sql: source_snid
+        type: number
+        # confidence: high -- Source identifier for the refund.
+      - name: customer_id
+        sql: customer_id
+        type: string
+        # confidence: high -- Customer associated with the refund.
+      - name: ref_date
+        sql: ref_date
+        type: time
+        # confidence: high -- Reference date for the refund.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.
+  - name: Ticket
+    sql_table: fact_ticket
+    measures:
+      - name: ticket_count
+        sql: ticket_sk
+        type: count
+        # confidence: high -- Count of tickets.
+    dimensions:
+      - name: ticket_sk
+        sql: ticket_sk
+        type: number
+        # confidence: high -- Primary key for ticket.
+      - name: source_ticket_id
+        sql: source_ticket_id
+        type: number
+        # confidence: high -- Source identifier for the ticket.
+      - name: customer_id
+        sql: customer_id
+        type: string
+        # confidence: medium -- Customer associated with the ticket, but its business meaning is not clear.
+      - name: department_id
+        sql: department_id
+        type: string
+        # confidence: medium -- Department associated with the ticket, but its business meaning is not clear.
+      - name: ticket_type_id
+        sql: ticket_type_id
+        type: string
+        # confidence: medium -- Ticket type ID, but its business meaning is not clear.
+      - name: opened_date
+        sql: opened_date
+        type: time
+        # confidence: high -- Date when the ticket was opened.
+      - name: resolved_date
+        sql: resolved_date
+        type: time
+        # confidence: medium -- Date when the ticket was resolved, but its business meaning is not clear.
+      - name: status
+        sql: status
+        type: string
+        # confidence: medium -- Status of the ticket, but its business meaning is not clear.
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+        # confidence: high -- Timestamp for when the data was last synced.

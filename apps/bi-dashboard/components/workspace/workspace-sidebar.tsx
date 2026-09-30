@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {
+  Database,
   Download,
   FileText,
   LayoutDashboard,
@@ -35,6 +36,7 @@ const navItems = [
   { label: 'Chat', href: '/chat', icon: MessageSquareText },
   { label: 'Reports', href: '/reports', icon: FileText },
   { label: 'Exports', href: '/exports', icon: Download },
+  { label: 'Data Sources', href: '/data-sources', icon: Database },
   { label: 'Settings', href: '/settings', icon: Settings },
 ];
 

@@ -6,6 +6,7 @@ out/
 coverage/
 .env
 .env.*
+!*.env.example
 *.pem
 *.tsbuildinfo
 npm-debug.log*
@@ -16,3 +17,5 @@ yarn-error.log*
 project-notes/
 apps/bi-dashboard/scripts/chat/*.csv
 apps/bi-warehouse/_tmp_orphan_check.mjs
+__pycache__/
+*.pyc
