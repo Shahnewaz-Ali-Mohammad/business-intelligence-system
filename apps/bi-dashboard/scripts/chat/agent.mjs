@@ -99,6 +99,30 @@ const ResponseSchema = z.object({
       // request.
       'Exactly which columns the user explicitly asked to see in a multi-column table this turn (billed/collected/refunded/adjusted/outstanding/activeCustomers/count/avgResolutionHours/byTranMode, whichever apply to the table topic) -- leave empty only when they did not name specific columns.',
     ),
+  // FIX 2026-09-30: a real bug, not a hypothetical -- asking "all the
+  // information for pop 24" correctly produced a narrative ABOUT POP 24
+  // specifically (the model can already single out one row in prose), but
+  // the table and chart shown alongside it still rendered the FULL
+  // per-POP breakdown (all ~30 POPs), because `data` is fetched from
+  // dashboardData() purely by `topic`, with no concept of "just this one
+  // row" -- from the user's side this looked like the table/chart showing
+  // "random" unrelated numbers next to a correct, specific narrative. This
+  // field is the fix: when the user's question is about ONE specific row
+  // within the breakdown (not a top-N list, not "all"/"every", not a
+  // comparison), set it to that row's real id/name EXACTLY as it appears
+  // in the tool result you just called (e.g. "24" for POP 24, a real
+  // packageId, ticketTypeId, customerId, or tranModeId) -- the table and
+  // chart are then narrowed to just that one matching row server-side, so
+  // they always agree with what the narrative is actually about. Leave it
+  // null for any breakdown covering multiple rows (a top-N list, "all
+  // POPs", a full ticket-type breakdown, etc.) -- null is the correct
+  // default whenever more than one row is genuinely being reported on.
+  focusRowId: z
+    .string()
+    .nullable()
+    .describe(
+      'The one specific row this answer is about (a POP id, packageId, ticketTypeId, customerId, or tranModeId), exactly as it appears in the tool result, so the table/chart shown alongside can be narrowed to just that row. Null whenever the answer covers multiple rows (a top-N list, "all POPs", a full breakdown, a comparison).',
+    ),
 });
 
 const GUARDRAIL_SYSTEM_PROMPT = `You are the analytical engine behind a live BI dashboard chat for an ISP (internet service provider) billing/CRM/network-ops business -- a sharp, conversational senior business analyst, similar in tone to a helpful AI assistant, not a robotic report generator.
@@ -131,6 +155,7 @@ Guardrails:
 - If the user asks "which POP is highest/lowest/best/worst", compare the numbers in the get_region_breakdown result yourself and name the specific answer directly in the first sentence -- never just dump the full breakdown instead of answering. You can still add the breakdown as supporting context after the direct answer.
 - For period-over-period questions ("this month vs last month", "vs last week"), call get_revenue_summary (or get_revenue_timeseries) twice with two DIFFERENT, non-overlapping dateFrom/dateTo ranges -- one call per period -- and compare the two real results yourself in the narrative. Never estimate a prior period from a single call.
 - Use the conversation history to understand follow-ups ("what about last quarter", "and for that POP only") the way a person would, without the user having to repeat context.
+- CRITICAL -- a question about ONE specific row ("pop 24", "the Silver package", "ticket type 7", "customer X") within a breakdown: still call the SAME breakdown tool you normally would (there is no single-row lookup tool -- see that tool's own description), but set focusRowId in your structured response to that row's real id/name exactly as it comes back in the tool result. This is required, not optional -- without it the table/chart shown next to your answer stays the FULL breakdown (every row) even though your narrative is about just one, which is a confirmed real bug (a narrative genuinely about POP 24 sat next to a 30-row table of every POP). Leave focusRowId null for anything covering more than one row (a top-N list, "all POPs", any comparison).
 - CRITICAL -- referential follow-ups ("these", "that breakdown", "those tickets", "the same list", "them", "it") that don't restate new filter criteria: find the most recent tool call in the history that produced the specific rows being referred to, and call that SAME tool again with the EXACT SAME arguments (dateFrom, dateTo, limit, sortBy, direction, groupBy, dimension, metric -- whichever it took), changing only what the new message actually asks to change (e.g. turning it into a chart, or narrowing the date range). Never silently fall back to a tool's default arguments (e.g. direction: "desc") just because the current message itself doesn't repeat a word like "lowest" or "asc" -- if the LAST relevant call used direction: "asc"/a specific limit/a specific sort, "these"/"that" means that exact result set, not a fresh default query on the same topic. Getting this wrong shows the user a different set of rows than the ones they were just looking at and asked to see again.
 - CRITICAL: every new user message is its own fresh question. Decide scope from THIS message alone -- never reuse, rephrase, or repeat the narrative, numbers, or tablesUsed from a previous turn just because a prior turn was on-topic. A topic switch (e.g. a follow-up about a football player, a celebrity, the weather, or anything else unrelated to this ISP's data) is always out of scope, even mid-conversation.
 - When declining an out-of-scope message: do NOT call any tool, do NOT invent or reuse any numbers, keep narrative to one short decline-and-redirect sentence, set tablesUsed to an empty array, and set topic to "dashboard".
@@ -484,6 +509,50 @@ function buildDeterministicInsight(topic, data) {
     }
   }
   return null;
+}
+
+// Which array field (inside dashboardData()'s return object) and which of
+// its row keys identify one row, per topic -- see focusRowId's own schema
+// description above for why this exists. Field/key names here MUST match
+// dashboard-data.mjs's actual return shape exactly (popFinancials.pop,
+// packageFinancials.packageId/packageName, etc.) -- verified against it
+// directly, not guessed.
+const FOCUS_ROW_FIELD_BY_TOPIC = {
+  pops: { arrayKey: 'popFinancials', idKeys: ['pop'] },
+  packages: { arrayKey: 'packageFinancials', idKeys: ['packageId', 'packageName'] },
+  top_customers: { arrayKey: 'customerFinancials', idKeys: ['customerId'] },
+  tickets: { arrayKey: 'ticketBreakdown', idKeys: ['ticketTypeId', 'ticketTypeName'] },
+  ticket_pops: { arrayKey: 'ticketPopBreakdown', idKeys: ['pop'] },
+  tran_modes: { arrayKey: 'tranModeBreakdown', idKeys: ['tranModeId'] },
+  tran_mode_by_pop: { arrayKey: 'tranModeByPop', idKeys: ['dimValue'] },
+  tran_mode_by_package: { arrayKey: 'tranModeByPackage', idKeys: ['dimValue'] },
+};
+
+// Narrows `data`'s one real breakdown array down to the single row
+// focusRowId names, so the table/chart shown alongside a single-row
+// narrative ("all the information for pop 24") actually shows that one
+// row instead of the full breakdown -- see focusRowId's schema comment
+// for the real bug this fixes. Matches case-insensitively and treats "24"
+// and 24 as the same id, since the model may write either. Falls back to
+// the FULL unfiltered `data` (never an empty table) whenever focusRowId
+// is null, the topic has no known array/id mapping, or nothing actually
+// matches -- a wrong filter that hides everything would be worse than
+// today's "shows too much" bug.
+function applyFocusRowFilter(topic, focusRowId, data) {
+  if (!focusRowId || !data) return data;
+  const config = FOCUS_ROW_FIELD_BY_TOPIC[topic];
+  if (!config) return data;
+  const rows = data[config.arrayKey];
+  if (!Array.isArray(rows) || !rows.length) return data;
+  const needle = String(focusRowId).trim().toLowerCase();
+  const matched = rows.filter((row) =>
+    config.idKeys.some((key) => row?.[key] !== null && row?.[key] !== undefined && String(row[key]).trim().toLowerCase() === needle),
+  );
+  if (!matched.length) {
+    console.log('[agent] focusRowId set but no matching row found, showing full breakdown instead:', topic, focusRowId);
+    return data;
+  }
+  return { ...data, [config.arrayKey]: matched };
 }
 
 // Builds the SAME `structured` shape draftNode's LLM call would normally
@@ -990,7 +1059,7 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
   // question. A clarifying question is never grounded in a real lookup,
   // so data must be null here unconditionally when askedClarification is
   // true, no matter what calledAnyTool says.
-  const data = askedClarification || (intent === 'answer' && !calledAnyTool)
+  const rawData = askedClarification || (intent === 'answer' && !calledAnyTool)
     ? null
     : await dashboardData({
         windowDays: usedArgs.days,
@@ -1006,6 +1075,17 @@ export async function runBiAgent({ message, history = [], pageState = {} }) {
         // was the real cause of "simple" questions timing out).
         topic: structured?.topic ?? null,
       });
+  // FIX 2026-09-30: applied HERE, before buildDeterministicInsight below,
+  // not only at the final return -- the deterministic insight sentence
+  // also reads straight from `data`, so if the narrowing happened only at
+  // the return, a single-POP question would get a narrative that's
+  // correctly about POP 24 PLUS an auto-appended "Concretely: POP 10 is
+  // the single largest biller..." sentence about a completely different
+  // POP, next to a table now correctly narrowed to POP 24 alone -- three
+  // things each individually right but disagreeing with each other. One
+  // filter applied once, here, keeps the narrative, the deterministic
+  // insight, and the table/chart all describing the exact same row set.
+  const data = applyFocusRowFilter(topic, structured?.focusRowId, rawData);
 
   // FIX 2026-09-17: the narrative's "notable pattern" sentence was left to
   // the draft LLM's free judgment, even after the prompt was updated to
