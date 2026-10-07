@@ -71,6 +71,22 @@ export type ChartGroup = {
 };
 
 export type ChartSpec = {
+  reportGraph?: import('./report-graph').ReportGraphSpec | null;
+  exploration?: {
+    filters: { member: string; operator: 'equals' | 'notSet'; values: string[] }[];
+    panels: {
+      kind: 'bar' | 'line' | 'heatmap';
+      measure?: string;
+      dimension?: string;
+      time?: string;
+      granularity?: string;
+      search?: string;
+      offset?: number;
+      timeOffset?: number;
+      pageSize?: number;
+      direction?: 'asc' | 'desc';
+    }[];
+  };
   // Usually one group. More than one means "small multiples" -- measures
   // that don't share a scale, rendered as separate stacked mini-charts
   // instead of one misleading combined chart.
@@ -82,13 +98,30 @@ export const MAX_LINE_ROWS = 60;
 export const MAX_DONUT_SLICES = 6;
 export const MAX_MULTISERIES_COLUMNS = 5;
 
+// FIX 2026-10-01: real, live performance bug -- auto-report-chart.tsx's
+// default rowLimit used to be `table.rows.length` (the TRUE total, no
+// cap at all), which was correct for a ~55-row POP/package breakdown
+// (that fix was for the "only showing some column names" bug) but
+// catastrophic for a row-level ticket_list/customer_list table, which can
+// now be up to 5,000 rows (see getTicketList's own comment) -- a 5,000-bar
+// chart is both unreadable AND slow enough to visibly lag the browser.
+// getRowLimitOptions used to always offer the raw totalRows as a
+// selectable option too, meaning the dropdown itself could offer "41,500"
+// as a chart size. A chart beyond a few hundred bars stops being
+// information and starts being noise regardless of render speed, so this
+// is a real ceiling, not just a performance workaround -- the full data
+// is still completely available below in the table, unaffected by this
+// cap, and via export for anything bigger than the table shows.
+export const MAX_CHARTABLE_ROWS = 200;
+
 // Row-count choices offered by the chart's "Show top N" control -- shared
 // here so the picker's own default cap and the editable control always
 // agree on the same option set instead of drifting apart.
 export function getRowLimitOptions(totalRows: number, isTimeSeries: boolean): number[] {
   const base = isTimeSeries ? [10, 20, MAX_LINE_ROWS] : [5, 10, MAX_BAR_ROWS, 50];
-  const options = base.filter((n) => n < totalRows);
-  options.push(totalRows);
+  const cappedTotal = Math.min(totalRows, MAX_CHARTABLE_ROWS);
+  const options = base.filter((n) => n < cappedTotal);
+  options.push(cappedTotal);
   return Array.from(new Set(options)).sort((a, b) => a - b);
 }
 
@@ -152,6 +185,7 @@ export function getChartSpec(table: ReportTable): ChartSpec {
 
   const measureIndices: number[] = [];
   for (let i = 1; i < headers.length; i++) {
+    if (/(?:^|\s)(?:id|sk)(?:$|\s)|source|date|year|quarter|month|week/i.test(headers[i])) continue;
     const hasNumeric = rows.some((row) => typeof row[i] === 'number');
     if (hasNumeric) measureIndices.push(i);
   }

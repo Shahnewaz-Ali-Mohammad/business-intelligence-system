@@ -5,12 +5,17 @@
   "type": "module",
   "scripts": {
     "sync": "node src/etl/sync.mjs",
+    "sync:ticketing:raw": "node --env-file=.env scripts/copy-ticketing-db.mjs",
     "migrate": "node scripts/run-migration.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "dotenv": "^16.4.5",
+    "js-yaml": "^5.4.2",
+    "jsonwebtoken": "^9.0.3",
     "mssql": "^11.0.0",
     "pg": "^8.13.0",
-    "dotenv": "^16.4.5",
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "pg-copy-streams": "^7.0.0",
+    "pgsql-ast-parser": "^12.0.2"
   }
 }

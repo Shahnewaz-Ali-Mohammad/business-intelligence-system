@@ -9,6 +9,11 @@
 // exposed to the browser).
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
+import { warehouseContext } from '@/lib/workspaces/warehouse';
+import { runWarehouseAgent } from '../../../scripts/chat/warehouse-agent.mjs';
+import { getAppDb } from '@/lib/db/app-db';
+
+export const maxDuration = 180;
 
 // Not NEXT_PUBLIC_ -- this URL is only ever fetched from the Next.js server,
 // never sent to the browser bundle.
@@ -72,6 +77,40 @@ export async function POST(req: NextRequest) {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
+  }
+  const message = body && typeof body === 'object' && 'message' in body ? body.message : null;
+  if (typeof message !== 'string' || !message.trim()) {
+    return NextResponse.json({ error: 'Enter a question to continue.' }, { status: 400 });
+  }
+  if (message.length > 4000) {
+    return NextResponse.json({ error: 'Keep your question within 4,000 characters. Your request has not been truncated or queried.' }, { status: 400 });
+  }
+
+  const payload = body as Record<string, unknown>;
+  const pageState = payload.page_state as Record<string, unknown> | undefined;
+  const reportWarehouse = pageState?.warehouseQuery as { workspaceId?: string } | undefined;
+  let workspaceId = payload.workspaceId ?? reportWarehouse?.workspaceId;
+  if (payload.sessionId) {
+    if (typeof payload.sessionId !== 'number' || !Number.isSafeInteger(payload.sessionId) || payload.sessionId < 1) return NextResponse.json({ error: 'Invalid conversation.' }, { status: 400 });
+    const [rows] = await getAppDb().execute('SELECT warehouse_id FROM chat_sessions WHERE id=? AND user_id=?', [payload.sessionId, user.id]);
+    const sessions = rows as { warehouse_id: string | null }[];
+    if (!sessions.length) return NextResponse.json({ error: 'Conversation not found.' }, { status: 404 });
+    if (!sessions[0].warehouse_id && workspaceId) return NextResponse.json({ error: 'Start a new conversation to change warehouses.' }, { status: 409 });
+    if (sessions[0].warehouse_id) {
+      if (workspaceId && workspaceId !== sessions[0].warehouse_id) return NextResponse.json({ error: 'Start a new conversation to change warehouses.' }, { status: 409 });
+      workspaceId = sessions[0].warehouse_id;
+    }
+  }
+  if (workspaceId) {
+    if (typeof workspaceId !== 'string') return NextResponse.json({ error: 'Invalid warehouse.' }, { status: 400 });
+    try {
+      const context = await warehouseContext(workspaceId, user.id);
+      const result = await runWarehouseAgent({ context: { ...context, signal: AbortSignal.any([req.signal, AbortSignal.timeout(150000)]) }, message, history: payload.history, pageState });
+      return NextResponse.json(result);
+    } catch (error) {
+      console.error('[warehouse chat]', error instanceof Error ? error.name : 'Error');
+      return NextResponse.json({ error: 'Could not answer from this warehouse. Check its active connection and model in Data Sources; no empty result has been inferred.' }, { status: 502 });
+    }
   }
 
   const controller = new AbortController();

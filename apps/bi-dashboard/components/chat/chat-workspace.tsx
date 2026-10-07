@@ -1,19 +1,21 @@
 'use client';
 
 import Link from 'next/link';
+import { isListTopic, listExportUrl } from '@/components/dashboard/tables/paginated-list-table';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BarChart3, Check, Database, Download, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
+import { Check, Database, Download, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/components/auth/auth-provider';
-import { getReportTable, stripTotalsRow } from '@/lib/dashboard/report-table';
-import { getChartSpec, type ChartSpec } from '@/lib/dashboard/chart-spec';
-import { AutoReportChart } from '@/components/dashboard/charts/auto-report-chart';
-import { ChartErrorBoundary } from '@/components/dashboard/charts/chart-error-boundary';
+import { getReportTable } from '@/lib/dashboard/report-table';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
+import type { ChartSpec } from '@/lib/dashboard/chart-spec';
+import { reportGraphSource } from '@/lib/dashboard/report-graph';
+import { ReportGraph } from '@/components/dashboard/charts/report-graph';
 
 type Message = {
+  id?: number;
   role: 'user' | 'assistant';
   text: string;
   tablesUsed?: string[];
@@ -22,13 +24,8 @@ type Message = {
   // the old single global `artifact` state further down for why.
   artifact?: Artifact;
   reportSaveState?: 'idle' | 'saving' | 'saved' | 'error';
+  savedReportId?: number;
   tableExpanded?: boolean;
-  // A chart-type/measure edit made to this message's OWN inline chart in
-  // the chat panel -- captured here (instead of being pure local state
-  // inside ReportBlock/AutoReportChart) so Save Report can persist the
-  // exact chart the user is looking at, not always the auto-picked
-  // default. Undefined means "use the auto-picked default."
-  chartSpecOverride?: ChartSpec;
   // When this message was sent/received -- an ISO string. Hydrated
   // messages get the real `created_at` the DB stored; a message just sent
   // this session is stamped client-side at push time (it's saved to the
@@ -38,6 +35,7 @@ type Message = {
 };
 
 type Artifact = {
+  savedReportId?: number;
   title: string;
   narrative: string;
   topic: string;
@@ -46,6 +44,7 @@ type Artifact = {
   days: number;
   region: string | null;
   tablesUsed: string[];
+  chartSpec?: ChartSpec;
 };
 
 const WELCOME_MESSAGE: Message = {
@@ -82,28 +81,32 @@ async function saveMessage(
   reportData?: Artifact,
 ) {
   try {
-    await fetch('/api/chat-history', {
+    const res = await fetch('/api/chat-history', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, role, content: text, tablesUsed, reportData }),
     });
-  } catch {
-    // Best-effort persistence -- a failed save should never block the chat UI.
+    if (!res.ok) {
+      console.error('[chat-history] message NOT saved:', res.status, await res.text().catch(() => ''));
+    }
+    const body = await res.json();
+    return res.ok && Number.isSafeInteger(body.id) ? body.id as number : undefined;
+  } catch (err) {
+    // Never blocks the chat UI, but no longer silent either.
+    console.error('[chat-history] message NOT saved:', err);
   }
 }
 
-// Saving is a deliberate, user-initiated action (the "Save Report" button
-// in the report panel) -- it never happens automatically just because a
-// chart was generated, so the Reports list only fills up with reports the
-// user actually chose to keep.
-// chartSpec here is the auto-picked default (see getChartSpec at the top
-// of ChatWorkspace) -- the chat panel's own chart edits are session-only
-// by design (they reset each question, see the ChartErrorBoundary's own
-// per-message key), so Save always stores the default, sensible chart.
-// Editing a chart's type/measures/row-count PERSISTENTLY happens on the
-// saved report page instead, where AutoReportChart is given onSpecChange
-// and a real Save-chart action.
-async function saveReport(artifact: Artifact, chartSpec: unknown): Promise<boolean> {
+async function saveReport(
+  artifact: Artifact,
+  // The real chat session this report was generated in -- saved so the
+  // report detail page can link straight back to the actual, full
+  // conversation ("Continue in chat") instead of a frozen copy of it.
+  // Optional -- a report saved with no active session (shouldn't happen
+  // from this function's own call sites, but keeps the field honest
+  // about being optional) still saves, just without that link.
+  sourceSessionId?: number | null,
+): Promise<number | null> {
   try {
     const response = await fetch('/api/reports', {
       method: 'POST',
@@ -112,16 +115,18 @@ async function saveReport(artifact: Artifact, chartSpec: unknown): Promise<boole
         title: artifact.title,
         narrative: artifact.narrative,
         topic: artifact.topic,
-        chartType: artifact.chartType,
+        chartType: 'none',
         filters: { days: artifact.days, region: artifact.region },
         tablesUsed: artifact.tablesUsed,
         data: artifact.data,
-        chartSpec,
+        chartSpec: artifact.chartSpec || null,
+        sourceSessionId,
       }),
     });
-    return response.ok;
+    const body = await response.json();
+    return response.ok && Number.isSafeInteger(body.id) ? body.id : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -130,6 +135,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSessionId = searchParams.get('session');
+  const requestedWorkspaceId = searchParams.get('workspace');
 
   // FIX 2026-09-17: previously the ONLY source of this data was the
   // `initialData` prop, fetched server-side in app/chat/page.tsx BEFORE the
@@ -140,7 +146,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   // always already resolved.
   const [homeData, setHomeData] = useState<DashboardData | null>(initialData);
   useEffect(() => {
-    if (homeData) return;
+    if (homeData || requestedWorkspaceId) return;
     let cancelled = false;
     // PERF FIX 2026-09-17: this only ever feeds kpi labels + static
     // chartSources + top-POP context (see activeData usage below) -- it
@@ -174,8 +180,18 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
+  const [sessionWarehouseId, setSessionWarehouseId] = useState<string | null>(null);
   const sessionSetupRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const routeKey = `${requestedSessionId || ''}:${requestedWorkspaceId || ''}`;
+  const [previousRouteKey, setPreviousRouteKey] = useState(routeKey);
+  if (previousRouteKey !== routeKey) {
+    setPreviousRouteKey(routeKey);
+    if (!requestedSessionId || sessionId !== Number(requestedSessionId)) {
+      setSessionId(null); setSessionTitle(null); setSessionWarehouseId(null);
+      setMessages([WELCOME_MESSAGE]);
+    }
+  }
 
   function updateMessage(index: number, patch: Partial<Message>) {
     setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, ...patch } : m)));
@@ -197,16 +213,19 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     const setupKey = `${user.id}:${requestedSessionId}`;
     if (sessionSetupRef.current === setupKey) return;
     sessionSetupRef.current = setupKey;
+    let cancelled = false;
 
     fetch(`/api/chat-sessions/${requestedSessionId}`)
-      .then((res) => res.json())
-      .then((body: { session: { id: number; title: string } | null; messages: Array<{ role: 'user' | 'assistant'; content: string; tables_used: string[] | null; report_data: Artifact | null; created_at: string }> }) => {
-        if (!body.session) return;
+      .then((res) => { if (!res.ok) throw new Error('Conversation could not be loaded.'); return res.json(); })
+      .then((body: { session: { id: number; title: string; warehouse_id?: string | null } | null; messages: Array<{ id: number; role: 'user' | 'assistant'; content: string; tables_used: string[] | null; report_data: Artifact | null; created_at: string }> }) => {
+        if (cancelled || !body.session) return;
         setSessionId(body.session.id);
         setSessionTitle(body.session.title);
-        if (body.messages.length) {
+        setSessionWarehouseId(body.session.warehouse_id || null);
+        if (body.messages.length || sessionId !== body.session.id) {
           setMessages(
-            body.messages.map((m) => ({
+            body.messages.length ? body.messages.map((m) => ({
+              id: m.id,
               role: m.role,
               text: m.content,
               tablesUsed: m.tables_used ?? undefined,
@@ -216,29 +235,35 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               // text. Undefined for a plain answer, or a message saved
               // before this column existed.
               artifact: (m.report_data as Artifact | null | undefined) ?? undefined,
-              reportSaveState: m.report_data ? 'idle' : undefined,
+              savedReportId: m.report_data?.savedReportId,
+              reportSaveState: m.report_data?.savedReportId ? 'saved' : m.report_data ? 'idle' : undefined,
               tableExpanded: false,
               createdAt: m.created_at,
-            })),
+            })) : [WELCOME_MESSAGE],
           );
         }
       })
-      .catch(() => {});
+      .catch(() => { if (!cancelled) { sessionSetupRef.current = null; setMessages([{ role: 'assistant', text: 'Could not load this conversation. Please reopen it or start a new chat.' }]); } });
+    return () => { cancelled = true; sessionSetupRef.current = null; };
+    // sessionId is populated by this effect or conversation creation, not a reload trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user, requestedSessionId]);
 
   async function ensureSession(firstMessage: string): Promise<number | null> {
     if (!user) return null;
     if (sessionId) return sessionId;
+    if (requestedSessionId) return null;
     try {
       const res = await fetch('/api/chat-sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: firstMessage.slice(0, 80) }),
+        body: JSON.stringify({ title: firstMessage.slice(0, 80), workspaceId: requestedWorkspaceId || sessionWarehouseId || activeData?.warehouseQuery?.workspaceId }),
       });
       const body = (await res.json()) as { id: number; title: string };
+      if (!res.ok || !Number.isSafeInteger(body.id) || body.id < 1) return null;
       setSessionId(body.id);
       setSessionTitle(body.title);
-      router.replace(`/chat?session=${body.id}`, { scroll: false });
+      router.replace(`/chat?session=${body.id}${requestedWorkspaceId ? `&workspace=${encodeURIComponent(requestedWorkspaceId)}` : ''}`, { scroll: false });
       return body.id;
     } catch {
       return null;
@@ -263,8 +288,10 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     setMessages([WELCOME_MESSAGE]);
     setSessionId(null);
     setSessionTitle(null);
+    const warehouseId = sessionWarehouseId || requestedWorkspaceId || activeData?.warehouseQuery?.workspaceId;
+    setSessionWarehouseId(null);
     sessionSetupRef.current = null;
-    router.push('/chat');
+    router.push(warehouseId ? `/chat?workspace=${encodeURIComponent(warehouseId)}` : '/chat');
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -296,6 +323,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     }
 
     try {
+      if (user && !activeSessionId) throw new Error('Could not start this conversation. Check the warehouse connection and try again.');
       // Goes through this app's own /api/chat route, not the internal
       // backend directly -- that route enforces sign-in and rate limiting
       // before it ever reaches the backend. See app/api/chat/route.ts.
@@ -306,6 +334,8 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message,
+            workspaceId: sessionWarehouseId || requestedWorkspaceId || activeData?.warehouseQuery?.workspaceId || undefined,
+            sessionId: activeSessionId,
             history: messages.slice(-12).map((m) => ({ role: m.role, content: m.text })),
             page_state: {
               page: 'chat',
@@ -313,6 +343,8 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               region: lastArtifact?.region ?? null,
               kpis: activeData?.kpis?.map((kpi) => kpi.label) ?? [],
               chartSources: activeData?.chartSources ?? null,
+              semanticQuery: activeData?.semanticQuery ?? activeData?.chartQuery ?? null,
+              warehouseQuery: activeData?.warehouseQuery ?? null,
             },
           }),
         },
@@ -356,9 +388,11 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               tablesUsed: result.tablesUsed,
             }
           : undefined;
+      const messageId = user && activeSessionId ? await saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed, newArtifact) : undefined;
       setMessages((prev) => [
         ...prev,
         {
+          id: messageId,
           role: 'assistant',
           text: result.narrative,
           tablesUsed: result.tablesUsed,
@@ -368,7 +402,6 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           createdAt: new Date().toISOString(),
         },
       ]);
-      if (user && activeSessionId) saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed, newArtifact);
       // A brand-new chat's first exchange is done and saved (including
       // the auto-title-from-first-message update /api/chat-history makes
       // server-side) -- tell the sidebar's Recent Chats list to refresh so
@@ -398,27 +431,43 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
     const target = message?.artifact;
     if (!target || !user) return;
     updateMessage(index, { reportSaveState: 'saving' });
-    // If the user edited this message's chart (type/measure/row-count) in
-    // the chat panel itself, that edit is what gets saved -- otherwise
-    // fall back to recomputing the same auto-picked default ReportBlock
-    // renders from, so Save never disagrees with what's on screen.
-    let spec: ReturnType<typeof getChartSpec> = message?.chartSpecOverride ?? { groups: [] };
-    if (!message?.chartSpecOverride) {
-      const table = getReportTable(target.topic, target.data, target.chartType);
+    let reportId = message.savedReportId;
+    let ok = false;
+    if (reportId) {
+      try { const res = await fetch(`/api/reports/${reportId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chartSpec: target.chartSpec || null }) }); ok = res.ok; } catch {}
+    } else { reportId = await saveReport(target, sessionId) || undefined; ok = !!reportId; }
+    if (ok && message.id && reportId) {
       try {
-        spec = getChartSpec({ headers: table.headers, rows: stripTotalsRow(table) });
-      } catch {
-        // A chart-spec failure shouldn't block saving the report itself --
-        // ReportBlock already surfaces this loudly in the UI.
-      }
+        const response = await fetch('/api/chat-history', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messageId: message.id, reportId }) });
+        ok = response.ok;
+      } catch { ok = false; }
     }
-    const ok = await saveReport(target, spec);
-    updateMessage(index, { reportSaveState: ok ? 'saved' : 'error' });
+    setMessages((current) => current.map((m, i) => i === index ? { ...m, savedReportId: reportId, reportSaveState: ok ? JSON.stringify(m.artifact?.chartSpec) === JSON.stringify(target.chartSpec) ? 'saved' : 'idle' : 'error' } : m));
   }
 
   async function handleExportArtifact(index: number) {
     const artifact = messages[index]?.artifact;
     if (!artifact) return;
+    // FIX 2026-10-04: "Export Excel" on a ticket_list/customer_list
+    // report used to build its file from `artifact.data`, which is
+    // whatever this turn's fast/full pipeline fetched -- capped at 5,000
+    // rows (see getTicketList/getCustomerList's own comments on that real
+    // cap). That silently made Export Excel just as capped as the on-
+    // screen table, when a real "give me a report of every ticket" asks
+    // for the real total, not a sample of it. For these two topics only,
+    // Export Excel now goes to a dedicated server route that re-queries
+    // and streams every matching row straight from the database into a
+    // real .xlsx, with no 5,000 ceiling -- see app/api/exports/tickets
+    // and app/api/exports/customer-list.
+    // 2026-10-04: carries the report's own filters, so the file holds
+    // every row of THIS result, not the whole table.
+    if (isListTopic(artifact.topic, artifact.data)) {
+      const url = listExportUrl(artifact.topic, artifact.data);
+      if (url) {
+        window.location.assign(url);
+        return;
+      }
+    }
     const table = getReportTable(artifact.topic, artifact.data, artifact.chartType);
     const fileName = `${artifact.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
     const base64 = buildXlsxBase64(table.headers, table.rows);
@@ -456,7 +505,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
             <h2 className="truncate text-base font-bold">
               {sessionTitle && sessionTitle !== 'New conversation' ? sessionTitle : 'Conversation'}
             </h2>
-            <p className="text-sm text-slate-500">Ask a question, or ask for a report or graph.</p>
+            <p className="text-sm text-slate-500">Ask a question, or ask for a report.</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {user ? (
@@ -558,20 +607,17 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                 // the right, so the report card leaves the same gap before
                 // the row's right edge that the capped reply bubble does,
                 // instead of stretching out further than the text above it.
-                <div className="ml-12 mr-12">
-                  <ChartErrorBoundary key={`chart-${index}`}>
+                <div className="mx-0 sm:ml-12 sm:mr-12">
                     <ReportBlock
                       artifact={message.artifact}
                       user={!!user}
                       reportSaveState={message.reportSaveState ?? 'idle'}
                       tableExpanded={!!message.tableExpanded}
-                      chartSpecOverride={message.chartSpecOverride ?? null}
                       onSave={() => handleSaveReport(index)}
                       onExport={() => handleExportArtifact(index)}
                       onToggleExpand={() => toggleTableExpanded(index)}
-                      onSpecChange={(spec) => updateMessage(index, { chartSpecOverride: spec })}
+                      onGraphChange={(spec) => updateMessage(index, { artifact: { ...message.artifact!, chartSpec: { ...message.artifact!.chartSpec, groups: message.artifact!.chartSpec?.groups || [], reportGraph: spec } }, reportSaveState: 'idle' })}
                     />
-                  </ChartErrorBoundary>
                 </div>
               ) : null}
             </div>
@@ -633,63 +679,50 @@ function ReportBlock({
   user,
   reportSaveState,
   tableExpanded,
-  chartSpecOverride,
   onSave,
   onExport,
   onToggleExpand,
-  onSpecChange,
+  onGraphChange,
 }: {
   artifact: Artifact;
   user: boolean;
   reportSaveState: 'idle' | 'saving' | 'saved' | 'error';
   tableExpanded: boolean;
-  chartSpecOverride: ChartSpec | null;
   onSave: () => void;
   onExport: () => void;
   onToggleExpand: () => void;
-  onSpecChange: (spec: ChartSpec) => void;
+  onGraphChange: (spec: import('@/lib/dashboard/report-graph').ReportGraphSpec | null) => void;
 }) {
   const inlineTable = getReportTable(artifact.topic, artifact.data, artifact.chartType);
-  // Chart is generated from the SAME table data, minus the Totals row (a
-  // chart bar for "Total (N rows)" would be meaningless) -- so the chart
-  // and the table it sits below can never disagree.
-  const chartRows = stripTotalsRow(inlineTable);
-  // FIX: getChartSpec (and, if this ever throws, whatever's downstream of
-  // it) used to be able to fail SILENTLY -- an uncaught error in this
-  // computation just meant the whole chart section quietly never
-  // appeared, with nothing in the UI to say why, and nothing for us to go
-  // on when a report's chart didn't show up. This makes a failure LOUD
-  // instead: the real error is logged to the console (open devtools ->
-  // Console to see it) and a visible message replaces the missing chart,
-  // instead of the report looking like it just silently skipped charting.
-  let chartSpec: ReturnType<typeof getChartSpec> = { groups: [] };
-  let chartSpecError: string | null = null;
-  try {
-    chartSpec = getChartSpec({ headers: inlineTable.headers, rows: chartRows });
-  } catch (err) {
-    chartSpecError = err instanceof Error ? err.message : String(err);
-    console.error('[chart] getChartSpec failed for topic', artifact.topic, err);
-  }
-  // An edit the user already made to this message's chart (type, measure,
-  // row count) wins over the freshly-recomputed default -- otherwise every
-  // render would silently discard whatever the user picked.
-  const effectiveChartSpec = chartSpecOverride ?? chartSpec;
 
   const rows = inlineTable.rows;
   const totalRows = rows.length;
   const PREVIEW_ROW_COUNT = 8;
-  // A large result (thousands of customer rows, say) should never force
-  // React to mount that many <tr> elements just because a chart is open --
-  // only the preview rows render in the DOM until the user actually asks
-  // to see the rest.
-  const visibleRows = tableExpanded ? rows : rows.slice(0, PREVIEW_ROW_COUNT);
+  // FIX 2026-10-01: real gap found live -- "View all N rows" used to set
+  // visibleRows = rows with NO ceiling at all, so for a row-level
+  // ticket_list/customer_list table (now up to 5,000 rows, see
+  // getTicketList's own comment) clicking it mounted 5,000 real <tr>
+  // elements (plus every <td> inside each) directly into the DOM in one
+  // go -- genuinely slow to render and to scroll, not just a big number on
+  // screen. Same fix as the chart's MAX_CHARTABLE_ROWS cap: a sane inline
+  // ceiling that's generous for actually reading a table (nobody reads
+  // 5,000 rows by scrolling a chat panel), with the complete, unbounded
+  // data always available via Export Excel regardless of this cap.
+  // 2026-10-04: the chat never shows more than 200 rows of ANY table;
+  // the saved report page paginates through everything.
+  const MAX_INLINE_TABLE_ROWS = 200;
+  // A large result should never force React to mount that many <tr>
+  // elements just because a chart is open -- only the preview rows (or,
+  // once expanded, up to the inline cap) render in the DOM.
+  const visibleRows = tableExpanded ? rows.slice(0, MAX_INLINE_TABLE_ROWS) : rows.slice(0, PREVIEW_ROW_COUNT);
   const isTruncated = !tableExpanded && totalRows > PREVIEW_ROW_COUNT;
+  const isInlineCapped = tableExpanded && totalRows > MAX_INLINE_TABLE_ROWS;
 
   return (
-    <section className="space-y-5 rounded-2xl border border-white/70 bg-white/90 p-6 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur">
+    <section className="min-w-0 space-y-5 rounded-2xl border border-white/70 bg-white/90 p-4 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur sm:p-6">
       <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
-          <BarChart3 size={16} />
+          <FileSpreadsheet size={16} />
         </div>
         <p className="text-base font-semibold tracking-tight text-slate-900">{artifact.title}</p>
       </div>
@@ -737,11 +770,12 @@ function ReportBlock({
           // neither one is the full, row-by-row customer base, and the
           // regular Export Excel button above builds its file FROM
           // whatever's already on screen, so it can't produce that either.
-          // This link goes to a dedicated server-streamed CSV export
+          // This link goes to a dedicated server-side export
           // (app/api/exports/customers) that re-queries and streams every
-          // customer directly from the database via a cursor -- correct
-          // and memory-safe at any customer-base size, unlike building the
-          // file in the browser from an already-loaded row set.
+          // customer directly from the database via a cursor, then writes
+          // a real .xlsx workbook (FIX 2026-10-04: this was CSV until this
+          // app's own existing "Excel-only, no CSV anywhere" rule -- see
+          // lib/download.ts -- got applied here too).
           // This is a file download from an API route, not a page to
           // navigate to, so a plain <a> (not next/link's client-side
           // routing) is deliberate here.
@@ -751,13 +785,16 @@ function ReportBlock({
             className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
           >
             <Download size={14} />
-            Download Full Customer List (CSV)
+            Download Full Customer List (Excel)
           </a>
         ) : null}
+
       </div>
       {reportSaveState !== 'saved' ? (
-        <p className="text-xs text-slate-400">This chart is not saved yet -- click Save Report to keep it.</p>
+        <p className="text-xs text-slate-400">This report is not saved yet -- click Save Report to keep it.</p>
       ) : null}
+
+      <ReportGraph source={reportGraphSource(artifact.data)} title={artifact.title} spec={artifact.chartSpec?.reportGraph} onChange={onGraphChange} />
 
       <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
         <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-4 py-2.5">
@@ -776,6 +813,12 @@ function ReportBlock({
             </button>
           ) : null}
         </div>
+        {isInlineCapped ? (
+          <p className="border-b border-amber-100 bg-amber-50/60 px-4 py-2 text-xs text-amber-700">
+            Showing the first {MAX_INLINE_TABLE_ROWS.toLocaleString()} of {totalRows.toLocaleString()} rows here for readability --
+            save the report to browse every row, or use Export Excel.
+          </p>
+        ) : null}
         <div className="max-h-[360px] overflow-auto">
           <table className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
@@ -806,30 +849,6 @@ function ReportBlock({
         </div>
       </div>
 
-      {chartSpecError ? (
-        <div className="rounded-xl border border-rose-200 bg-rose-50/80 p-4">
-          <div className="mb-1 flex items-center gap-2">
-            <BarChart3 size={16} className="text-rose-500" />
-            <p className="text-sm font-semibold text-rose-700">Chart failed to generate</p>
-          </div>
-          <p className="text-sm text-rose-600">{chartSpecError}</p>
-          <p className="mt-1 text-xs text-rose-400">The table above is unaffected -- this only stopped the chart. Check the browser console for the full error.</p>
-        </div>
-      ) : effectiveChartSpec.groups.length > 0 ? (
-        <div>
-          <div className="mb-3 flex items-center gap-2.5">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
-              <BarChart3 size={16} />
-            </div>
-            <p className="text-base font-semibold tracking-tight text-slate-900">{artifact.title} -- Chart</p>
-          </div>
-          <AutoReportChart
-            table={{ headers: inlineTable.headers, rows: chartRows }}
-            spec={effectiveChartSpec}
-            onSpecChange={onSpecChange}
-          />
-        </div>
-      ) : null}
     </section>
   );
 }

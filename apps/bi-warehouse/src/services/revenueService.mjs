@@ -286,9 +286,10 @@ export async function getPopFinancials({
   // (only by package_id, in getPackageFinancials below). Real, same
   // point-in-time snapshot semantics as getActiveCustomerCount (no date
   // range applies to it -- see that function's own comment).
-  const [rollupRows, activeCustomerRows] = await Promise.all([
+  const [rollupRows, activeCustomerRows, popReferences] = await Promise.all([
     queryPopDailyRollup({ dateFrom, dateTo }),
     queryMetric('active_customer_count', { groupBy: 'pop_id', filters }),
+    getWarehousePool().query('SELECT pop_id, pop_name FROM dim_pop'),
   ]);
   const billedRows = rollupRows.map((r) => ({ pop_id: r.pop_id, value: r.billed }));
   const collectedRows = rollupRows.map((r) => ({ pop_id: r.pop_id, value: r.collected }));
@@ -300,6 +301,7 @@ export async function getPopFinancials({
   const adjustedByPop = new Map(adjustedRows.map((r) => [r.pop_id ?? 'Unassigned', Number(r.value || 0)]));
   const activeCustomersByPop = new Map(activeCustomerRows.map((r) => [r.pop_id ?? 'Unassigned', Number(r.value || 0)]));
   const pops = new Set([
+    ...(!filters || !Object.keys(filters).length ? popReferences.rows.map((r) => r.pop_id) : []),
     ...billedRows.map((r) => r.pop_id ?? 'Unassigned'),
     ...collectedByPop.keys(),
     ...refundedByPop.keys(),
@@ -308,6 +310,7 @@ export async function getPopFinancials({
   ]);
 
   const billedByPop = new Map(billedRows.map((r) => [r.pop_id ?? 'Unassigned', Number(r.value || 0)]));
+  const nameByPop = new Map(popReferences.rows.map((r) => [String(r.pop_id), r.pop_name]));
 
   let rows = [...pops].map((pop) => {
     const billed = billedByPop.get(pop) ?? 0;
@@ -315,7 +318,7 @@ export async function getPopFinancials({
     const refunded = refundedByPop.get(pop) ?? 0;
     const adjusted = adjustedByPop.get(pop) ?? 0;
     const activeCustomers = activeCustomersByPop.get(pop) ?? 0;
-    return { pop, billed, collected, refunded, adjusted, activeCustomers, outstanding: billed - collected };
+    return { pop, popName: nameByPop.get(String(pop)) ?? null, billed, collected, refunded, adjusted, activeCustomers, outstanding: billed - collected };
   });
 
   // FIX 2026-09-17: real, deterministic insight fields -- computed here in
@@ -358,7 +361,7 @@ const METRIC_BY_SORT_KEY = {
 // squeak by. This pushes ORDER BY + LIMIT into SQL for the metric actually
 // being sorted on, so Postgres does the sort and only N rows ever cross
 // the wire.
-async function queryMetricTopN(metricName, { dateFrom, dateTo, limit, direction = 'desc' } = {}) {
+async function queryMetricTopN(metricName, { dateFrom, dateTo, limit, offset = 0, direction = 'desc' } = {}) {
   const metric = getMetric(metricName);
   const pool = getWarehousePool();
   const conditions = ['customer_id IS NOT NULL'];
@@ -372,6 +375,7 @@ async function queryMetricTopN(metricName, { dateFrom, dateTo, limit, direction 
     conditions.push(`ref_date <= $${params.length}`);
   }
   const sortDir = direction === 'asc' ? 'ASC' : 'DESC';
+  params.push(Math.max(0, Math.floor(Number(offset) || 0)));
   params.push(limit);
   const query = `
     SELECT customer_id, ${metric.sql} AS value
@@ -379,7 +383,7 @@ async function queryMetricTopN(metricName, { dateFrom, dateTo, limit, direction 
     WHERE ${conditions.join(' AND ')}
     GROUP BY customer_id
     ORDER BY value ${sortDir}
-    LIMIT $${params.length}
+    OFFSET $${params.length - 1} LIMIT $${params.length}
   `;
   const { rows } = await pool.query(query, params);
   return rows;
@@ -390,7 +394,7 @@ async function queryMetricTopN(metricName, { dateFrom, dateTo, limit, direction 
 // both tables independently (each still just one GROUP BY over its own
 // fact table, no per-customer join blowup) and lets Postgres sort +
 // truncate the DIFFERENCE, same principle as queryMetricTopN above.
-async function queryOutstandingTopN({ dateFrom, dateTo, limit, direction = 'desc' } = {}) {
+async function queryOutstandingTopN({ dateFrom, dateTo, limit, offset = 0, direction = 'desc' } = {}) {
   const pool = getWarehousePool();
   const params = [];
   const billedConditions = ['customer_id IS NOT NULL'];
@@ -408,6 +412,7 @@ async function queryOutstandingTopN({ dateFrom, dateTo, limit, direction = 'desc
     collectedConditions.push(`ref_date <= ${p}`);
   }
   const sortDir = direction === 'asc' ? 'ASC' : 'DESC';
+  params.push(Math.max(0, Math.floor(Number(offset) || 0)));
   params.push(limit);
   const query = `
     WITH b AS (
@@ -427,7 +432,7 @@ async function queryOutstandingTopN({ dateFrom, dateTo, limit, direction = 'desc
     FROM b
     FULL OUTER JOIN c ON b.customer_id = c.customer_id
     ORDER BY value ${sortDir}
-    LIMIT $${params.length}
+    OFFSET $${params.length - 1} LIMIT $${params.length}
   `;
   const { rows } = await pool.query(query, params);
   return rows;
@@ -598,14 +603,25 @@ export async function getCustomerFinancials({
   limit = 100,
   sortBy = 'billed',
   direction = 'desc',
+  offset = 0,
 } = {}) {
   const sortKey = ['billed', 'collected', 'outstanding', 'refunded', 'adjusted'].includes(sortBy) ? sortBy : 'billed';
-  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
+  // FIX 2026-10-01: proactive audit after the ticket_list/customer_list
+  // "full silently caps with no indication" bug (see ticketService
+  // .getTicketList's comment) -- this one is different in kind (an
+  // explicit "top N" ranked request, not a "give me everything" request,
+  // so there's no ambiguity to mislead about), but it shared the same
+  // missing-ceiling gap: NOTHING capped `limit` here, so "top 50000
+  // customers" would have run an unbounded query, violating this
+  // project's own documented Query Governor cap (~5,000 rows/request).
+  // Clamp to that same ceiling.
+  const MAX_ROWS = 5000;
+  const safeLimit = Math.max(1, Math.min(Number.isFinite(limit) && limit > 0 ? limit : 100, MAX_ROWS));
 
   const topRows =
     sortKey === 'outstanding'
-      ? await queryOutstandingTopN({ dateFrom, dateTo, limit: safeLimit, direction })
-      : await queryMetricTopN(METRIC_BY_SORT_KEY[sortKey], { dateFrom, dateTo, limit: safeLimit, direction });
+      ? await queryOutstandingTopN({ dateFrom, dateTo, limit: safeLimit, offset, direction })
+      : await queryMetricTopN(METRIC_BY_SORT_KEY[sortKey], { dateFrom, dateTo, limit: safeLimit, offset, direction });
 
   const topCustomerIds = topRows.map((r) => r.customer_id).filter((id) => id != null);
   if (!topCustomerIds.length) return [];
@@ -879,6 +895,7 @@ export async function getPackageFinancials({
   const refundedByPackage = new Map(refundedRows.map((r) => [r.package_id, Number(r.value || 0)]));
   const adjustedByPackage = new Map(adjustedRows.map((r) => [r.package_id, Number(r.value || 0)]));
   const packages = new Set([
+    ...(!filters || !Object.keys(filters).length ? nameRows.map((r) => r.package_id) : []),
     ...billedByPackage.keys(),
     ...collectedByPackage.keys(),
     ...activeByPackage.keys(),
@@ -980,4 +997,24 @@ export async function getRevenueTimeseriesFinancials({ dateFrom, dateTo, filters
 export async function getActiveCustomerCount({ filters } = {}) {
   const rows = await queryMetric('active_customer_count', { filters });
   return Number(rows[0]?.value || 0);
+}
+
+/**
+ * NEW 2026-10-04: how many customers a ranked customer-financials report
+ * can page through (customers with any row in the ranking metric's table
+ * for the date range). Used by /api/lists/top-customers so every page of
+ * a top-N report is reachable, not just the first 5,000.
+ */
+export async function countRankedCustomers({ sortBy = 'billed', dateFrom, dateTo } = {}) {
+  const key = ['billed', 'collected', 'refunded', 'adjusted'].includes(sortBy) ? sortBy : 'billed';
+  const metric = getMetric(METRIC_BY_SORT_KEY[key]);
+  const params = [];
+  const conditions = ['customer_id IS NOT NULL'];
+  if (dateFrom) { params.push(dateFrom); conditions.push(`ref_date >= $${params.length}`); }
+  if (dateTo) { params.push(dateTo); conditions.push(`ref_date <= $${params.length}`); }
+  const { rows } = await getWarehousePool().query(
+    `SELECT count(DISTINCT customer_id)::int AS total FROM ${metric.table} WHERE ${conditions.join(' AND ')}`,
+    params,
+  );
+  return rows[0]?.total ?? 0;
 }

@@ -13,12 +13,14 @@ const appRoot = dirname(fileURLToPath(import.meta.url));
 // import that lands outside its configured root, so that import failed
 // with "Module not found" even though the file genuinely exists on disk --
 // confirmed live (see the build-error screenshot this fixes). Widening the
-// root one level up, to the monorepo's `apps/` folder (the real common
-// ancestor of both apps/bi-dashboard and apps/bi-warehouse), lets Turbopack
-// resolve across that boundary without pointing it at the whole repo.
-const monorepoRoot = join(appRoot, '..');
+// root to the repository also includes the shared warehouse and Cube model.
+const monorepoRoot = join(appRoot, '..', '..');
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: monorepoRoot,
+  outputFileTracingIncludes: {
+    '/api/**': ['../../cube/model/isp.yml'],
+  },
   turbopack: {
     root: monorepoRoot,
   },

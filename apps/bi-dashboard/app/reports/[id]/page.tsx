@@ -1,16 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { ClientPaginatedTable, PaginatedListTable, isListTopic, listExportUrl } from '@/components/dashboard/tables/paginated-list-table';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { FileSpreadsheet, Save, Trash2 } from 'lucide-react';
+import { FileSpreadsheet, MessageSquare, Trash2, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
-import { getReportTable, stripTotalsRow } from '@/lib/dashboard/report-table';
-import type { ChartSpec } from '@/lib/dashboard/chart-spec';
-import { AutoReportChart } from '@/components/dashboard/charts/auto-report-chart';
-import { ChartErrorBoundary } from '@/components/dashboard/charts/chart-error-boundary';
+import { getReportTable } from '@/lib/dashboard/report-table';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { DashboardData } from '@/lib/dashboard/metrics';
+import type { ChartSpec } from '@/lib/dashboard/chart-spec';
+import type { ReportGraphSpec } from '@/lib/dashboard/report-graph';
+import { reportGraphSource } from '@/lib/dashboard/report-graph';
+import { ReportGraph } from '@/components/dashboard/charts/report-graph';
 
 type ReportRow = {
   id: number;
@@ -21,9 +24,17 @@ type ReportRow = {
   filters: { days: number; region: string | null } | null;
   tables_used: string[] | null;
   data: DashboardData;
+  source_session_id: number | null;
+  created_at: string;
   chart_spec: ChartSpec | null;
+};
+
+type SiblingReport = {
+  id: number;
+  title: string;
   created_at: string;
 };
+
 
 async function logExport(reportId: number, fileName: string, fileContent: string) {
   try {
@@ -49,29 +60,24 @@ export default function ReportDetailPage() {
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [view, setView] = useState<'table' | 'chart'>('table');
-  const [chartSpec, setChartSpec] = useState<ChartSpec | null>(null);
-  const [chartDirty, setChartDirty] = useState(false);
-  const [chartSaveState, setChartSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [siblingReports, setSiblingReports] = useState<SiblingReport[]>([]);
+  const [graphDirty, setGraphDirty] = useState(false);
+  const [savingGraph, setSavingGraph] = useState(false);
+  const [graphSaveError, setGraphSaveError] = useState<string | null>(null);
+  const graphRevision = useRef(0);
 
   useEffect(() => {
-    fetch(`/api/reports/${params.id}`)
+    const controller = new AbortController();
+    fetch(`/api/reports/${params.id}`, { signal: controller.signal })
       .then((res) => res.json())
-      .then((body: { report: ReportRow | null }) => setReport(body.report))
-      .catch(() => setReport(null));
+      .then((body: { report: ReportRow | null; siblingReports?: SiblingReport[] }) => {
+        if (controller.signal.aborted) return;
+        setReport(body.report);
+        setSiblingReports(body.siblingReports ?? []);
+      })
+      .catch(() => { if (!controller.signal.aborted) setReport(null); });
+    return () => controller.abort();
   }, [params.id]);
-
-  // Reports saved before chart persistence existed simply have
-  // chart_spec === null -- by the user's explicit call, that's NOT treated
-  // as "regenerate one on the fly." An old report never had a chart saved
-  // for it, so there is nothing to show; chartSpec just stays null and the
-  // Chart tab honestly says graphical data doesn't exist for it, instead of
-  // silently fabricating a chart the user never saved or reviewed.
-  useEffect(() => {
-    if (!report) return;
-    if (chartSpec) return;
-    if (report.chart_spec) setChartSpec(report.chart_spec);
-  }, [report, chartSpec]);
 
   async function handleDelete() {
     if (!report) return;
@@ -85,33 +91,23 @@ export default function ReportDetailPage() {
     }
   }
 
-  async function handleSaveChart() {
-    if (!report || !chartSpec) return;
-    setChartSaveState('saving');
-    try {
-      const res = await fetch(`/api/reports/${report.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: report.title,
-          narrative: report.narrative,
-          topic: report.topic,
-          chartType: report.chart_type,
-          filters: report.filters,
-          tablesUsed: report.tables_used,
-          data: report.data,
-          chartSpec,
-        }),
-      });
-      if (!res.ok) throw new Error(String(res.status));
-      setChartSaveState('saved');
-      setChartDirty(false);
-      setReport({ ...report, chart_spec: chartSpec });
-    } catch (err) {
-      console.error('Saving chart edits failed:', err);
-      setChartSaveState('error');
-    }
+  function changeGraph(spec: ReportGraphSpec | null) {
+    graphRevision.current += 1;
+    setReport((current) => current ? { ...current, chart_spec: { ...current.chart_spec, groups: current.chart_spec?.groups || [], reportGraph: spec } } : current);
+    setGraphDirty(true); setGraphSaveError(null);
   }
+  async function saveGraph() {
+    if (!report) return;
+    const revision = graphRevision.current;
+    setSavingGraph(true); setGraphSaveError(null);
+    try {
+      const res = await fetch(`/api/reports/${report.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chartSpec: report.chart_spec }) });
+      if (!res.ok) throw new Error('Could not save graph settings.');
+      if (graphRevision.current === revision) setGraphDirty(false);
+    } catch (e) { setGraphSaveError(e instanceof Error ? e.message : 'Could not save graph settings.'); }
+    finally { setSavingGraph(false); }
+  }
+
 
   if (report === undefined) {
     return (
@@ -136,6 +132,23 @@ export default function ReportDetailPage() {
 
   async function handleExportExcel() {
     if (exporting) return;
+    // FIX 2026-10-04: same fix as the chat panel's own handleExportArtifact
+    // -- a saved ticket_list/customer_list report's `data` is whatever got
+    // captured at save time, capped at 5,000 rows (see getTicketList's own
+    // comment on that real cap, and SAVE_ROW_CAP in report-save.ts on top
+    // of it). Building Export Excel from that snapshot can never produce
+    // more rows than were saved. These two topics now go to a dedicated
+    // server route that re-queries and streams every matching row fresh
+    // from the database into a real .xlsx, with no cap at all.
+    // 2026-10-04: list reports export EVERY matching row server-side, with
+    // the same filters the report was built from.
+    if (isListTopic(report!.topic, report!.data)) {
+      const url = listExportUrl(report!.topic, report!.data);
+      if (url) {
+        window.location.href = url;
+        return;
+      }
+    }
     setExporting(true);
     try {
       const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
@@ -185,94 +198,64 @@ export default function ReportDetailPage() {
           ) : null}
         </section>
 
-        <div className="flex items-center justify-between">
-          <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
-            <button
-              type="button"
-              onClick={() => setView('table')}
-              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                view === 'table' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              Table
-            </button>
-            <button
-              type="button"
-              onClick={() => setView('chart')}
-              disabled={!chartSpec || chartSpec.groups.length === 0}
-              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                view === 'chart' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              Chart
-            </button>
-          </div>
-
-          {view === 'chart' && chartSpec && chartSpec.groups.length > 0 ? (
-            <div className="flex items-center gap-2">
-              {chartSaveState === 'saved' && !chartDirty ? (
-                <span className="text-xs font-medium text-emerald-600">Chart saved</span>
-              ) : null}
-              {chartSaveState === 'error' ? (
-                <span className="text-xs font-medium text-red-600">Save failed, try again</span>
-              ) : null}
-              <Button
-                variant="outline"
-                className="gap-2"
-                onClick={handleSaveChart}
-                disabled={!chartDirty || chartSaveState === 'saving'}
-              >
-                <Save size={16} />
-                {chartSaveState === 'saving' ? 'Saving...' : 'Save chart'}
-              </Button>
+        {report.source_session_id ? (
+          <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-sm text-slate-600">
+              <MessageSquare size={16} className="text-slate-400" />
+              <span>Want to ask a follow-up or change something? Continue the real conversation this report came from.</span>
             </div>
-          ) : null}
+            <Link
+              href={`/chat?session=${report.source_session_id}`}
+              className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700"
+            >
+              <MessageSquare size={14} />
+              Continue in chat
+            </Link>
+          </section>
+        ) : null}
+
+        {siblingReports.length > 0 ? (
+          <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-sm">
+            <h2 className="text-sm font-bold text-slate-900">Other reports from this chat</h2>
+            <p className="mt-1 text-xs text-slate-400">Other reports saved from the same conversation, newest first.</p>
+            <ul className="mt-3 space-y-1.5">
+              {siblingReports.map((sibling) => (
+                <li key={sibling.id} className="flex items-center justify-between gap-3 text-sm">
+                  <Link href={`/reports/${sibling.id}`} className="text-blue-600 hover:underline">
+                    {sibling.title}
+                  </Link>
+                  <span className="shrink-0 text-xs text-slate-400">{new Date(sibling.created_at).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        <div className="min-w-0 bg-white px-4 py-4 sm:px-5">
+          <ReportGraph key={report.id} source={reportGraphSource(data)} title={report.title} spec={report.chart_spec?.reportGraph} onChange={changeGraph} />
+          {graphDirty && <Button size="sm" variant="outline" className="mt-3 gap-2" disabled={savingGraph} onClick={saveGraph}><Save size={14} />{savingGraph ? 'Saving...' : 'Save graph'}</Button>}
+          {graphSaveError && <p role="alert" className="mt-2 text-sm text-red-600">{graphSaveError}</p>}
         </div>
 
-        {view === 'table' ? (
           <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                  <tr>
-                    {table.headers.map((header, i) => (
-                      <th key={`${header}-${i}`} className="px-5 py-3 font-semibold">
-                        {header}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {table.rows.map((row, i) => (
-                    <tr key={i}>
-                      {row.map((cell, j) => (
-                        <td key={j} className="px-5 py-3 text-slate-700">
-                          {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {/* FIX 2026-10-01: real gap found live, same bug class as the
+                chat panel's inline table (see chat-workspace.tsx's own
+                comment) -- this page unconditionally mapped EVERY row of
+                table.rows into real <tr> elements with no cap at all. A
+                saved report's row-level data can now be up to 2,000 rows
+                (Save Report's own cap, see app/api/reports/route.ts), so
+                opening a saved ticket/customer list report always mounted
+                up to 2,000 rows at once, no preview, no pagination. Same
+                fix: a small default preview, an explicit expand action,
+                and a sane inline ceiling beyond which Export Excel is the
+                right tool, not the on-screen table. */}
+            {isListTopic(report.topic, report.data) ? (
+              <PaginatedListTable topic={report.topic} data={report.data} />
+            ) : (
+              // 2026-10-04: every saved table pages through ALL its rows.
+              <ClientPaginatedTable headers={table.headers} rows={table.rows} />
+            )}
           </section>
-        ) : chartSpec && chartSpec.groups.length > 0 ? (
-          <ChartErrorBoundary key={report.id}>
-            <section className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-[0_12px_30px_rgb(15_23_42/7%)]">
-              <AutoReportChart
-                table={{ headers: table.headers, rows: stripTotalsRow(table) }}
-                spec={chartSpec}
-                onSpecChange={(updated) => {
-                  setChartSpec(updated);
-                  setChartDirty(true);
-                  setChartSaveState('idle');
-                }}
-              />
-            </section>
-          </ChartErrorBoundary>
-        ) : (
-          <p className="text-sm text-slate-500">Graphical data does not exist for this report.</p>
-        )}
 
         <div className="flex flex-col gap-2 md:hidden">
           <Button variant="outline" className="w-full gap-2" onClick={handleExportExcel} disabled={exporting}>

@@ -31,11 +31,17 @@ import {
   getRevenueTimeseriesFinancials,
   getActiveCustomerCount,
   getCustomerFinancials,
+  countRankedCustomers,
   getCustomerFinancialsSummary,
   getTranModeBreakdown,
   getTranModeByDimension,
 } from '../../../bi-warehouse/src/services/revenueService.mjs';
-import { getTicketMetrics, getTicketTypeBreakdown, getTicketPopBreakdown } from '../../../bi-warehouse/src/services/ticketService.mjs';
+import { getTicketMetrics, getTicketTypeBreakdown, getTicketPopBreakdown, getTicketList } from '../../../bi-warehouse/src/services/ticketService.mjs';
+import { getCustomerList } from '../../../bi-warehouse/src/services/customerService.mjs';
+
+// Rows loaded inline with a list answer; the rest are paged on demand.
+// 200 = exactly what the chat shows; the report page pages the rest.
+export const LIST_FIRST_PAGE_SIZE = 200;
 
 function toNumber(value) {
   return Number(value ?? 0);
@@ -143,13 +149,19 @@ function computeAnomalies(days, billedSeries, collectedSeries) {
 // its own explicit table branch (see report-table.ts) -- nothing is
 // allowed to fall through to a default that renders different data than
 // what was actually asked for.
-const ALLOWED_TOPICS = ['billing', 'collections', 'customers', 'tickets', 'pops', 'packages', 'trend', 'top_customers', 'customer_summary', 'tran_modes', 'ticket_pops', 'tran_mode_by_pop', 'tran_mode_by_package'];
+const ALLOWED_TOPICS = ['billing', 'collections', 'customers', 'tickets', 'ticket_list', 'customer_list', 'semantic_query', 'pops', 'packages', 'trend', 'top_customers', 'customer_summary', 'tran_modes', 'ticket_pops', 'tran_mode_by_pop', 'tran_mode_by_package'];
 
 const TOPIC_TABLES = {
   billing: ['fact_billing'],
   collections: ['fact_collection'],
   customers: ['dim_customer'],
   tickets: ['fact_ticket'],
+  // NEW 2026-10-01: individual ticket rows (get_ticket_list) -- same base
+  // table as the 'tickets' aggregate topic, plus dim_ticket_type for the
+  // real joined-in type name.
+  ticket_list: ['fact_ticket', 'dim_ticket_type'],
+  // NEW 2026-10-01: individual customer rows (get_customer_list).
+  customer_list: ['dim_customer', 'dim_pop', 'dim_package'],
   // FIX 2026-09-17: both entries were missing fact_collection even though
   // getPopFinancials/getPackageFinancials genuinely query total_collected
   // from it (confirmed by reading revenueService.mjs directly) -- this was
@@ -181,6 +193,15 @@ const TOPIC_TABLES = {
   tran_mode_by_pop: ['fact_collection', 'dim_customer'],
   tran_mode_by_package: ['fact_collection'],
   dashboard: ['fact_billing', 'fact_collection', 'dim_customer', 'fact_ticket'],
+  // NEW 2026-10-01: 'semantic_query' backs query_semantic_layer -- a
+  // single Cube query can touch ANY combination of the real warehouse
+  // cubes (see cube/model/isp.yml), chosen freely by the model per
+  // question, so there is no one fixed table list for this topic the
+  // way every other topic above has. Listing every real table Cube can
+  // draw from is honest (Cube genuinely CAN touch any of these), just
+  // not as precise as the fixed topics -- a real tradeoff of a truly
+  // dynamic query tool, not an oversight.
+  semantic_query: ['fact_billing', 'fact_collection', 'fact_refund', 'fact_adjustment', 'fact_ticket', 'dim_customer', 'dim_pop', 'dim_package', 'dim_status', 'dim_department', 'dim_ticket_type'],
 };
 
 function tablesForTopic(topic) {
@@ -227,12 +248,42 @@ async function dashboardData(params) {
   return value;
 }
 
-async function dashboardDataUncached({ windowDays = 30, region = null, limit = null, sortBy = null, direction = null, topic = null } = {}) {
+async function dashboardDataUncached({
+  windowDays = 30,
+  region = null,
+  limit = null,
+  sortBy = null,
+  direction = null,
+  topic = null,
+  dateFrom = null,
+  dateTo = null,
+  prefetchedSummary = null,
+  // NEW 2026-10-01: real filters for the 'ticket_list' topic -- unlike
+  // every other breakdown here, a row-level ticket list is useless
+  // unfiltered (it would just return the latest 200 tickets of any
+  // type), so these are threaded all the way through from the model's
+  // own get_ticket_list tool call args, not dropped the way dateFrom/
+  // dateTo are for the other breakdowns below.
+  ticketTypeId = null,
+  departmentId = null,
+  ticketStatus = null,
+  ticketDateFrom = null,
+  ticketDateTo = null,
+  // NEW 2026-10-01: same idea as the ticketList filters above, for
+  // 'customer_list'.
+  customerPopId = null,
+  customerPackageId = null,
+  customerStatusId = null,
+  customerDateField = null,
+  customerDateFrom = null,
+  customerDateTo = null,
+} = {}) {
   // `region` is kept as a parameter (and passed through, unused, to the
   // warehouse services -- see revenueService.mjs's own comment on
   // filters.region) purely so the RLS/filtering wiring described in the
   // project doc is a small future change here too, not a signature change.
   const filters = region ? { region } : {};
+  const dateScope = { dateFrom: dateFrom || undefined, dateTo: dateTo || undefined };
 
   // PERF FIX 2026-09-17: dashboardDataUncached used to fetch EVERY
   // breakdown unconditionally on EVERY request (chat message AND page
@@ -253,6 +304,8 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
   // is called far less often than a chat turn.
   const needAll = !topic || topic === 'dashboard';
   const need = (t) => needAll || topic === t;
+  const needFinancialContext = needAll || need('billing') || need('collections');
+  const needDailyContext = needAll || need('trend');
 
   try {
     // No day-window filter is applied at the SQL level here -- unlike the
@@ -273,16 +326,19 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       ticketMetrics,
       activeCustomerCount,
       ticketTypeBreakdown,
+      ticketListResult,
+      customerListResult,
       customerFinancials,
+      rankedCustomerCount,
       customerFinancialsSummary,
       ticketPopBreakdown,
       tranModeBreakdown,
       tranModeByPop,
       tranModeByPackage,
     ] = await Promise.all([
-      getRevenueSummary({ filters }),
-      getRevenueTimeseries({ metric: 'total_billed', filters }),
-      getRevenueTimeseries({ metric: 'total_collected', filters }),
+      needFinancialContext ? (prefetchedSummary ? Promise.resolve(prefetchedSummary) : getRevenueSummary({ ...dateScope, filters })) : Promise.resolve({}),
+      needDailyContext ? getRevenueTimeseries({ ...dateScope, metric: 'total_billed', filters }) : Promise.resolve([]),
+      needDailyContext ? getRevenueTimeseries({ ...dateScope, metric: 'total_collected', filters }) : Promise.resolve([]),
       // FIX 2026-09-17: this used to be a single-metric getPopBreakdown call
       // (billed only), so any "billed vs collected per POP" question could
       // only ever populate a single-column table -- the reply and the table
@@ -292,7 +348,7 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       // from the model's real tool call in agent.mjs), so a "top 30"
       // request returns exactly 30 rows here, not an arbitrarily different
       // number and not the full unfiltered list.
-      need('pops') ? getPopFinancials({ filters, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      need('pops') ? getPopFinancials({ ...dateScope, filters, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
       // ARCHITECTURE FIX 2026-09-17: every real breakdown is now fetched
       // unconditionally, the same way popFinancials/ticketTypeBreakdown
       // already were -- NOT gated behind which topic the model happened to
@@ -305,29 +361,82 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       // POP data under the wrong title. Fetching everything here means
       // whichever topic the model used, its real, matching data is always
       // present for the table.
-      need('packages') ? getPackageFinancials({ filters, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
-      need('trend') ? getRevenueTimeseriesFinancials({ filters }) : Promise.resolve([]),
-      getTicketMetrics({}),
-      getActiveCustomerCount({ filters }),
+      need('packages') ? getPackageFinancials({ ...dateScope, filters, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      need('trend') ? getRevenueTimeseriesFinancials({ ...dateScope, filters }) : Promise.resolve([]),
+      needAll || need('tickets') ? getTicketMetrics(dateScope) : Promise.resolve({ volume: [] }),
+      needAll || need('customers') ? getActiveCustomerCount({ filters }) : Promise.resolve(0),
       // FIX 2026-09-15: previously nothing fetched a per-type ticket
       // breakdown at all, so any "tickets by type" question had no real
       // data to chart/table -- the chart picker fell through to the
       // generic POP fallback (hence the mismatched "Billing by POP" chart
       // on a ticket question). See ticketService.mjs's own comment.
-      need('tickets') ? getTicketTypeBreakdown({ limit: limit || undefined }) : Promise.resolve([]),
+      need('tickets') ? getTicketTypeBreakdown({ ...dateScope, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      // NEW 2026-10-01: real, individual ticket rows -- see
+      // report-table.ts's 'ticket_list' branch and ticketService.getTicketList's
+      // own comment. Unlike every fetch above, an UNFILTERED call here is
+      // not a sane default (it would just show the latest 200 tickets of
+      // any type) -- the model's own get_ticket_list tool args are threaded
+      // through as ticketTypeId/departmentId/ticketStatus/ticketDateFrom/
+      // ticketDateTo specifically so this fetch matches what was actually
+      // asked, not an arbitrary unfiltered slice.
+      need('ticket_list')
+        ? getTicketList({
+            ticketTypeId: ticketTypeId || undefined,
+            departmentId: departmentId || undefined,
+            status: ticketStatus || undefined,
+            dateFrom: ticketDateFrom || undefined,
+            dateTo: ticketDateTo || undefined,
+            // FIX 2026-10-01: `limit || undefined` used to collapse a real
+            // "full" request (limit: null from the model) straight into
+            // getTicketList's old 200-row default with zero indication
+            // there was more data -- getTicketList now applies its own
+            // honest ceiling (5,000, matching the documented Query
+            // Governor cap) AND returns totalCount, so an explicit "full"
+            // request actually gets the real cap, not an arbitrary 200.
+            // 2026-10-04: only the FIRST PAGE is loaded here -- every other
+            // page comes from /api/lists/tickets (server-side pagination)
+            // and Export Excel streams all rows, so nothing is capped.
+            limit: LIST_FIRST_PAGE_SIZE,
+            withSummary: false,
+          })
+        : Promise.resolve({ rows: [], totalCount: 0 }),
+      // NEW 2026-10-01: individual customer rows -- see report-table.ts's
+      // 'customer_list' branch. Same reasoning as ticket_list: filtering
+      // is the whole point here, so the model's own filter args are
+      // threaded through rather than an arbitrary unfiltered default.
+      need('customer_list')
+        ? getCustomerList({
+            dateField: customerDateField || undefined,
+            dateFrom: customerDateFrom || undefined,
+            dateTo: customerDateTo || undefined,
+            popId: customerPopId || undefined,
+            packageId: customerPackageId || undefined,
+            statusId: customerStatusId || undefined,
+            // FIX 2026-10-01: same fix as getTicketList's call above --
+            // getCustomerList now applies its own honest ceiling (5,000)
+            // and returns totalCount, so an explicit "full" request
+            // (limit: null/undefined here) actually gets that real cap
+            // instead of silently collapsing to the old 100-row default.
+            limit: LIST_FIRST_PAGE_SIZE,
+            withSummary: false,
+          })
+        : Promise.resolve({ rows: [], totalCount: 0 }),
       // Real per-CUSTOMER breakdown -- top N by billed/collected/outstanding,
       // plus each customer's collected amount split by tran_mode_id. See
       // report-table.ts's 'top_customers' branch and
       // revenueService.getCustomerFinancials' own comment.
-      need('top_customers') ? getCustomerFinancials({ filters, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      // 2026-10-04: first page only (the chat shows 200); the report page
+      // pages through all N via /api/lists/top-customers.
+      need('top_customers') ? getCustomerFinancials({ ...dateScope, filters, limit: Math.min(Number(limit) || 100, LIST_FIRST_PAGE_SIZE), sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      need('top_customers') ? countRankedCustomers({ ...dateScope, sortBy: sortBy || 'billed' }) : Promise.resolve(0),
       // NEW 2026-09-29: aggregate whole-base stats, not a row list -- see
       // getCustomerFinancialsSummary's own comment. Cheap (a handful of
       // aggregate SQL queries, not a per-row scan), but still gated behind
       // need() like every other breakdown so an unrelated topic doesn't pay
       // for it on every turn.
-      need('customer_summary') ? getCustomerFinancialsSummary({ filters }) : Promise.resolve(null),
+      need('customer_summary') ? getCustomerFinancialsSummary({ ...dateScope, filters }) : Promise.resolve(null),
       // NEW 2026-09-17: real ticket count/avg resolution by POP.
-      need('ticket_pops') ? getTicketPopBreakdown({ limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      need('ticket_pops') ? getTicketPopBreakdown({ ...dateScope, limit: limit || undefined, sortBy: sortBy || undefined, direction: direction || undefined }) : Promise.resolve([]),
       // NEW 2026-09-17: real total COLLECTED amount broken down by
       // tran_mode_id -- backs "revenue by transaction type" questions. Not
       // limited by the page-level `limit` (that's for per-POP/customer top-N
@@ -335,12 +444,22 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       // codes, so it always returns all of them unless the model itself set
       // an explicit limit on the tool call (recovered the same way
       // popFinancialsArgs is, see agent.mjs).
-      need('tran_modes') ? getTranModeBreakdown({ filters, limit: limit || undefined, direction: direction || undefined }) : Promise.resolve([]),
+      need('tran_modes') ? getTranModeBreakdown({ ...dateScope, filters, limit: limit || undefined, direction: direction || undefined }) : Promise.resolve([]),
       // NEW 2026-09-17: mode crossed with POP/package -- real, not
       // limited/sorted (small finite dimension sets on both sides).
-      need('tran_mode_by_pop') ? getTranModeByDimension({ dimension: 'pop_id', filters }) : Promise.resolve([]),
-      need('tran_mode_by_package') ? getTranModeByDimension({ dimension: 'package_id', filters }) : Promise.resolve([]),
+      need('tran_mode_by_pop') ? getTranModeByDimension({ ...dateScope, dimension: 'pop_id', filters }) : Promise.resolve([]),
+      need('tran_mode_by_package') ? getTranModeByDimension({ ...dateScope, dimension: 'package_id', filters }) : Promise.resolve([]),
     ]);
+
+    // FIX 2026-10-01: getTicketList now returns { rows, totalCount } (see
+    // its own comment) instead of a bare array, specifically so a capped
+    // "full" result can still honestly say how many rows really exist.
+    const ticketList = ticketListResult.rows ?? [];
+    const ticketListTotalCount = ticketListResult.totalCount ?? ticketList.length;
+    // FIX 2026-10-01: same fix as ticketList above -- getCustomerList now
+    // returns { rows, totalCount } instead of a bare array.
+    const customerList = customerListResult.rows ?? [];
+    const customerListTotalCount = customerListResult.totalCount ?? customerList.length;
 
     const sortByDate = (rows) =>
       [...rows]
@@ -365,8 +484,8 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
     const collectedTrend = trendRows.map((r) => r.collected);
     const outstandingTrend = trendRows.map((r) => r.billed - r.collected);
 
-    const totalBilledWindow = billedTrend.reduce((s, v) => s + v, 0);
-    const totalCollectedWindow = collectedTrend.reduce((s, v) => s + v, 0);
+    const totalBilledWindow = needDailyContext ? billedTrend.reduce((s, v) => s + v, 0) : toNumber(summary.totalBilled);
+    const totalCollectedWindow = needDailyContext ? collectedTrend.reduce((s, v) => s + v, 0) : toNumber(summary.totalCollected);
 
     const xStart = trendRows[0]?.day ?? 'Start';
     const xEnd = trendRows[trendRows.length - 1]?.day ?? 'End';
@@ -401,6 +520,8 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
 
     return {
       connected: true,
+      activeCustomerCount: needAll || need('customers') ? activeCustomerCount : undefined,
+      financialSummary: needFinancialContext ? { billed: totalBilled, collected: totalCollected, refunded: totalRefunded, adjusted: totalAdjusted, outstanding: outstandingBalance } : undefined,
       // Real source description, replacing the old "ecommerce via
       // bi_readonly" string -- names the actual warehouse tables this
       // response is grounded in.
@@ -488,7 +609,7 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
           footer: `Daily outstanding range: ${money.format(Math.min(...outstandingTrend, 0))} to ${money.format(Math.max(...outstandingTrend, 0))}`,
           axis: axisFrom(outstandingTrend, xStart, xEnd, money.format, { zeroFloor: true }),
         },
-      ],
+      ].filter((kpi) => needAll || (kpi.label === 'Active Customers' ? need('customers') : needFinancialContext)),
       revenueTrend: trendRows.map((row) => ({ day: row.day, revenue: row.billed, orders: row.collected })),
       dateRange: xStart === xEnd ? xStart : `${xStart} - ${xEnd}`,
       // "region" key kept for the existing region-revenue-chart component's
@@ -510,6 +631,7 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       // single-metric POP ID / Billed Amount table.
       popFinancials: popFinancials.map((row) => ({
         pop: row.pop,
+        popName: row.popName ?? null,
         billed: toNumber(row.billed),
         collected: toNumber(row.collected),
         refunded: toNumber(row.refunded),
@@ -528,6 +650,8 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
         packageName: row.packageName,
         billed: toNumber(row.billed),
         collected: toNumber(row.collected),
+        refunded: toNumber(row.refunded),
+        adjusted: toNumber(row.adjusted),
         outstanding: toNumber(row.outstanding),
         activeCustomers: toNumber(row.activeCustomers),
         collectionRate: row.collectionRate === null || row.collectionRate === undefined ? null : toNumber(row.collectionRate),
@@ -566,6 +690,10 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       // topic) -- see getCustomerFinancialsSummary's own comment for why this
       // is statistics, not a per-row list. null when that topic wasn't asked
       // for this turn (need('customer_summary') resolved to false above).
+      // 2026-10-04: what produced customerFinancials, so every page (and the
+      // Excel export) re-queries the same ranking. N = the user's top-N.
+      customerFinancialsQuery: { ...dateScope, sortBy: sortBy || 'billed', direction: direction || 'desc', limit: Number(limit) || 100 },
+      customerFinancialsTotalCount: Math.min(Number(limit) || 100, Number(rankedCustomerCount) || 0),
       customerFinancialsSummary: customerFinancialsSummary
         ? {
             customerCount: toNumber(customerFinancialsSummary.customerCount),
@@ -671,6 +799,40 @@ async function dashboardDataUncached({ windowDays = 30, region = null, limit = n
       // ticketService.getTicketTypeBreakdown's own comment). Consumed by
       // ArtifactChartPicker/getReportTable's 'tickets' branch.
       ticketBreakdown: ticketTypeBreakdown, // each row: { ticketTypeId, ticketTypeName, count }
+      // NEW 2026-10-01: individual ticket rows, see getTicketList's own
+      // comment -- each row: { ticket_sk, source_ticket_id, customer_id,
+      // department_id, ticket_type_id, ticket_type_name, opened_date,
+      // resolved_date, status }. Consumed by report-table.ts's
+      // 'ticket_list' branch.
+      ticketList,
+      // FIX 2026-10-01: the real total row count behind ticketList's
+      // (possibly capped) rows -- lets the chat narrative and table
+      // header say "showing 5,000 of 41,500" instead of silently
+      // presenting a capped slice as if it were the whole answer.
+      ticketListTotalCount,
+      // 2026-10-04: the exact filters behind ticketList, stored with the
+      // report so pagination and Excel export re-query the SAME set.
+      ticketListFilters: {
+        ticketTypeId: ticketTypeId || null,
+        departmentId: departmentId || null,
+        status: ticketStatus || null,
+        dateFrom: ticketDateFrom || null,
+        dateTo: ticketDateTo || null,
+      },
+      // NEW 2026-10-01: each row: { customer_id, customer_name, pop_id,
+      // pop_name, package_id, package_name, status_id, status_name,
+      // entry_date, activated_date }. Consumed by report-table.ts's
+      // 'customer_list' branch.
+      customerList,
+      customerListTotalCount,
+      customerListFilters: {
+        dateField: customerDateField || null,
+        dateFrom: customerDateFrom || null,
+        dateTo: customerDateTo || null,
+        popId: customerPopId || null,
+        packageId: customerPackageId || null,
+        statusId: customerStatusId || null,
+      },
       metricBreakdown: null,
       periodComparison: null,
     };

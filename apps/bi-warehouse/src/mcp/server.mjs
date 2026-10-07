@@ -37,8 +37,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import { getRevenueSummary, getRevenueTimeseries, getPopBreakdown, getPopFinancials, getPackageFinancials, getRevenueTimeseriesFinancials, getActiveCustomerCount, getCustomerFinancials, getCustomerFinancialsSummary, getTranModeBreakdown, getTranModeByDimension } from '../services/revenueService.mjs';
-import { getTicketMetrics, getTicketTypeBreakdown, getTicketPopBreakdown } from '../services/ticketService.mjs';
+import { getTicketMetrics, getTicketTypeBreakdown, getTicketPopBreakdown, getTicketList } from '../services/ticketService.mjs';
+import { getCustomerSignups, getCustomerList } from '../services/customerService.mjs';
+import { querySemanticLayerPage } from '../services/cubeQueryService.mjs';
 import { METRICS } from '../semantic/metrics.mjs';
+import { CUBE_CATALOG_TEXT } from '../semantic/cubeCatalog.mjs';
 
 // FIX 2026-09-26: every ranked/limited tool below let the model pass ANY
 // positive `limit` with no ceiling -- a real request for "1000 top
@@ -62,6 +65,20 @@ import { METRICS } from '../semantic/metrics.mjs';
 // collectedByTranMode breakdown object, not just a handful of numbers.
 const MAX_RANKED_LIMIT = 500;
 const MAX_CUSTOMER_LIMIT = 300;
+// FIX 2026-10-01: REAL, LIVE CRASH -- "all fiber tickets, complete info"
+// called get_ticket_list with no limit, which (after today's fix raising
+// the real data cap to 5,000 -- see getTicketList's own comment) returned
+// up to 5,000 full ticket rows DIRECTLY into the draft/critique LLM calls'
+// own context, no capLimitForLlm wrapper here unlike every other
+// row/ranked tool in this file. Measured result: a single request asking
+// for ~607,000 tokens against gpt-4o-mini's 200,000 TPM limit -- an
+// instant, total request failure ("Could not process that request"), not
+// a slow-down. get_ticket_list is fixed the same way get_customer_list
+// already was: what the model itself sees is capped here; the real
+// table/export the user sees still comes from the full, separately-capped
+// (5,000-row) result via dashboardData() in bi-dashboard, untouched by
+// this cap -- see capLimitForLlm's own comment for why this split exists.
+const MAX_TICKET_LIST_LLM_LIMIT = 200;
 
 // FIX 2026-09-26 (part 2): a hard `.max()` on the schema made an
 // over-large `limit` REJECT the tool call outright (a Zod validation
@@ -163,16 +180,25 @@ constructs or returns raw SQL.
 - total_adjusted: RefTypeID 6 (ADJUSTMENT), using Credit.
 
 ## Tickets
-- ticket_volume, avg_resolution_hours: from fact_ticket (TicketingDB).
-  NOTE: fact_ticket's source table is still a placeholder pending
-  confirmation of TicketingDB's real ticket table -- see
-  src/etl/tables/tickets.mjs header comment.
+- ticket_volume: from fact_ticket (TicketingDB.dbo.Tk_TicketInfoMaster,
+  confirmed real source, not a placeholder). opened_date (creation time)
+  is real and populated.
+- avg_resolution_hours: will be null for every row -- no confirmed
+  "ticket resolved" column exists on the source table yet (see
+  src/etl/tables/tickets.mjs header comment). This is a genuine data gap,
+  not a sync gap -- do not confuse this with ticket creation time, which
+  is fully available.
 
 ## Valid dimensions per metric
 ${Object.entries(METRICS)
   .map(([name, m]) => `- ${name}: ${m.validDimensions.join(', ') || '(none)'}`)
   .join('\n')}
 `;
+
+// Hand-maintained to match cube/model/isp.yml exactly -- update this
+// alongside any change to that file, since this is the ONLY place the
+// agent learns which measure/dimension names are real.
+const ISP_CUBE_CATALOG = CUBE_CATALOG_TEXT;
 
 export function createWarehouseMcpServer() {
   const server = new McpServer({
@@ -336,11 +362,164 @@ export function createWarehouseMcpServer() {
   );
 
   server.registerTool(
+    'get_customer_signups',
+    {
+      title: 'Get customer signup/activation counts for a date range',
+      description:
+        'Count of customers whose entry_date (when they first signed up) or activated_date (when their service was activated) falls within a date range, from dim_customer. Always call this -- not get_active_customer_count -- for any question like "customers who joined/entered/signed up between X and Y", "how many customers from 2022 to 2024", "new customers last quarter", or "customer growth by month". Set groupBy to "month" for a trend over time, or to "pop_id"/"package_id"/"status_id" to break the count down by that dimension; omit groupBy for a single total. dateField picks which date column to filter on -- "entry" (signup date, the default) vs "activated" (service activation date); ask the user which they mean if genuinely ambiguous, but default to "entry" for a plain "customers from X to Y" question.',
+      inputSchema: {
+        dateField: z.enum(['entry', 'activated']).nullable().optional().describe('Which date column to filter/group on. Defaults to "entry" (signup date) if omitted.'),
+        dateFrom: z.string().nullable().optional().describe('ISO date, e.g. "2022-01-01". Omit for no lower bound.'),
+        dateTo: z.string().nullable().optional().describe('ISO date, e.g. "2024-12-31". Omit for no upper bound.'),
+        groupBy: z.enum(['month', 'pop_id', 'package_id', 'status_id']).nullable().optional().describe('Omit for a single total count. "month" gives a trend over time; the others break the count down by that dimension.'),
+        popId: z.string().nullable().optional().describe('Restrict to one POP id, e.g. for "customers from POP 3 who joined in 2023".'),
+        packageId: z.string().nullable().optional(),
+        statusId: z.string().nullable().optional(),
+      },
+    },
+    async ({ dateField, dateFrom, dateTo, groupBy, popId, packageId, statusId }) => {
+      const result = await getCustomerSignups({
+        dateField: dateField || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        groupBy: groupBy || undefined,
+        popId: popId || undefined,
+        packageId: packageId || undefined,
+        statusId: statusId || undefined,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+    },
+  );
+
+  server.registerTool(
+    'get_customer_list',
+    {
+      title: 'Get a row-level customer list for a date range',
+      description:
+        'Row-level list of customers (id, name, POP, package, status, entry_date, activated_date) within a date range, ranked by that date descending, up to a limit. Use this -- not get_customer_signups -- when the user wants to actually SEE the individual customers (names/ids), not just a count. For "every customer"/"the whole customer base" style questions where the count could be huge, prefer get_customer_signups with no limit concept, or get_customer_financials_summary for the full-population financial view -- this tool\'s row cap means it is only right for a genuinely small, specific list.',
+      inputSchema: {
+        dateField: z.enum(['entry', 'activated']).nullable().optional(),
+        dateFrom: z.string().nullable().optional(),
+        dateTo: z.string().nullable().optional(),
+        popId: z.string().nullable().optional().describe('EITHER the raw pop_id OR the real POP name (e.g. "Mirpur") -- both are matched, no lookup needed first.'),
+        packageId: z.string().nullable().optional().describe('EITHER the raw package_id OR the real package name -- both are matched.'),
+        statusId: z.string().nullable().optional().describe('EITHER the raw status_id OR the real status name (e.g. "Active") -- both are matched.'),
+        limit: z.number().int().positive().nullable().optional().describe('Omit this (or pass null) for "full"/"all" -- the underlying list returns up to the real cap of 5,000 rows AND the true total row count (totalCount), though what the model itself sees here is separately capped at 300 for context reasons (see the note field in the response) -- the real table/export the user sees is NOT limited by that 300 cap.'),
+      },
+    },
+    async ({ dateField, dateFrom, dateTo, popId, packageId, statusId, limit }) => {
+      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_CUSTOMER_LIMIT);
+      const result = await getCustomerList({
+        dateField: dateField || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        popId: popId || undefined,
+        packageId: packageId || undefined,
+        statusId: statusId || undefined,
+        limit: effectiveLimit,
+      });
+      // FIX 2026-10-01: getCustomerList now returns { rows, totalCount }
+      // instead of a bare array (same fix as getTicketList, see that
+      // function's own comment). SELF-CORRECTION same session: withLlmNote
+      // returns the BARE ARRAY when note is null, so spreading it used to
+      // silently produce a broken shape ({0: row, 1: row, ...,
+      // totalCount} instead of {rows: [...], totalCount}) -- build the
+      // object explicitly instead of relying on withLlmNote's dual shape.
+      // 2026-10-04: the AI gets ONLY the DB-computed totals/summary, never
+      // individual rows -- the user's table and Excel export come from the
+      // database separately.
+      void note;
+      const payload = {
+        totalCount: result.totalCount,
+        summary: result.summary,
+        note: `All figures are computed by the database over all ${result.totalCount.toLocaleString()} matching customers. The full list is shown to the user in the table (up to 5,000 rows) and Export Excel (all rows). Answer from these figures only; do not list individual customers.`,
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+        structuredContent: payload,
+      };
+    },
+  );
+
+  server.registerTool(
+    'query_semantic_layer',
+    {
+      title: 'Query the ISP semantic layer (Cube) -- any measure, dimension, date range, or filter',
+      description:
+        `Generic query tool over the real ISP data warehouse's semantic layer (Cube), for any question the more specific named tools above don't already cover -- any date range, any dimension breakdown, any filter, on any of the cubes listed below. ALWAYS prefer a more specific tool above when one exists for the question (e.g. get_revenue_summary for billed/collected/outstanding, get_customer_signups for signup/activation date ranges) -- use this one when the question needs a measure/dimension/filter combination none of those cover.\n\nAvailable cubes, measures, and dimensions (the ONLY valid names -- Cube rejects anything else):\n${ISP_CUBE_CATALOG}\n\nFilters use Cube's own operator set: equals, notEquals, contains, notContains, gt, gte, lt, lte, set, notSet, inDateRange, beforeDate, afterDate. A date-range question should normally use timeDimensions (with dateRange: ["YYYY-MM-DD", "YYYY-MM-DD"]) rather than a filter, since timeDimensions also lets you ask for a granularity (e.g. "month") to get a trend over time in one call.\n\nLISTING INDIVIDUAL ROWS (not just a total): this works for EVERY cube, not only tickets/customers. A question like "show me each billing row for POP 24", "list the refunds for customer X", "which collections happened in March" wants real rows, not a count -- pass ONLY dimensions (no measures at all) plus your filters/timeDimensions and a limit, e.g. dimensions: ["IspBilling.billing_sk", "IspBilling.ref_date", "IspBilling.amount", "IspCustomer.customer_name", "IspPop.pop_name"], filters: [{member: "IspBilling.pop_id", operator: "equals", values: ["24"]}], limit: 200. Omitting "measures" entirely is what makes Cube return one row per record instead of an aggregate -- a query with measures present will always collapse to a summary, even with dimensions alongside it. Always set a limit on a row-listing query (200 is a reasonable default) since there is no automatic cap like the named tools have.`,
+      inputSchema: {
+        measures: z.array(z.string()).optional().describe('e.g. ["IspBilling.total_billed"]. Omit or use [] for individual records. At least one of measures or dimensions is required.'),
+        dimensions: z.array(z.string()).nullable().optional().describe('e.g. ["IspCustomer.pop_id"] to break results down by POP.'),
+        filters: z
+          .array(
+            z.object({
+              member: z.string().describe('e.g. "IspCustomer.status_id"'),
+              operator: z.enum([
+                'equals', 'notEquals', 'contains', 'notContains',
+                'gt', 'gte', 'lt', 'lte', 'set', 'notSet',
+                'inDateRange', 'beforeDate', 'afterDate',
+              ]),
+              values: z.array(z.string()).nullable().optional().describe('Omit for set/notSet.'),
+            }),
+          )
+          .nullable()
+          .optional(),
+        timeDimensions: z
+          .array(
+            z.object({
+              dimension: z.string().describe('e.g. "IspCustomer.entry_date"'),
+              dateRange: z.array(z.string()).length(2).nullable().optional().describe('["YYYY-MM-DD", "YYYY-MM-DD"]. Omit for all-time.'),
+              granularity: z.enum(['day', 'week', 'month', 'quarter', 'year']).nullable().optional().describe('Omit for a single total over the whole range; set this for a trend broken down over time.'),
+            }),
+          )
+          .nullable()
+          .optional(),
+        limit: z.number().int().positive().nullable().optional().describe('Defaults to Cube\'s own default (10000) if omitted -- set a smaller number for a top-N style question.'),
+        order: z
+          .record(z.string(), z.enum(['asc', 'desc']))
+          .nullable()
+          .optional()
+          .describe('e.g. {"IspBilling.total_billed": "desc"} to sort by a measure.'),
+      },
+    },
+    async ({ measures, dimensions, filters, timeDimensions, limit, order }) => {
+      // 2026-10-04: a row-listing query (dimensions only, no measures) never
+      // hands individual rows to the model -- only the database's true row
+      // count. The user's table/report/export re-run the query themselves.
+      if (!measures || !measures.length) {
+        const { rows, total } = await querySemanticLayerPage(
+          { dimensions: dimensions || undefined, filters: filters || undefined, timeDimensions: timeDimensions || undefined, order: order || undefined },
+          { offset: 0, limit: 5 },
+        );
+        const payload = {
+          totalCount: total,
+          records: total <= 5 ? rows : undefined,
+          note: total <= 5 ? 'These are the matching records. Answer specific field/detail questions from them. Null means unavailable; preserve the exact record IDs.' : `This query matches ${total.toLocaleString()} rows, all computed by the database. The user sees them in the table and Export Excel; do not list individual rows. If the user wants totals or breakdowns, run an aggregate query with measures.`,
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+      }
+      const page = await querySemanticLayerPage({
+        measures: measures || undefined,
+        dimensions: dimensions || undefined,
+        filters: filters || undefined,
+        timeDimensions: timeDimensions || undefined,
+        order: order || undefined,
+      }, { limit: Math.min(limit || 50, 50), ...(limit ? { maxRows: limit } : {}) });
+      const payload = { rows: page.rows, totalCount: page.total, partial: page.rows.length < page.total,
+        note: page.rows.length < page.total ? 'These are preview groups, not the complete population. Query an ungrouped aggregate for global totals; never sum this preview as a population total.' : undefined };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+    },
+  );
+
+  server.registerTool(
     'get_ticket_metrics',
     {
       title: 'Get ticket metrics',
       description:
-        'Ticket volume and average resolution time, optionally broken down by department or ticket type. NOTE: source table is a placeholder pending confirmation (see semantic catalog resource) -- treat results as provisional until that is verified.',
+        'AGGREGATE ticket volume and average resolution time only -- one count/average per group, never individual ticket rows (use get_ticket_list for that). When grouped by ticket_type_id, the real ticket_type_name is attached automatically. ' +
+        'IMPORTANT, read carefully -- ticket CREATION time and ticket RESOLUTION time are two separate, different fields, do not conflate them: ' +
+        'opened_date (ticket creation time) is a real, always-populated column -- if asked "is there a ticket creation time" or anything about when tickets were opened/created, the answer is YES, it is fully available, and dateFrom/dateTo here both filter on it. ' +
+        'avgResolutionHours (ticket RESOLUTION time) will be null for every row -- no confirmed "ticket resolved" column exists in the real source system yet (the only candidate column, StatusChangeDate, has not been verified to actually mean "resolved"). If asked specifically about resolution/closing time, say plainly it is not available yet -- but NEVER let that affect the answer to a question about creation time, which is a completely different, fully-available field.',
       inputSchema: {
         dateFrom: z.string().nullable().optional(),
         dateTo: z.string().nullable().optional(),
@@ -350,6 +529,70 @@ export function createWarehouseMcpServer() {
     async ({ dateFrom, dateTo, groupBy }) => {
       const result = await getTicketMetrics({ dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, groupBy: groupBy || undefined });
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+    },
+  );
+
+  // NEW 2026-10-01: the row-level counterpart to get_ticket_metrics --
+  // every ticket tool above this one could only ever answer with a
+  // count/average. Use THIS tool whenever the question wants to actually
+  // see tickets, not just a number about them.
+  server.registerTool(
+    'get_ticket_list',
+    {
+      title: 'List individual tickets (real rows, not a count)',
+      description:
+        'Individual ticket rows -- use this whenever the question asks to see, list, or show the actual tickets (e.g. "show me each ticket of type X", "list the tickets for department Y", "which tickets are still open") rather than just a total/average. get_ticket_metrics and get_ticket_type_breakdown only ever return aggregates; this is the one that returns real rows. Each row includes the real ticket_type_name (joined from dim_ticket_type). department_id is the RAW id only -- its human name is not resolved here, since the id-to-name mapping has not been independently verified yet (do not invent a department name). resolved_date will be null on every row -- no confirmed resolved-date column exists in the source system yet; opened_date (ticket creation time) is always real and populated.',
+      inputSchema: {
+        ticketTypeId: z.string().nullable().optional().describe('The ticket type to filter to -- EITHER the raw ticket_type_id code (e.g. from get_ticket_type_breakdown\'s results) OR the real type name exactly as the user said it (e.g. "Fiber Issue", "Bandwidth Slow") -- both are matched, you do not need to look up the id first.'),
+        departmentId: z.string().nullable().optional().describe('Exact department_id (raw id, see note above).'),
+        status: z.string().nullable().optional().describe('Exact status value to filter by, if the user named one.'),
+        dateFrom: z.string().nullable().optional().describe('Filters on opened_date (creation time), ISO date.'),
+        dateTo: z.string().nullable().optional().describe('Filters on opened_date (creation time), ISO date.'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .nullable()
+          .optional()
+          .describe('How many ticket rows to return, most recently opened first. Omit this (or pass null) for "full"/"all" -- it returns up to the real cap of 5,000 rows AND the true total row count (totalCount) so you can tell the user plainly when the result is capped, e.g. "showing 5,000 of 41,500". Never claim a capped result is the complete set.'),
+      },
+    },
+    async ({ ticketTypeId, departmentId, status, dateFrom, dateTo, limit }) => {
+      // FIX 2026-10-01: cap what the MODEL sees (MAX_TICKET_LIST_LLM_LIMIT)
+      // -- same capLimitForLlm pattern get_customer_list already uses, see
+      // that function's own comment for why this exists and why it does
+      // NOT limit the real table/export the user sees.
+      const { effectiveLimit, note } = capLimitForLlm(limit, MAX_TICKET_LIST_LLM_LIMIT);
+      const result = await getTicketList({
+        ticketTypeId: ticketTypeId || undefined,
+        departmentId: departmentId || undefined,
+        status: status || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        limit: effectiveLimit,
+      });
+      // FIX 2026-10-01: getTicketList now returns { rows, totalCount }
+      // instead of a bare array (see its own comment) specifically so a
+      // capped "full" request can be reported honestly instead of
+      // silently passed off as complete. structuredContent/text both
+      // carry totalCount through so the model can say "showing X of Y".
+      // FIX 2026-10-01 (self-correction, same session): withLlmNote
+      // returns the BARE ARRAY when note is null (no cap applied) -- the
+      // spread `{...withLlmNote(result.rows, note), totalCount}` used to
+      // silently produce a broken shape in that case: array indices as
+      // object keys ({0: row, 1: row, ..., totalCount}) instead of
+      // {rows: [...], totalCount}. Build the object explicitly instead of
+      // relying on withLlmNote's dual return shape here.
+      // 2026-10-04: the model only sees a small sample; summary covers ALL
+      // matching tickets, so the reply never reads "top 200 of 173,062".
+      const listNote =
+        `All figures are computed by the database over all ${result.totalCount.toLocaleString()} matching tickets. The full list is shown to the user in the table (up to 5,000 rows) and Export Excel (all rows). ` +
+        'Answer from these figures only; do not list individual tickets or mention any row limit.';
+      const payload = { totalCount: result.totalCount, summary: result.summary, note: listNote };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+        structuredContent: payload,
+      };
     },
   );
 

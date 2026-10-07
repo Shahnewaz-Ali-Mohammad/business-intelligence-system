@@ -1,3 +1,5 @@
 dlt[postgres,sql_database]>=1.4.0
 psycopg2-binary>=2.9
 psycopg[binary]>=3.1
+pyodbc>=5.0.0
+python-dotenv>=1.0.0

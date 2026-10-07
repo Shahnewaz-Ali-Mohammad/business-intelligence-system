@@ -1,0 +1,811 @@
+# Real ISP production warehouse (Postgres `public` schema) -- hand-written,
+# not AI-drafted, because this schema is fully known and documented in
+# database/warehouse-schema.sql (see that file for the authoritative
+# column/business-rule comments this model mirrors).
+#
+# IMPORTANT: every foreign key on these fact tables was deliberately
+# DROPPED after the first real sync (see warehouse-schema.sql's own PATCH
+# comment) -- real production rows reference customers/departments/ticket
+# types that don't exist in the dimension tables (15+ years of legacy
+# data). Every join below is therefore LEFT JOIN on matching column
+# values, never an enforced relationship -- a fact row with no matching
+# dimension row still returns (with nulls for that dimension's fields),
+# it is never silently dropped.
+cubes:
+  - name: IspCustomer
+    sql_table: dim_customer
+    joins:
+      - name: IspPop
+        sql: "{CUBE}.pop_id = {IspPop}.pop_id"
+        relationship: many_to_one
+      - name: IspStatus
+        sql: "{CUBE}.status_id = {IspStatus}.status_id"
+        relationship: many_to_one
+      - name: IspPackage
+        sql: "{CUBE}.package_id = {IspPackage}.package_id"
+        relationship: many_to_one
+    measures:
+      - name: customer_count
+        sql: customer_id
+        type: count
+      - name: active_customer_count
+        sql: customer_id
+        type: count
+        filters:
+          - sql: "{CUBE}.status_id = '1'"
+    dimensions:
+      - name: customer_id
+        sql: customer_id
+        type: string
+        primary_key: true
+        public: true
+      - name: customer_name
+        sql: customer_name
+        type: string
+      - name: pop_id
+        sql: pop_id
+        type: string
+      - name: package_id
+        sql: package_id
+        type: string
+      - name: status_id
+        sql: status_id
+        type: string
+      - name: connection_type
+        sql: connection_type
+        type: string
+      - name: resident_type
+        sql: resident_type
+        type: string
+      - name: entry_date
+        sql: entry_date
+        type: time
+      - name: activated_date
+        sql: activated_date
+        type: time
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  - name: IspPop
+    sql_table: dim_pop
+    measures:
+      - name: pop_count
+        sql: pop_id
+        type: count
+    dimensions:
+      - name: pop_id
+        sql: pop_id
+        type: string
+        primary_key: true
+        public: true
+      - name: pop_name
+        sql: pop_name
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  - name: IspPackage
+    sql_table: dim_package
+    measures:
+      - name: package_count
+        sql: package_id
+        type: count
+      - name: avg_price
+        sql: price
+        type: avg
+    dimensions:
+      - name: package_id
+        sql: package_id
+        type: string
+        primary_key: true
+        public: true
+      - name: package_name
+        sql: package_name
+        type: string
+      - name: bandwidth
+        sql: bandwidth
+        type: string
+      - name: price
+        sql: price
+        type: number
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  - name: IspStatus
+    sql_table: dim_status
+    measures:
+      - name: status_count
+        sql: status_id
+        type: count
+    dimensions:
+      - name: status_id
+        sql: status_id
+        type: string
+        primary_key: true
+        public: true
+      - name: status_name
+        sql: status_name
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  - name: IspDepartment
+    sql_table: dim_department
+    measures:
+      - name: department_count
+        sql: department_id
+        type: count
+    dimensions:
+      - name: department_id
+        sql: department_id
+        type: string
+        primary_key: true
+        public: true
+      - name: department_name
+        sql: department_name
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  - name: IspTicketType
+    sql_table: dim_ticket_type
+    measures:
+      - name: ticket_type_count
+        sql: ticket_type_id
+        type: count
+    dimensions:
+      - name: ticket_type_id
+        sql: ticket_type_id
+        type: string
+        primary_key: true
+        public: true
+      - name: ticket_type_name
+        sql: ticket_type_name
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  # Billing: real charges (accrual). RefTypeID 1,2,3,7,8,10 -- see
+  # warehouse-schema.sql header for the full confirmed RefTypeID mapping.
+  - name: IspBilling
+    sql_table: fact_billing
+    joins:
+      - name: IspCustomer
+        sql: "{CUBE}.customer_id = {IspCustomer}.customer_id"
+        relationship: many_to_one
+      - name: IspPop
+        sql: "{CUBE}.pop_id = {IspPop}.pop_id"
+        relationship: many_to_one
+      - name: IspPackage
+        sql: "{CUBE}.package_id = {IspPackage}.package_id"
+        relationship: many_to_one
+    measures:
+      - name: total_billed
+        sql: amount
+        type: sum
+      - name: billing_count
+        sql: billing_sk
+        type: count
+      - name: avg_transaction_amount
+        sql: amount
+        type: avg
+      - name: min_transaction_amount
+        sql: amount
+        type: min
+      - name: max_transaction_amount
+        sql: amount
+        type: max
+    dimensions:
+      - name: billing_sk
+        sql: billing_sk
+        type: number
+        primary_key: true
+        public: true
+      - name: source_snid
+        sql: source_snid
+        type: string
+      - name: amount
+        sql: amount
+        type: number
+      - name: tran_id
+        sql: tran_id
+        type: string
+      - name: ref_type_id
+        sql: ref_type_id
+        type: number
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+      - name: ref_date
+        sql: ref_date
+        type: time
+      - name: ref_type_name
+        sql: ref_type_name
+        type: string
+      - name: customer_id
+        sql: customer_id
+        type: string
+      - name: pop_id
+        sql: pop_id
+        type: string
+      - name: package_id
+        sql: package_id
+        type: string
+
+  # Collection: real cash received. RefTypeID 4 (MR / Money Receipt).
+  - name: IspCollection
+    sql_table: fact_collection
+    joins:
+      - name: IspCustomer
+        sql: "{CUBE}.customer_id = {IspCustomer}.customer_id"
+        relationship: many_to_one
+      - name: IspPop
+        sql: "{CUBE}.pop_id = {IspPop}.pop_id"
+        relationship: many_to_one
+      - name: IspPackage
+        sql: "{CUBE}.package_id = {IspPackage}.package_id"
+        relationship: many_to_one
+    measures:
+      - name: total_collected
+        sql: amount
+        type: sum
+      - name: collection_count
+        sql: collection_sk
+        type: count
+      - name: avg_transaction_amount
+        sql: amount
+        type: avg
+      - name: min_transaction_amount
+        sql: amount
+        type: min
+      - name: max_transaction_amount
+        sql: amount
+        type: max
+    dimensions:
+      - name: collection_sk
+        sql: collection_sk
+        type: number
+        primary_key: true
+        public: true
+      - name: source_snid
+        sql: source_snid
+        type: string
+      - name: amount
+        sql: amount
+        type: number
+      - name: tran_id
+        sql: tran_id
+        type: string
+      - name: ref_date
+        sql: ref_date
+        type: time
+      - name: customer_id
+        sql: customer_id
+        type: string
+      - name: pop_id
+        sql: pop_id
+        type: string
+      - name: package_id
+        sql: package_id
+        type: string
+      - name: tran_mode_id
+        # NOTE: raw payment-channel code -- TranModeMaster is a real,
+        # confirmed-readable source table but is not yet synced into this
+        # warehouse to resolve this to a human name (cash/bKash/Nagad).
+        # Report this as "Mode <id>", never invent what it means.
+        sql: tran_mode_id
+        type: string
+      - name: tran_mode_name
+        sql: tran_mode_name
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  # Refund: RefTypeID 5. Recorded as Debit in source -- NOT a negative
+  # collection, kept as its own fact (see warehouse-schema.sql).
+  - name: IspRefund
+    sql_table: fact_refund
+    joins:
+      - name: IspCustomer
+        sql: "{CUBE}.customer_id = {IspCustomer}.customer_id"
+        relationship: many_to_one
+    measures:
+      - name: total_refunded
+        sql: amount
+        type: sum
+      - name: refund_count
+        sql: refund_sk
+        type: count
+      - name: avg_transaction_amount
+        sql: amount
+        type: avg
+      - name: min_transaction_amount
+        sql: amount
+        type: min
+      - name: max_transaction_amount
+        sql: amount
+        type: max
+    dimensions:
+      - name: refund_sk
+        sql: refund_sk
+        type: number
+        primary_key: true
+        public: true
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+      - name: source_snid
+        sql: source_snid
+        type: string
+      - name: amount
+        sql: amount
+        type: number
+      - name: ref_date
+        sql: ref_date
+        type: time
+      - name: customer_id
+        sql: customer_id
+        type: string
+
+  # Adjustment: RefTypeID 6, recorded as Credit.
+  - name: IspAdjustment
+    sql_table: fact_adjustment
+    joins:
+      - name: IspCustomer
+        sql: "{CUBE}.customer_id = {IspCustomer}.customer_id"
+        relationship: many_to_one
+    measures:
+      - name: total_adjusted
+        sql: amount
+        type: sum
+      - name: adjustment_count
+        sql: adjustment_sk
+        type: count
+      - name: avg_transaction_amount
+        sql: amount
+        type: avg
+      - name: min_transaction_amount
+        sql: amount
+        type: min
+      - name: max_transaction_amount
+        sql: amount
+        type: max
+    dimensions:
+      - name: adjustment_sk
+        sql: adjustment_sk
+        type: number
+        primary_key: true
+        public: true
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+      - name: source_snid
+        sql: source_snid
+        type: string
+      - name: amount
+        sql: amount
+        type: number
+      - name: ref_date
+        sql: ref_date
+        type: time
+      - name: customer_id
+        sql: customer_id
+        type: string
+
+  # Tickets: CORRECTION 2026-10-01 -- the comment this replaced was stale.
+  # src/etl/tables/tickets.mjs IS already wired to the real, confirmed
+  # source table (TicketingDB.dbo.Tk_TicketInfoMaster) -- ticket_count,
+  # customer_id, department_id (from GroupID), ticket_type_id, opened_date,
+  # and status are all real, populated data, not placeholders.
+  # The one genuine gap: resolved_date is deliberately left NULL. No
+  # confirmed "ticket resolved" column exists on the source table --
+  # StatusChangeDate is the closest candidate but has not been verified to
+  # actually mean "resolved" (it could reflect any status change). Per
+  # this project's "no assumptions" rule it is left unmapped rather than
+  # guessed, so avg_resolution_hours will be null for every row until that
+  # column is independently verified against real data.
+  - name: IspTicket
+    # Source SNID is unique and maps to fact_ticket.source_ticket_id.
+    # Keep the fact grain while exposing ticket details omitted by its ETL.
+    sql: |
+      SELECT f.*,
+          r."TicketNo" AS ticket_no,
+          r."TicketSourceID"::text AS ticket_source_id,
+          r."CustomerName" AS customer_name,
+          r."CustMobileNo" AS customer_mobile,
+          r."CustEmail" AS customer_email,
+          r."PopId"::text AS pop_id,
+          r."POPName" AS pop_name,
+          r."Subject" AS subject,
+          r."Priority" AS priority,
+          r."TicketStatusID"::text AS ticket_status_id,
+          r."Message" AS message,
+          r."FileName" AS file_name,
+          r."AssignedTo"::text AS assigned_to,
+          r."AssignedBy"::text AS assigned_by,
+          r."TeamID"::text AS team_id,
+          r."ForwardMessage" AS forward_message,
+          r."AddedBy"::text AS added_by,
+          r."UpdatedBy"::text AS updated_by,
+          r."DateUpdated" AS date_updated,
+          r."isCorporate" AS is_corporate,
+          r."UpdatedDate" AS updated_date,
+          r."DownCauseID"::text AS down_cause_id,
+          r."IsForwarded" AS is_forwarded,
+          r."TicketIndentityID"::text AS ticket_identity_id,
+          r."ForwardedBy"::text AS forwarded_by,
+          r."ForwardedTeam"::text AS forwarded_team,
+          r."ForwardedTime" AS forwarded_time,
+          r."StatusChangeDate" AS status_change_date,
+          r."LastActivity" AS last_activity,
+          r."LastActivityBy"::text AS last_activity_by,
+          r."LastTicketNotes" AS last_ticket_notes,
+          r."CallerCellNo" AS caller_cell_no,
+          r."tkRefId"::text AS ticket_reference_id,
+          r."FollowUpTime" AS follow_up_time,
+          r."ETRTime" AS etr_time,
+          r."LongTimeReasonID"::text AS long_time_reason_id,
+          r."LinkId"::text AS link_id,
+          r."Address" AS address,
+          r."IsFeedbackDone" AS is_feedback_done,
+          r."FeedbackEntry" AS feedback_entry,
+          r."IsReOpen" AS is_reopen
+      FROM public.fact_ticket f
+      LEFT JOIN raw_ticketing."Tk_TicketInfoMaster" r ON r."SNID" = f.source_ticket_id
+    meta:
+      table: fact_ticket
+      source_tables: [fact_ticket, raw_ticketing.Tk_TicketInfoMaster]
+    joins:
+      - name: IspCustomer
+        sql: "{CUBE}.customer_id = {IspCustomer}.customer_id"
+        relationship: many_to_one
+      - name: IspDepartment
+        sql: "{CUBE}.department_id = {IspDepartment}.department_id"
+        relationship: many_to_one
+      - name: IspTicketType
+        sql: "{CUBE}.ticket_type_id = {IspTicketType}.ticket_type_id"
+        relationship: many_to_one
+    measures:
+      - name: ticket_count
+        sql: ticket_sk
+        type: count
+      - name: avg_resolution_hours
+        sql: "EXTRACT(EPOCH FROM (resolved_date - opened_date)) / 3600.0"
+        type: avg
+    dimensions:
+      - name: ticket_sk
+        sql: ticket_sk
+        type: number
+        primary_key: true
+        public: true
+      - name: source_ticket_id
+        sql: source_ticket_id
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+      - name: opened_date
+        sql: opened_date
+        type: time
+      - name: resolved_date
+        sql: resolved_date
+        type: time
+      - name: status
+        sql: status
+        type: string
+      - name: customer_id
+        sql: customer_id
+        type: string
+      - name: department_id
+        sql: department_id
+        type: string
+      - name: ticket_type_id
+        sql: ticket_type_id
+        type: string
+
+      - name: ticket_no
+        sql: ticket_no
+        type: string
+      - name: ticket_source_id
+        sql: ticket_source_id
+        type: string
+      - name: customer_name
+        sql: customer_name
+        type: string
+      - name: customer_mobile
+        sql: customer_mobile
+        type: string
+      - name: customer_email
+        sql: customer_email
+        type: string
+      - name: pop_id
+        sql: pop_id
+        type: string
+      - name: pop_name
+        sql: pop_name
+        type: string
+      - name: subject
+        sql: subject
+        type: string
+      - name: priority
+        sql: priority
+        type: string
+      - name: ticket_status_id
+        sql: ticket_status_id
+        type: string
+      - name: message
+        sql: message
+        type: string
+      - name: file_name
+        sql: file_name
+        type: string
+      - name: assigned_to
+        sql: assigned_to
+        type: string
+      - name: assigned_by
+        sql: assigned_by
+        type: string
+      - name: team_id
+        sql: team_id
+        type: string
+      - name: forward_message
+        sql: forward_message
+        type: string
+      - name: added_by
+        sql: added_by
+        type: string
+      - name: updated_by
+        sql: updated_by
+        type: string
+      - name: date_updated
+        sql: date_updated
+        type: time
+      - name: is_corporate
+        sql: is_corporate
+        type: boolean
+      - name: updated_date
+        sql: updated_date
+        type: time
+      - name: down_cause_id
+        sql: down_cause_id
+        type: string
+      - name: is_forwarded
+        sql: is_forwarded
+        type: boolean
+      - name: ticket_identity_id
+        sql: ticket_identity_id
+        type: string
+      - name: forwarded_by
+        sql: forwarded_by
+        type: string
+      - name: forwarded_team
+        sql: forwarded_team
+        type: string
+      - name: forwarded_time
+        sql: forwarded_time
+        type: time
+      - name: status_change_date
+        sql: status_change_date
+        type: time
+      - name: last_activity
+        sql: last_activity
+        type: time
+      - name: last_activity_by
+        sql: last_activity_by
+        type: string
+      - name: last_ticket_notes
+        sql: last_ticket_notes
+        type: string
+      - name: caller_cell_no
+        sql: caller_cell_no
+        type: string
+      - name: ticket_reference_id
+        sql: ticket_reference_id
+        type: string
+      - name: follow_up_time
+        sql: follow_up_time
+        type: time
+      - name: etr_time
+        sql: etr_time
+        type: time
+      - name: long_time_reason_id
+        sql: long_time_reason_id
+        type: string
+      - name: link_id
+        sql: link_id
+        type: string
+      - name: address
+        sql: address
+        type: string
+      - name: is_feedback_done
+        sql: is_feedback_done
+        type: boolean
+      - name: feedback_entry
+        sql: feedback_entry
+        type: time
+      - name: is_reopen
+        sql: is_reopen
+        type: boolean
+
+  # Package changes / status changes over time (effective-dated).
+  - name: IspCustomerLifecycleEvent
+    sql_table: fact_customer_lifecycle_event
+    joins:
+      - name: IspCustomer
+        sql: "{CUBE}.customer_id = {IspCustomer}.customer_id"
+        relationship: many_to_one
+      - name: IspPackage
+        sql: "{CUBE}.package_id = {IspPackage}.package_id"
+        relationship: many_to_one
+    measures:
+      - name: event_count
+        sql: event_sk
+        type: count
+    dimensions:
+      - name: event_sk
+        sql: event_sk
+        type: number
+        primary_key: true
+        public: true
+      - name: source_event_id
+        sql: source_event_id
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+      - name: event_type
+        sql: event_type
+        type: string
+      - name: effective_from
+        sql: effective_from
+        type: time
+      - name: effective_to
+        sql: effective_to
+        type: time
+      - name: customer_id
+        sql: customer_id
+        type: string
+      - name: package_id
+        sql: package_id
+        type: string
+
+  - name: IspRegion
+    sql_table: dim_region
+    measures:
+      - name: region_count
+        sql: region_id
+        type: count
+    dimensions:
+      - name: region_id
+        sql: region_id
+        type: string
+        primary_key: true
+        public: true
+      - name: division_name
+        sql: division_name
+        type: string
+      - name: district_name
+        sql: district_name
+        type: string
+      - name: city_corporation
+        sql: city_corporation
+        type: string
+      - name: source_synced_at
+        sql: source_synced_at
+        type: time
+
+  - name: IspDate
+    sql_table: dim_date
+    measures:
+      - name: date_count
+        sql: date_key
+        type: count
+    dimensions:
+      - name: date_key
+        sql: date_key
+        type: time
+        primary_key: true
+        public: true
+      - name: year
+        sql: year
+        type: number
+      - name: quarter
+        sql: quarter
+        type: number
+      - name: month
+        sql: month
+        type: number
+      - name: month_name
+        sql: month_name
+        type: string
+      - name: day
+        sql: day
+        type: number
+      - name: day_of_week
+        sql: day_of_week
+        type: number
+      - name: week_of_year
+        sql: week_of_year
+        type: number
+
+  # Union financial streams before aggregation; joining raw fact tables
+  # to each other would multiply transactions and inflate amounts.
+  - name: IspFinancial
+    sql: >
+      SELECT f.*, dc.pop_id,
+        CASE WHEN f.kind IN ('refund', 'adjustment') THEN dc.package_id
+             ELSE f.transaction_package_id END AS package_id
+      FROM (
+        SELECT 'billing:' || billing_sk AS record_key, 'billing' AS kind,
+          customer_id, ref_date, package_id AS transaction_package_id,
+          amount AS billed, 0::numeric AS collected, 0::numeric AS refunded, 0::numeric AS adjusted
+        FROM fact_billing
+        UNION ALL
+        SELECT 'collection:' || collection_sk, 'collection', customer_id, ref_date, package_id,
+          0::numeric, amount, 0::numeric, 0::numeric FROM fact_collection
+        UNION ALL
+        SELECT 'refund:' || refund_sk, 'refund', customer_id, ref_date, NULL::text,
+          0::numeric, 0::numeric, amount, 0::numeric FROM fact_refund
+        UNION ALL
+        SELECT 'adjustment:' || adjustment_sk, 'adjustment', customer_id, ref_date, NULL::text,
+          0::numeric, 0::numeric, 0::numeric, amount FROM fact_adjustment
+      ) f LEFT JOIN dim_customer dc ON f.customer_id = dc.customer_id
+    meta:
+      source_tables: [fact_billing, fact_collection, fact_refund, fact_adjustment, dim_customer]
+    joins:
+      - name: IspCustomer
+        sql: "{CUBE}.customer_id = {IspCustomer}.customer_id"
+        relationship: many_to_one
+      - name: IspPop
+        sql: "{CUBE}.pop_id = {IspPop}.pop_id"
+        relationship: many_to_one
+      - name: IspPackage
+        sql: "{CUBE}.package_id = {IspPackage}.package_id"
+        relationship: many_to_one
+    measures:
+      - name: total_billed
+        sql: billed
+        type: sum
+      - name: total_collected
+        sql: collected
+        type: sum
+      - name: total_refunded
+        sql: refunded
+        type: sum
+      - name: total_adjusted
+        sql: adjusted
+        type: sum
+      - name: outstanding
+        sql: billed - collected
+        type: sum
+      - name: collection_rate
+        sql: "100.0 * {total_collected} / NULLIF({total_billed}, 0)"
+        type: number
+    dimensions:
+      - name: record_key
+        sql: record_key
+        type: string
+        primary_key: true
+        public: true
+      - name: kind
+        sql: kind
+        type: string
+      - name: customer_id
+        sql: customer_id
+        type: string
+      - name: pop_id
+        sql: pop_id
+        type: string
+      - name: package_id
+        sql: package_id
+        type: string
+      - name: ref_date
+        sql: ref_date
+        type: time

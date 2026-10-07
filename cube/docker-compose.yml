@@ -9,7 +9,7 @@ services:
   cube:
     image: cubejs/cube:latest
     ports:
-      - "4001:4000"   # Cube's own API/playground -- kept off 4000 since
+      - "127.0.0.1:4001:4000"   # Cube's own API/playground -- kept off 4000 since
                        # apps/bi-warehouse's readonly-api.mjs already uses it
     environment:
       CUBEJS_DB_TYPE: postgres
@@ -19,6 +19,8 @@ services:
       CUBEJS_DB_USER: ${WAREHOUSE_PG_USER}
       CUBEJS_DB_PASS: ${WAREHOUSE_PG_PASSWORD}
       CUBEJS_API_SECRET: ${CUBEJS_API_SECRET}
-      CUBEJS_DEV_MODE: "true"
+      CUBEJS_DEV_MODE: "false"
+      WORKSPACE_BRIDGE_URL: ${WORKSPACE_BRIDGE_URL:-http://host.docker.internal:3000/api/internal/warehouse}
     volumes:
       - ./model:/cube/conf/model
+      - ./cube.js:/cube/conf/cube.js:ro

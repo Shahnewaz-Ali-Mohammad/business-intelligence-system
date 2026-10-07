@@ -44,7 +44,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const db = getAppDb();
 
   const [sessionRows] = await db.execute(
-    'SELECT id, title, created_at, updated_at FROM chat_sessions WHERE id = ? AND user_id = ?',
+    'SELECT id, title, warehouse_id, created_at, updated_at FROM chat_sessions WHERE id = ? AND user_id = ?',
     [id, user.id],
   );
   const sessions = sessionRows as unknown[];

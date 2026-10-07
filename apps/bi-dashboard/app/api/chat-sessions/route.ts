@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
+import { warehouseContext } from '@/lib/workspaces/warehouse';
 
 // FIX 2026-09-17: this used to return every session in one shot (capped at
 // a flat LIMIT 100 with no page controls), unlike /api/reports which was
@@ -59,11 +60,17 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}));
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 255) : 'New conversation';
+  const warehouseId = typeof body.workspaceId === 'string' ? body.workspaceId : null;
+  if (warehouseId) {
+    try { await warehouseContext(warehouseId, user.id); }
+    catch { return NextResponse.json({ error: 'Warehouse is not available.' }, { status: 400 }); }
+  }
 
   const db = getAppDb();
-  const [result] = await db.execute('INSERT INTO chat_sessions (user_id, title) VALUES (?, ?)', [
+  const [result] = await db.execute('INSERT INTO chat_sessions (user_id, title, warehouse_id) VALUES (?, ?, ?)', [
     user.id,
     title,
+    warehouseId,
   ]);
   const id = (result as { insertId: number }).insertId;
   return NextResponse.json({ id, title });

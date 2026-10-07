@@ -103,7 +103,8 @@ const server = http.createServer(async (request, response) => {
     request.on('end', async () => {
       try {
         const payload = JSON.parse(body || '{}');
-        const message = String(payload.message ?? '').slice(0, 500);
+        const message = String(payload.message ?? '');
+        if (message.length > 4000) throw new Error('Chat messages must not exceed 4000 characters.');
         const pageState = payload.page_state ?? {};
         const history = Array.isArray(payload.history)
           ? payload.history

@@ -18,7 +18,7 @@ export default function ChatPage() {
     <WorkspacePage
       active="Chat"
       title="Chat Workspace"
-      subtitle="Ask questions, generate charts, and turn answers into saved reports."
+      subtitle="Ask questions, explore your data, and save reports."
     >
       <Suspense fallback={null}>
         <ChatWorkspace />

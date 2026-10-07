@@ -8,6 +8,12 @@ tools, reports, and exports.
 
 ## Folder structure
 
+For a complete raw TicketingDB data copy, run `npm run sync:ticketing:raw`.
+It uses the existing Node database drivers, streams all source tables into
+`raw_ticketing`, and leaves the curated BI tables intact. See
+[TicketingDB raw copy](../../docs/ticketing-warehouse-copy.md) for verification,
+resume/refresh behavior, and the live-read consistency limits.
+
 ```
 db/
   warehouse-schema.sql     Postgres DDL — run this once to create the warehouse

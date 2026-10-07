@@ -3,6 +3,8 @@ import 'server-only';
 import type { CustomerMix, Kpi, PageLink, TopCustomerByOrders } from '@/lib/dashboard/types';
 
 export type DashboardData = {
+  warehouseQuery?: { workspaceId: string; modelVersion: string; query: Record<string, unknown> };
+  warehouseName?: string;
   // FIX 2026-09-17: which financial columns (billed/collected/refunded/
   // adjusted/outstanding) the user actually named this turn, for
   // per-POP/per-package/per-customer tables -- empty/undefined means show
@@ -10,6 +12,8 @@ export type DashboardData = {
   // for old saved reports that predate this field).
   requestedMetrics?: string[];
   connected: boolean;
+  activeCustomerCount?: number;
+  financialSummary?: { billed: number; collected: number; refunded: number; adjusted: number; outstanding: number };
   source: string;
   dateRange: string;
   activeFilter: string;
@@ -27,8 +31,8 @@ export type DashboardData = {
   topCustomersByOrders: TopCustomerByOrders[];
   revenueTrend: { day: string; revenue: number; orders: number }[];
   regionRevenue: { region: string; revenue: number }[];
-  popFinancials: { pop: string; billed: number; collected: number; refunded: number; adjusted: number; outstanding: number; activeCustomers: number; collectionRate: number | null; billedShare: number | null }[];
-  packageFinancials: { packageId: string | number | null; packageName: string | null; billed: number; collected: number; outstanding: number; activeCustomers: number; collectionRate: number | null; billedShare: number | null; revenuePerActiveCustomer: number | null }[];
+  popFinancials: { pop: string; popName?: string | null; billed: number; collected: number; refunded: number; adjusted: number; outstanding: number; activeCustomers: number; collectionRate: number | null; billedShare: number | null }[];
+  packageFinancials: { packageId: string | number | null; packageName: string | null; billed: number; collected: number; refunded?: number; adjusted?: number; outstanding: number; activeCustomers: number; collectionRate: number | null; billedShare: number | null; revenuePerActiveCustomer: number | null }[];
   revenueTimeseriesFinancials: { day: string; billed: number; collected: number; refunded: number; adjusted: number }[];
   customerFinancials: { customerId: string; customerName: string | null; billed: number; collected: number; outstanding: number; refunded: number; adjusted: number; packageId: string | null; packageName: string | null; collectedByTranMode: Record<string, number> }[];
   // Whole-customer-base aggregate stats (customer_summary topic) -- NOT a
@@ -56,6 +60,80 @@ export type DashboardData = {
   tranModeByPackage: { dimValue: string | number; byTranMode: Record<string, number> }[];
   ticketPopBreakdown: { pop: string; count: number; avgResolutionHours: number | null }[];
   ticketBreakdown: { ticketTypeId: string | number | null; ticketTypeName: string | null; count: number; avgResolutionHours: number | null }[];
+  // NEW 2026-10-01: individual ticket rows (get_ticket_list) -- real,
+  // per-ticket data, not an aggregate. department_id is the raw id only
+  // (see ticketService.getTicketList's own comment on why its name is
+  // not resolved). resolved_date is always null today -- no confirmed
+  // resolved-date column exists in the source system yet.
+  // NEW 2026-10-01: query_semantic_layer's raw result, already shaped
+  // as a table -- deliberately untyped beyond headers/rows (not a list
+  // of named fields like every other entry here) because a Cube query
+  // can ask for ANY combination of dimensions/measures the model
+  // chooses per question. report-table.ts's 'semantic_query' branch
+  // renders this as-is with no column-name hardcoding -- see that
+  // branch's own comment for why this is the generic answer to
+  // "show me whatever column/date-range I asked for", not a new
+  // per-field enum to maintain forever.
+  semanticQueryTable: { headers: string[]; rows: (string | number)[][] } | null;
+  // NEW 2026-10-01: individual customer rows (get_customer_list), with
+  // real pop/package/status names already joined in (see
+  // customerService.getCustomerList's own comment).
+  customerList: {
+    customer_id: string;
+    customer_name: string | null;
+    pop_id: string | null;
+    pop_name: string | null;
+    package_id: string | null;
+    package_name: string | null;
+    status_id: string | null;
+    status_name: string | null;
+    entry_date: string | null;
+    activated_date: string | null;
+  }[];
+  // FIX 2026-10-01: same reasoning as ticketListTotalCount below --
+  // getCustomerList can cap at 5,000 rows; this is the real total.
+  customerListTotalCount: number;
+  ticketList: {
+    ticket_sk: number;
+    source_ticket_id: number | string;
+    customer_id: string | null;
+    department_id: string | null;
+    ticket_type_id: string | null;
+    ticket_type_name: string | null;
+    opened_date: string | null;
+    resolved_date: string | null;
+    status: string | null;
+  }[];
+  // FIX 2026-10-01: the REAL total row count behind ticketList (which may
+  // be capped at getTicketList's 5,000-row ceiling) -- see that function's
+  // own comment. report-table.ts's 'ticket_list' branch uses this to add
+  // an honest "showing X of Y" note instead of silently presenting a
+  // capped slice as if it were the complete answer.
+  ticketListTotalCount: number;
+  // 2026-10-04: the exact filters behind ticketList/customerList, so the
+  // paginated table and Excel export re-query the same set server-side.
+  // Absent on reports saved before this existed.
+  ticketListFilters?: {
+    ticketTypeId: string | null;
+    departmentId: string | null;
+    status: string | null;
+    dateFrom: string | null;
+    dateTo: string | null;
+  };
+  customerFinancialsQuery?: { sortBy: string; direction: string; limit: number; dateFrom?: string; dateTo?: string };
+  customerFinancialsTotalCount?: number;
+  semanticQuery?: Record<string, unknown>;
+  chartQuery?: Record<string, unknown>;
+  semanticQueryMaxRows?: number | null;
+  semanticQueryTotalCount?: number;
+  customerListFilters?: {
+    dateField: string | null;
+    dateFrom: string | null;
+    dateTo: string | null;
+    popId: string | null;
+    packageId: string | null;
+    statusId: string | null;
+  };
   channelRevenue: { name: string; value: number; fill: string }[];
   topProducts: string[][];
   topProductsChart: { name: string; revenue: number }[];

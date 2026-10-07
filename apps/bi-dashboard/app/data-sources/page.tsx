@@ -73,7 +73,8 @@ export default function DataSourcesPage() {
     <WorkspacePage
       active="Data Sources"
       title="Data Sources"
-      subtitle="Connect another database alongside the ISP system -- each one gets its own synced copy and its own semantic model, reviewed before it goes live."
+      subtitle="PostgreSQL warehouses"
+      scroll
     >
       <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)]">
         <form onSubmit={createDataSource} className="flex gap-2">
@@ -100,11 +101,11 @@ export default function DataSourcesPage() {
           )}
           {rows.map((row) => (
             <li key={row.id} className="flex items-center justify-between py-3">
-              <Link href={`/data-sources/${row.id}`} className="text-sm font-medium text-slate-900 hover:underline">
+              <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}`} className="text-sm font-medium text-slate-900 hover:underline">
                 {row.name}
               </Link>
               <div className="flex items-center gap-4">
-                <Link href={`/data-sources/${row.id}`} className="text-xs text-slate-500 hover:text-slate-900">
+                <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}`} className="text-xs text-slate-500 hover:text-slate-900">
                   Open &rarr;
                 </Link>
                 {row.id !== 'isp-default' && (

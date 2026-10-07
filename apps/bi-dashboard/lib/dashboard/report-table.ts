@@ -31,7 +31,9 @@ export function stripTotalsRow(table: ReportTable): (string | number)[][] {
   const { rows } = table;
   if (!rows.length) return rows;
   const lastLabel = String(rows[rows.length - 1][0]);
-  return lastLabel.startsWith('Total (') || lastLabel === 'Total' ? rows.slice(0, -1) : rows;
+  return lastLabel.startsWith('Total (') || lastLabel === 'Total' || lastLabel.startsWith('Showing ')
+    ? rows.slice(0, -1)
+    : rows;
 }
 
 // FIX 2026-09-17: every table now gets a final Totals row appended.
@@ -133,10 +135,18 @@ export function getReportTable(
   // which is correct, but it means the 'customers' topic doesn't actually
   // have a real table to show yet.
   if (topic === 'customers') {
+    if (typeof data.activeCustomerCount === 'number') return { headers: ['Metric', 'Count'], rows: [['Active customers', data.activeCustomerCount]] };
     return withTotalsRow({
       headers: ['Customer', 'Orders'],
       rows: data.topCustomersByOrders.map((row) => [row.name, row.orders]),
     });
+  }
+
+  if ((topic === 'billing' || topic === 'collections') && data.financialSummary) {
+    const summary = data.financialSummary;
+    const metrics: [keyof typeof summary, string][] = [['billed', 'Total billed'], ['collected', 'Total collected'], ['refunded', 'Total refunded'], ['adjusted', 'Total adjusted'], ['outstanding', 'Outstanding balance']];
+    const selected = metrics.filter(([key]) => !data.requestedMetrics?.length || data.requestedMetrics.includes(key));
+    return { headers: ['Metric', 'Amount (BDT)'], rows: selected.map(([key, name]) => [name, summary[key]]) };
   }
 
   if (topic === 'tickets') {
@@ -174,6 +184,108 @@ export function getReportTable(
     );
   }
 
+  // NEW 2026-10-01: 'ticket_list' backs get_ticket_list -- INDIVIDUAL
+  // ticket rows, not an aggregate, so this intentionally does NOT go
+  // through buildColumnTable (that helper is for one-row-per-dimension-
+  // value breakdowns with a Totals row; a Totals row makes no sense for a
+  // list of distinct tickets). This used to have no branch at all here --
+  // the model's own get_ticket_list result had nowhere valid to render,
+  // which is the exact bug this fixes: every real column below, not just
+  // whichever fields happened to make it into the narrative text.
+  // department_id is the RAW id only (see getTicketList's own comment --
+  // the GroupID -> name mapping is still unverified, so this never
+  // invents a department name). resolved_date is always "Not available
+  // yet" today -- no confirmed resolved-date column exists in the source
+  // system yet; opened_date (creation time) is always real.
+  // NEW 2026-10-01: 'semantic_query' backs query_semantic_layer (Cube) --
+  // the ONE truly generic branch in this file. Every other branch above
+  // hardcodes which columns exist for its topic; this one deliberately
+  // does not, because a Cube query can ask for any combination of
+  // dimensions/measures the model chooses per question ("just customer
+  // and status", "every column", "pop name and total billed for a date
+  // range" -- all the SAME code path here, no per-field work ever
+  // required again). data.semanticQueryTable already arrives as
+  // {headers, rows} built directly from Cube's own result keys (see
+  // agent.mjs's buildSemanticQueryTable) -- this just passes it through.
+  // NEW 2026-10-01: 'customer_list' backs get_customer_list -- same
+  // column-selection pattern as ticket_list (requestedMetrics narrows it,
+  // defaults to every column). Customer ID/Name are always shown (row
+  // identity); the rest are optional.
+  if (topic === 'customer_list') {
+    const CUSTOMER_LIST_COLUMNS: Record<string, { header: string; get: (row: DashboardData['customerList'][number]) => string }> = {
+      popName: { header: 'POP', get: (row) => row.pop_name ?? (row.pop_id ? `POP ${row.pop_id}` : 'Unknown') },
+      packageName: { header: 'Package', get: (row) => row.package_name ?? (row.package_id ? `Package ${row.package_id}` : 'Unknown') },
+      statusName: { header: 'Status', get: (row) => row.status_name ?? (row.status_id ? `Status ${row.status_id}` : 'Unknown') },
+      entryDate: { header: 'Entry Date', get: (row) => (row.entry_date ? new Date(row.entry_date).toISOString().slice(0, 10) : 'Unknown') },
+      activatedDate: { header: 'Activated Date', get: (row) => (row.activated_date ? new Date(row.activated_date).toISOString().slice(0, 10) : 'Not activated') },
+    };
+    const requested = (data.requestedMetrics ?? []).filter((m) => m in CUSTOMER_LIST_COLUMNS);
+    const activeColumns = requested.length ? requested : Object.keys(CUSTOMER_LIST_COLUMNS);
+    const headers = ['Customer', ...activeColumns.map((key) => CUSTOMER_LIST_COLUMNS[key].header)];
+    const rows = (data.customerList ?? []).map((row) => [
+      row.customer_name ?? row.customer_id,
+      ...activeColumns.map((key) => CUSTOMER_LIST_COLUMNS[key].get(row)),
+    ]);
+    // FIX 2026-10-01: same fix as ticket_list below -- getCustomerList
+    // can cap at 5,000 rows; say so honestly instead of staying silent.
+    // 2026-10-04: the "Showing X of Y" notice row was removed -- list
+    // tables are now paginated server-side (PaginatedListTable).
+    return { headers, rows };
+  }
+
+  if (topic === 'semantic_query') {
+    return data.semanticQueryTable ?? { headers: ['No data'], rows: [] };
+  }
+
+  if (topic === 'ticket_list') {
+    // FIX 2026-10-01: this used to hardcode all 7 columns unconditionally
+    // -- "show me just the status and opened date for these tickets" had
+    // no way to narrow it, unlike every aggregate table in this file,
+    // which already honors requestedMetrics. Same mechanism here now:
+    // the Ticket ID column is always first (it's the row identity, same
+    // convention as every other branch's idHeader/idGetter), the rest
+    // follow whichever columns were actually requested, or all of them if
+    // none were named. The chart downstream (auto-report-chart.tsx) reads
+    // ONLY these exact headers/rows -- there is no separate data path for
+    // it -- so narrowing the table's columns here is also what restricts
+    // any chart built from this answer to the same columns, automatically.
+    const TICKET_LIST_COLUMNS: Record<string, { header: string; get: (row: DashboardData['ticketList'][number]) => string }> = {
+      customerId: { header: 'Customer', get: (row) => row.customer_id ?? 'Unknown' },
+      departmentId: { header: 'Department', get: (row) => row.department_id ?? 'Unassigned' },
+      ticketTypeName: {
+        header: 'Ticket Type',
+        get: (row) => row.ticket_type_name ?? (row.ticket_type_id ? `Type ${row.ticket_type_id}` : 'Unknown'),
+      },
+      openedDate: {
+        header: 'Opened Date',
+        get: (row) => (row.opened_date ? new Date(row.opened_date).toISOString().slice(0, 10) : 'Unknown'),
+      },
+      resolvedDate: {
+        header: 'Resolved Date',
+        get: (row) => (row.resolved_date ? new Date(row.resolved_date).toISOString().slice(0, 10) : 'Not available yet'),
+      },
+      status: { header: 'Status', get: (row) => row.status ?? 'Unknown' },
+    };
+    const requested = (data.requestedMetrics ?? []).filter((m) => m in TICKET_LIST_COLUMNS);
+    const activeColumns = requested.length ? requested : Object.keys(TICKET_LIST_COLUMNS);
+    const headers = ['Ticket ID', ...activeColumns.map((key) => TICKET_LIST_COLUMNS[key].header)];
+    const rows = (data.ticketList ?? []).map((row) => [
+      String(row.source_ticket_id ?? row.ticket_sk),
+      ...activeColumns.map((key) => TICKET_LIST_COLUMNS[key].get(row)),
+    ]);
+    // FIX 2026-10-01: getTicketList caps at 5,000 rows (see its own
+    // comment) -- real bug found live: a "full" request for a 41,500-row
+    // category rendered only the first slice with NOTHING telling the
+    // user it was partial, which read as "the system found 20 tickets"
+    // instead of "the system is showing 5,000 of 41,500". When the real
+    // total is bigger than what's shown, append one honest notice row
+    // (stripTotalsRow above now recognizes and excludes this from any
+    // chart, same as a real Totals row) instead of staying silent.
+    // 2026-10-04: the "Showing X of Y" notice row was removed -- list
+    // tables are now paginated server-side (PaginatedListTable).
+    return { headers, rows };
+  }
+
   // NEW 2026-09-17: 'packages' backs get_package_financials -- billed,
   // collected, outstanding, AND active customer count together, one row
   // per package/plan. Collected-by-package used to be genuinely
@@ -186,9 +298,11 @@ export function getReportTable(
     // just that column. collectionRate/billedShare/revenuePerActiveCustomer
     // stay narrative-only per the earlier explicit "don't add rows"
     // instruction.
-    const PKG_METRIC_COLUMNS: Record<string, { header: string; get: (row: DashboardData['packageFinancials'][number]) => number }> = {
+    const PKG_METRIC_COLUMNS: Record<string, { header: string; get: (row: DashboardData['packageFinancials'][number]) => string | number }> = {
       billed: { header: 'Total Billed', get: (row) => row.billed },
       collected: { header: 'Total Collected', get: (row) => row.collected },
+      refunded: { header: 'Total Refunded', get: (row) => row.refunded ?? 'Unavailable' },
+      adjusted: { header: 'Total Adjusted', get: (row) => row.adjusted ?? 'Unavailable' },
       outstanding: { header: 'Outstanding', get: (row) => row.outstanding },
       activeCustomers: { header: 'Active Customers', get: (row) => row.activeCustomers },
     };
@@ -400,7 +514,8 @@ export function getReportTable(
     // entirely per the earlier explicit "don't add rows" instruction --
     // they're only ever used in the narrative sentence (agent.mjs's
     // buildDeterministicInsight).
-    const POP_METRIC_COLUMNS: Record<string, { header: string; get: (row: DashboardData['popFinancials'][number]) => number }> = {
+    const POP_METRIC_COLUMNS: Record<string, { header: string; get: (row: DashboardData['popFinancials'][number]) => string | number }> = {
+      ...(data.popFinancials.some((row) => row.popName) ? { popName: { header: 'POP Name', get: (row: DashboardData['popFinancials'][number]) => row.popName ?? 'Unavailable' } } : {}),
       billed: { header: 'Total Billed', get: (row) => row.billed },
       collected: { header: 'Total Collected', get: (row) => row.collected },
       refunded: { header: 'Total Refunded', get: (row) => row.refunded },

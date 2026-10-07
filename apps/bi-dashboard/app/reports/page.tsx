@@ -11,6 +11,7 @@ type ReportRow = {
   title: string;
   narrative: string;
   created_at: string;
+  parent_report_id: number | null;
 };
 
 export default function ReportsPage() {

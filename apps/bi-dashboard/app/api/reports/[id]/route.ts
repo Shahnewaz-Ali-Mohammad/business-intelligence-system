@@ -9,7 +9,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   const db = getAppDb();
   const [rows] = await db.execute(
-    'SELECT id, title, narrative, topic, chart_type, filters, tables_used, data, chart_spec, created_at FROM generated_reports WHERE id = ? AND user_id = ?',
+    'SELECT id, title, narrative, topic, chart_type, filters, tables_used, data, chart_spec, source_session_id, created_at FROM generated_reports WHERE id = ? AND user_id = ?',
     [id, user.id],
   );
   const list = rows as Array<Record<string, unknown>>;
@@ -28,7 +28,22 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     data: parseJsonColumn(row.data),
     chart_spec: parseJsonColumn(row.chart_spec),
   };
-  return NextResponse.json({ report });
+
+  // Other reports saved from the SAME real chat session -- shown as
+  // "Other reports from this chat" instead of a maintained parent/child
+  // version tree, since the real conversation (not a copy of it) is the
+  // actual source of truth for how these reports relate to each other.
+  let siblingReports: Array<{ id: number; title: string; created_at: string }> = [];
+  const sourceSessionId = row.source_session_id as number | null;
+  if (sourceSessionId) {
+    const [siblingRows] = await db.execute(
+      'SELECT id, title, created_at FROM generated_reports WHERE source_session_id = ? AND user_id = ? AND id != ? ORDER BY created_at DESC',
+      [sourceSessionId, user.id, id],
+    );
+    siblingReports = siblingRows as Array<{ id: number; title: string; created_at: string }>;
+  }
+
+  return NextResponse.json({ report, siblingReports });
 }
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -85,6 +100,17 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   if (!affected) return NextResponse.json({ deleted: false }, { status: 404 });
 
   return NextResponse.json({ deleted: true });
+}
+
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: 'Sign in to save graph settings.' }, { status: 401 });
+  const { id } = await params;
+  const body = await req.json().catch(() => null);
+  const spec = body?.chartSpec;
+  if (spec !== null && (!spec || typeof spec !== 'object' || Array.isArray(spec) || JSON.stringify(spec).length > 20000)) return NextResponse.json({ error: 'Invalid graph settings.' }, { status: 400 });
+  const [result] = await getAppDb().execute('UPDATE generated_reports SET chart_spec=? WHERE id=? AND user_id=?', [spec ? JSON.stringify(spec) : null, id, user.id]);
+  return (result as { affectedRows: number }).affectedRows ? NextResponse.json({ updated: true }) : NextResponse.json({ error: 'Report not found.' }, { status: 404 });
 }
 
 function parseJsonColumn(value: unknown): unknown {

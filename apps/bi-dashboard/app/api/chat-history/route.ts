@@ -38,7 +38,11 @@ export async function POST(req: NextRequest) {
     // can render the exact same report again, not just this message's
     // plain text. Only ever present on an assistant message that actually
     // generated one; undefined/null for a plain answer.
-    await db.execute(
+    const reportJson = reportData ? JSON.stringify(reportData) : null;
+    if (reportJson) {
+      console.log(`[chat-history] saving ${role} message with report_data of ${(reportJson.length / 1024).toFixed(0)} KB`);
+    }
+    const [insert] = await db.execute(
       'INSERT INTO chat_messages (user_id, session_id, role, content, tables_used, report_data) VALUES (?, ?, ?, ?, ?, ?)',
       [
         user.id,
@@ -46,7 +50,7 @@ export async function POST(req: NextRequest) {
         role,
         content,
         tablesUsed ? JSON.stringify(tablesUsed) : null,
-        reportData ? JSON.stringify(reportData) : null,
+        reportJson,
       ],
     );
 
@@ -60,9 +64,28 @@ export async function POST(req: NextRequest) {
       await db.execute('UPDATE chat_sessions SET updated_at = NOW() WHERE id = ?', [sessionId]);
     }
 
-    return NextResponse.json({ saved: true });
+    return NextResponse.json({ saved: true, id: (insert as { insertId: number }).insertId });
   } catch (error) {
-    console.error('chat-history save failed:', error);
-    return NextResponse.json({ error: 'Could not save message.' }, { status: 500 });
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[chat-history] save failed:', detail);
+    return NextResponse.json({ error: 'Could not save message.', detail }, { status: 500 });
   }
+}
+
+export async function PATCH(req: NextRequest) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: 'Not signed in.' }, { status: 401 });
+  const { messageId, reportId } = await req.json().catch(() => ({}));
+  if (!Number.isSafeInteger(messageId) || !Number.isSafeInteger(reportId)) return NextResponse.json({ error: 'Message and report IDs are required.' }, { status: 400 });
+  const db = getAppDb();
+  // Copy only the owner's saved report settings into its original message.
+  const [result] = await db.execute(
+    `UPDATE chat_messages m JOIN generated_reports r ON r.id = ? AND r.user_id = m.user_id AND r.source_session_id = m.session_id
+     SET m.report_data = JSON_SET(m.report_data, '$.chartSpec', JSON_EXTRACT(COALESCE(r.chart_spec, '{}'), '$'), '$.savedReportId', r.id)
+     WHERE m.id = ? AND m.user_id = ? AND m.role = 'assistant' AND m.report_data IS NOT NULL
+       AND JSON_UNQUOTE(JSON_EXTRACT(m.report_data, '$.title')) = r.title AND m.content = r.narrative`,
+    [reportId, messageId, user.id],
+  );
+  if (!(result as { affectedRows: number }).affectedRows) return NextResponse.json({ error: 'Unknown message or report.' }, { status: 404 });
+  return NextResponse.json({ saved: true });
 }

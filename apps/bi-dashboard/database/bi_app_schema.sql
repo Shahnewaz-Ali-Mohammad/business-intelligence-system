@@ -13,7 +13,7 @@ CREATE DATABASE IF NOT EXISTS bi_app
 
 -- Dedicated read-write user, scoped ONLY to bi_app. Change this password
 -- before running in anything but local dev, then update .env.local to match.
-CREATE USER IF NOT EXISTS 'bi_app_user'@'localhost' IDENTIFIED BY 'bi_app_password';
+CREATE USER IF NOT EXISTS 'bi_app_user'@'localhost' IDENTIFIED BY 'REPLACE_WITH_APP_DB_PASSWORD';
 GRANT SELECT, INSERT, UPDATE, DELETE ON bi_app.* TO 'bi_app_user'@'localhost';
 FLUSH PRIVILEGES;
 
@@ -299,3 +299,128 @@ CREATE TABLE IF NOT EXISTS workspace_sync_runs (
 
 INSERT IGNORE INTO workspaces (id, name, owner_user_id)
 SELECT 'isp-default', 'ISP (existing production)', MIN(id) FROM users;
+
+-- ============================================================================
+-- Migration 2026-10-01: report history/versioning. A saved report used to
+-- be a dead end -- no record of the question that produced it, and no way
+-- to ask a follow-up ("now just Dhaka") and get a new report that's
+-- clearly a continuation of the first, not an unrelated one. Two columns:
+-- `context` (the question + a short prior-turn history that produced this
+-- report -- NOT the full chat session, just enough to hand back to the
+-- agent as conversational context for a regenerate) and `parent_report_id`
+-- (self-referencing -- set only when this report was created via
+-- "Regenerate" from another saved report, forming a version chain). A
+-- report saved before this migration has both NULL -- it's simply a report
+-- with no recorded history and no parent, same degrade-gracefully pattern
+-- as chart_spec above. ON DELETE SET NULL (not CASCADE) on the self-FK:
+-- deleting a parent report must never delete its children's history, it
+-- just orphans them to "no parent" -- a child report is a real, independently
+-- saved report in its own right. Safe to re-run: uses IF NOT EXISTS everywhere.
+-- ============================================================================
+USE bi_app;
+
+SET @has_context_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'context'
+);
+SET @sql_add_context = IF(@has_context_col = 0,
+  'ALTER TABLE generated_reports ADD COLUMN context JSON NULL AFTER chart_spec',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_context;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @has_parent_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'parent_report_id'
+);
+SET @sql_add_parent = IF(@has_parent_col = 0,
+  'ALTER TABLE generated_reports ADD COLUMN parent_report_id INT UNSIGNED NULL AFTER context',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_parent;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @has_parent_fk = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND CONSTRAINT_NAME = 'fk_generated_reports_parent'
+);
+SET @sql_add_parent_fk = IF(@has_parent_fk = 0,
+  'ALTER TABLE generated_reports ADD CONSTRAINT fk_generated_reports_parent FOREIGN KEY (parent_report_id) REFERENCES generated_reports(id) ON DELETE SET NULL',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_parent_fk;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @has_parent_idx = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND INDEX_NAME = 'idx_parent_report_id'
+);
+SET @sql_add_parent_idx = IF(@has_parent_idx = 0,
+  'ALTER TABLE generated_reports ADD INDEX idx_parent_report_id (parent_report_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_parent_idx;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ============================================================================
+-- Migration 2026-10-03: link a saved report back to the real chat session
+-- it was generated from, instead of snapshotting a frozen copy of the
+-- conversation (the `context`/`parent_report_id` columns added 2026-10-01,
+-- now unused -- left in place rather than dropped, since dropping a column
+-- is a one-way, higher-risk change and these are harmless sitting empty).
+-- A snapshot goes stale the moment the real conversation moves on, and
+-- regenerating from it needs a second code path that duplicates the real
+-- chat pipeline's own logic -- exactly the kind of duplicated logic that
+-- caused the column-selection bug fixed the same week (two copies of the
+-- same list, one forgotten to update). Linking to the real session instead
+-- means "continue this report's conversation" is just opening /chat?session=X,
+-- the actual, full, untruncated conversation, with zero duplicated logic.
+-- ON DELETE SET NULL (not CASCADE): deleting a chat session must never
+-- delete a report someone saved from it -- the report stands on its own,
+-- it just loses the "continue in chat" link. Safe to re-run: uses IF NOT
+-- EXISTS everywhere.
+-- ============================================================================
+USE bi_app;
+
+SET @has_source_session_col = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'source_session_id'
+);
+SET @sql_add_source_session = IF(@has_source_session_col = 0,
+  'ALTER TABLE generated_reports ADD COLUMN source_session_id INT UNSIGNED NULL AFTER parent_report_id',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_source_session;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @has_source_session_fk = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND CONSTRAINT_NAME = 'fk_generated_reports_source_session'
+);
+SET @sql_add_source_session_fk = IF(@has_source_session_fk = 0,
+  'ALTER TABLE generated_reports ADD CONSTRAINT fk_generated_reports_source_session FOREIGN KEY (source_session_id) REFERENCES chat_sessions(id) ON DELETE SET NULL',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_source_session_fk;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @has_source_session_idx = (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND INDEX_NAME = 'idx_source_session_id'
+);
+SET @sql_add_source_session_idx = IF(@has_source_session_idx = 0,
+  'ALTER TABLE generated_reports ADD INDEX idx_source_session_id (source_session_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql_add_source_session_idx;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- A removed warehouse must not silently redirect its chats to ISP data.
+SET @has_warehouse_id = (SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'chat_sessions' AND column_name = 'warehouse_id');
+SET @warehouse_migration = IF(@has_warehouse_id = 0,
+  'ALTER TABLE chat_sessions ADD COLUMN warehouse_id VARCHAR(64) NULL', 'SELECT 1');
+PREPARE warehouse_stmt FROM @warehouse_migration;
+EXECUTE warehouse_stmt;
+DEALLOCATE PREPARE warehouse_stmt;

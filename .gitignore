@@ -19,3 +19,4 @@ apps/bi-dashboard/scripts/chat/*.csv
 apps/bi-warehouse/_tmp_orphan_check.mjs
 __pycache__/
 *.pyc
+cube/.cubestore/

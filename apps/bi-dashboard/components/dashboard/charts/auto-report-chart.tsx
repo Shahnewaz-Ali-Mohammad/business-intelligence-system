@@ -8,6 +8,7 @@
 // many rows) -- the auto-picked spec is a sensible default, never a
 // locked-in choice; the user can always override it in place.
 import { useEffect, useState } from 'react';
+import { SharedReportCharts } from './shared-report-charts';
 import {
   Bar,
   BarChart,
@@ -27,6 +28,7 @@ import { BarChart3, LineChart as LineChartIcon, PieChart as PieChartIcon, Trendi
 import {
   getRowLimitOptions,
   isDateLikeHeader,
+  MAX_CHARTABLE_ROWS,
   type ChartGroup,
   type ChartKind,
   type ChartSpec,
@@ -160,7 +162,23 @@ function ChartGroupCard({
     // starting fresh -- a reopened report should show the same measures
     // the user last chose, not silently reset to "everything visible".
     hiddenMeasures: new Set(group.hiddenMeasureIndices ?? []),
-    rowLimit: group.rowIndices.length,
+    // FIX 2026-10-01, revised same day: this used to default to
+    // group.rowIndices.length, capped at MAX_BAR_ROWS (20) -- a 55-ticket-
+    // type breakdown silently showed only the first 20 labels. That was
+    // fixed by defaulting to table.rows.length (the TRUE total), but that
+    // went too far the other way: a row-level ticket_list/customer_list
+    // table can now be up to 5,000 rows (see getTicketList's own comment),
+    // and a 5,000-bar chart is both unreadable and a real, measured
+    // performance problem (visibly laggy rendering). MAX_CHARTABLE_ROWS
+    // (200) is the real fix -- generous enough that essentially every
+    // aggregate breakdown (POPs, packages, ticket types, all well under
+    // 200 distinct values) still shows every category by default, exactly
+    // like the fix intended, while a huge row-level table now defaults to
+    // a legible, fast top-200 instead of trying to plot all 5,000 rows.
+    // The dropdown (getRowLimitOptions, same cap) still lets someone
+    // narrow further; the full data is always still in the table/export
+    // below, completely unaffected by this chart-only cap.
+    rowLimit: Math.min(table.rows.length, MAX_CHARTABLE_ROWS),
     donutMeasureIndex: group.donutMeasureIndex ?? defaultDonutMeasure,
     paretoMeasureIndex: group.paretoMeasureIndex ?? defaultDonutMeasure,
   });
@@ -658,9 +676,11 @@ export function AutoReportChart({
   table,
   spec,
   onSpecChange,
+  query,
 }: {
   table: ReportTable;
   spec: ChartSpec;
+  query?: Record<string, unknown>;
   // Fires with the FULL updated spec (all groups, not just the one that
   // changed) whenever any single chart's edit changes -- this is exactly
   // the shape the Reports page's chart_spec column stores, so a caller
@@ -669,12 +689,13 @@ export function AutoReportChart({
   // chat panel).
   onSpecChange?: (spec: ChartSpec) => void;
 }) {
+  if (query) return <SharedReportCharts query={query} spec={spec} onSpecChange={onSpecChange} />;
   if (!spec.groups.length) return null;
 
   function handleGroupChange(index: number, updated: ChartGroup) {
     if (!onSpecChange) return;
     const groups = spec.groups.map((g, i) => (i === index ? updated : g));
-    onSpecChange({ groups });
+    onSpecChange({ ...spec, groups });
   }
 
   return (
