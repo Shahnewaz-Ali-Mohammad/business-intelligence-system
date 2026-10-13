@@ -50,3 +50,29 @@ test('specific records answer with their actual fields, not single-row averages'
   assert.equal(text, 'TicketId: 0001; Amount: 1; Status: Open; LinkId: not available.');
   assert.ok(!/average|median|100%/.test(text));
 });
+
+test('insights publish checked sentences while the model is still generating', async () => {
+  const received = [];
+  const text = await writeAnalyticalInsight({ question: 'Explain', summary, onText: (text) => received.push(text) }, undefined, async function* (messages) {
+    assert.deepEqual(JSON.parse(messages[1].content).summary, summary);
+    yield { narrative: 'The average is 1,001' };
+    assert.equal(received.length, 0);
+    yield { narrative: 'The average is 1,001. The minimum' };
+    assert.deepEqual(received, ['The average is 1,001.']);
+    yield { narrative: 'The average is 1,001. The minimum is 1.' };
+  });
+  assert.equal(text, 'The average is 1,001. The minimum is 1.');
+});
+test('unsafe streaming wording falls back without exposing the rejected sentence', async () => {
+  const received = [];
+  const text = await writeAnalyticalInsight({ question: 'Explain', summary, onText: (text) => received.push(text) }, undefined, async function* () {
+    yield { narrative: 'The average is BDT 1,001. Next' };
+  });
+  assert.deepEqual(received, []);
+  assert.match(text, /verified database statistics/);
+});
+test('cancelled insight generation does not manufacture a fallback answer', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('Cancelled'));
+  await assert.rejects(writeAnalyticalInsight({ question: 'Explain', summary, signal: controller.signal, onText() {} }, undefined, async function* () { throw new Error('Cancelled'); }), /Cancelled/);
+});

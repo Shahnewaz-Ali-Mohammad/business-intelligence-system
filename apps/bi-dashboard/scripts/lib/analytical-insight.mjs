@@ -32,7 +32,7 @@ export function groundedNarrative(text, summary, currency) {
   }).filter((sentence) => !/symmetr|\bskew|balanced distribution|significant outlier|normal distribution|concentration around/i.test(sentence)).join(' ');
 }
 
-export async function writeAnalyticalInsight({ question, summary, warnings = [], currency, signal, records }, invoke) {
+export async function writeAnalyticalInsight({ question, summary, warnings = [], currency, signal, records, onText }, invoke, streamWriter) {
   if (records?.length && records.length <= 5) {
     return records.map((record, index) => `${records.length > 1 ? `Record ${index + 1}: ` : ''}${Object.entries(record).map(([field, value]) => `${field}: ${value == null ? 'not available' : String(value)}`).join('; ')}.`).join(' ');
   }
@@ -44,8 +44,23 @@ export async function writeAnalyticalInsight({ question, summary, warnings = [],
   payload.groupLabelMeaning = 'Name the actual highest/lowest groups using their labels. A null label means Missing (NULL); an empty-string label means Empty string. They are different groups. Complete metric counts do not imply complete category/identifier values.';
   try {
     const call = invoke || ((messages) => new ChatOpenAI({ model: process.env.OPENAI_INSIGHT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0, timeout: 20000, maxRetries: 0 }).withStructuredOutput(z.object({ narrative: z.string() })).invoke(messages, { signal }));
-    const result = await call([{ role: 'system', content: `${INSIGHT_PROMPT} Equal mean and median alone do NOT establish symmetry, normality or absence of skew; never make that inference. Do not generalize missing-value coverage of summarized fields to all columns. highestGroups and lowestGroups contain at most THREE EXAMPLES, not all tied groups. Use each example's tiedGroupCount for the number of tied groups; never infer that count from the example array length. For a single scalar aggregate, answer directly in one sentence; its mean/median/min/max across one result are not additional insights. If currency context is absent, do not attach any currency name, code or symbol to Amount or other numeric fields. ElapsedHours is not automatically resolution time; do not relabel a metric or invent its meaning. For a ranked report, explicitly distinguish full-population statistics from the limited top-N table.` }, { role: 'user', content: JSON.stringify(payload) }]);
-    if (!result.narrative?.trim()) throw new Error('Empty insight');
+    const messages = [{ role: 'system', content: `${INSIGHT_PROMPT} Equal mean and median alone do NOT establish symmetry, normality or absence of skew; never make that inference. Do not generalize missing-value coverage of summarized fields to all columns. highestGroups and lowestGroups contain at most THREE EXAMPLES, not all tied groups. Use each example's tiedGroupCount for the number of tied groups; never infer that count from the example array length. For a single scalar aggregate, answer directly in one sentence; its mean/median/min/max across one result are not additional insights. If currency context is absent, do not attach any currency name, code or symbol to Amount or other numeric fields. ElapsedHours is not automatically resolution time; do not relabel a metric or invent its meaning. For a ranked report, explicitly distinguish full-population statistics from the limited top-N table.` }, { role: 'user', content: JSON.stringify(payload) }];
+    let result;
+    if (onText && !invoke) {
+      const stream = streamWriter ? await streamWriter(messages, { signal }) : await new ChatOpenAI({ model: process.env.OPENAI_INSIGHT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0, timeout: 20000, maxRetries: 0 }).withStructuredOutput(z.object({ narrative: z.string() })).stream(messages, { signal });
+      for await (const partial of stream) {
+        result = partial;
+        // Validate complete sentences before showing them; never expose raw JSON
+        // or a draft that bypasses the existing grounding checks.
+        const draft = partial.narrative || '';
+        const boundary = [...draft.matchAll(/[.!?](?=\s)/g)].at(-1)?.index;
+        if (boundary != null) {
+          const safe = groundedNarrative(draft.slice(0, boundary + 1), summary, currency);
+          if (safe) onText(safe);
+        }
+      }
+    } else result = await call(messages);
+    if (!result?.narrative?.trim()) throw new Error('Empty insight');
     const narrative = groundedNarrative(result.narrative.trim(), summary, currency);
     if (!narrative) throw new Error('Unsupported insight');
     return `${narrative}${summary.rankingLimit ? ` These statistics cover all matching data before the requested top-${summary.rankingLimit} table limit.` : ''}`;

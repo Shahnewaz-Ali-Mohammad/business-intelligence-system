@@ -19,7 +19,7 @@ const value = (member, number) => {
   return /billed|collected|refunded|adjusted|outstanding|transaction_amount/.test(member) ? `BDT ${formatted}` : formatted;
 };
 
-export async function describeQuery(query, page, title, load = querySemanticLayer, question = title) {
+export async function describeQuery(query, page, title, load = querySemanticLayer, question = title, onText) {
   const root = (query.measures?.[0] || query.dimensions?.[0] || query.timeDimensions?.[0]?.dimension)?.split('.')[0];
   const cube = CUBE_CATALOG.find((c) => c.name === root);
   const reportTitle = title?.trim() && title !== 'Query Results' ? title.trim() : `${root?.replace(/^Isp/, '') || 'Data'} Report`;
@@ -38,7 +38,7 @@ export async function describeQuery(query, page, title, load = querySemanticLaye
         finally { client.release(); }
       });
       const records = !query.measures?.length && page.total <= 5 ? page.rows : undefined;
-      const insight = await writeAnalyticalInsight({ question, summary, records, currency: 'BDT' });
+      const insight = await writeAnalyticalInsight({ question, summary, records, currency: 'BDT', onText: onText ? (text) => onText(`${page.total.toLocaleString()} matching ${query.measures?.length ? 'result groups' : 'records'}. ${text}`) : undefined });
       return { title: reportTitle, narrative: `${page.total.toLocaleString()} matching ${query.measures?.length ? 'result groups' : 'records'}. ${insight}` };
     } catch (error) {
       console.error('[insight] Analytical statistics unavailable:', error.message);
