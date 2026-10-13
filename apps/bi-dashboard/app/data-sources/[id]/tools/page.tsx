@@ -677,9 +677,12 @@ export default function ToolSetupPage({
                   </div>
                 )}
                 <BusinessNotes
-                  key={sourceId}
+                  key={`${sourceId}:${setup.sources.find((s) => s.id === sourceId)?.notes || ""}`}
                   initial={setup.sources.find((s) => s.id === sourceId)?.notes || ""}
                   busy={!!busy}
+                  drafting={busy === "draftNotes"}
+                  canDraft={consent}
+                  onDraft={() => action({ action: "draftNotes", sourceId, objectIds: Object.entries(selected).filter(([, cols]) => cols.length).map(([oid]) => oid), consent: true }, () => setNotice("Business notes drafted from your database. Review them and edit anything that is wrong, then generate tools."))}
                   onSave={(notes) => action({ action: "saveNotes", sourceId, notes }, () => setNotice("Business notes saved. They are used the next time you generate tools and in this database's chat."))}
                 />
                 <label className="block space-y-1 text-sm">
@@ -700,8 +703,9 @@ export default function ToolSetupPage({
                     onChange={(e) => setConsent(e.target.checked)}
                   />
                   I approve sending selected object names, columns,
-                  relationships, business notes and this request to OpenAI. No rows or
-                  credentials are included.
+                  relationships, business notes, this request, and the most common values of
+                  code-like columns (for example status or type) to OpenAI. No other rows
+                  or credentials are included.
                 </label>
                 {!busy && resumableJob && <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-600"><span>Completed schema groups are saved.</span><button type="button" className={buttonClass} onClick={()=>action({action:'resumeGeneration',jobId:resumableJob},()=>setNotice('Generation completed; drafts saved for review.'))}>Resume generation</button></div>}
                 {busy === 'generate' && <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3 text-sm text-zinc-600">
@@ -1047,26 +1051,31 @@ export default function ToolSetupPage({
 
 // Owner-written context that makes generated tools accurate: what tables
 // mean, status/type codes, money columns, and how metrics are defined.
-function BusinessNotes({ initial, busy, onSave }: { initial: string; busy: boolean; onSave: (notes: string) => void }) {
+function BusinessNotes({ initial, busy, drafting, canDraft, onDraft, onSave }: { initial: string; busy: boolean; drafting: boolean; canDraft: boolean; onDraft: () => void; onSave: (notes: string) => void }) {
   const [notes, setNotes] = useState(initial);
   return (
     <div className="space-y-1 text-sm">
       <label className="block space-y-1">
         <span>Business notes</span>
         <span className="block text-xs text-zinc-500">
-          Explain this database in plain words: what the main tables hold, what status or type codes mean, which columns are money (and the currency), and how you calculate key figures. Tools are generated from these notes, so the more precise they are, the better the tools.
+          Drafted automatically from your tables, relationships and the codes found in the data. Check them and correct anything wrong -- tools and chat answers follow these notes. Lines marked &quot;(please confirm)&quot; are guesses.
         </span>
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder={"e.g. Tickets: one row per support ticket. TicketStatusID 1 = Open, 2 = Resolved.\nBillingMaster: Amount is in BDT; Debit = billed, Credit = collected.\nOutstanding = billed minus collected per customer."}
+          placeholder={drafting ? "Drafting notes from your database..." : "No notes yet. Click \"Draft notes automatically\", or they will be drafted when you generate tools."}
           maxLength={8000}
-          className="min-h-28 w-full rounded-md border border-zinc-300 p-3 text-sm"
+          className="min-h-40 w-full rounded-md border border-zinc-300 p-3 text-sm"
         />
       </label>
-      <button type="button" disabled={busy || notes.trim() === initial.trim()} onClick={() => onSave(notes)} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium disabled:opacity-40">
-        Save notes
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={busy || !canDraft} onClick={onDraft} title={canDraft ? "" : "Tick the approval box below first"} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium disabled:opacity-40">
+          {drafting ? "Drafting..." : initial.trim() ? "Redraft notes automatically" : "Draft notes automatically"}
+        </button>
+        <button type="button" disabled={busy || notes.trim() === initial.trim()} onClick={() => onSave(notes)} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium disabled:opacity-40">
+          Save edits
+        </button>
+      </div>
     </div>
   );
 }
