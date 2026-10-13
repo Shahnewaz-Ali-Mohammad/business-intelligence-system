@@ -81,14 +81,12 @@ export default function ToolSetupPage({
     port: 1433,
     username: "",
     password: "",
-    database: "master",
+    database: "",
     tls: true,
     trustServerCertificate: false,
   });
   const [name, setName] = useState("");
   const [serverId, setServerId] = useState("");
-  const [databases, setDatabases] = useState<string[]>([]);
-  const [database, setDatabase] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -335,7 +333,7 @@ export default function ToolSetupPage({
                 { action: "connect", name: name || config.host, config },
                 (data) => {
                   setServerId(String(data.serverId));
-                  setDatabases(data.databases as string[]);
+
                   setConfig((c) => ({ ...c, password: "" }));
                   setNotice(
                     String(data.warning || "Connection verified and saved."),
@@ -369,12 +367,7 @@ export default function ToolSetupPage({
                         : dialect === "mysql"
                           ? 3306
                           : 5432,
-                    database:
-                      dialect === "sqlserver"
-                        ? "master"
-                        : dialect === "mysql"
-                          ? "mysql"
-                          : "postgres",
+                    database: "",
                   }));
                 }}
                 className={inputClass}
@@ -434,7 +427,7 @@ export default function ToolSetupPage({
               />
             </label>
             <label className="space-y-1 text-sm">
-              Initial database
+              Database
               <input
                 required
                 value={config.database}
@@ -482,7 +475,7 @@ export default function ToolSetupPage({
         <section className="border-b border-zinc-200 pb-7">
           <h2 className="mb-4 flex items-center gap-2 text-base font-semibold">
             <Database size={18} />
-            Databases
+            Database discovery
           </h2>
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex min-w-48 flex-1 flex-col gap-1 text-sm">
@@ -492,8 +485,8 @@ export default function ToolSetupPage({
                 value={serverId}
                 onChange={(e) => {
                   setServerId(e.target.value);
-                  setDatabases([]);
-                  setDatabase("");
+
+
                 }}
               >
                 <option value="">Select server</option>
@@ -505,37 +498,10 @@ export default function ToolSetupPage({
               </select>
             </label>
             <button
-              title="Refresh available databases"
               disabled={!serverId || !!busy}
-              className={`${buttonClass} h-10`}
-              onClick={() =>
-                action({ action: "databases", serverId }, (data) =>
-                  setDatabases(data.databases as string[]),
-                )
-              }
-            >
-              <RefreshCw size={16} />
-              List databases
-            </button>
-            <label className="flex min-w-48 flex-1 flex-col gap-1 text-sm">
-              <span>Database name</span>
-              <input
-                list="available-databases"
-                value={database}
-                onChange={(e) => setDatabase(e.target.value)}
-                className={inputClass}
-              />
-            </label>
-            <datalist id="available-databases">
-              {databases.map((d) => (
-                <option key={d} value={d} />
-              ))}
-            </datalist>
-            <button
-              disabled={!serverId || !database || !!busy}
               className={`${primaryClass} h-10`}
               onClick={() =>
-                action({ action: "discover", serverId, database }, (data) => {
+                action({ action: "discover", serverId }, (data) => {
                   chooseSource(String(data.sourceId));
                   setNotice("Database objects discovered.");
                 })

@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { ReportCard } from './report-card';
 import { isListTopic, listExportUrl } from '@/components/dashboard/tables/paginated-list-table';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
@@ -13,6 +14,8 @@ import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
 import type { ChartSpec } from '@/lib/dashboard/chart-spec';
 import { reportGraphSource } from '@/lib/dashboard/report-graph';
 import { ReportGraph } from '@/components/dashboard/charts/report-graph';
+import { readEventStream } from '../../scripts/lib/ag-ui-stream.mjs';
+import { WorkspaceResult, type WorkspaceAnswer } from '@/components/data-sources/workspace-result';
 
 type Message = {
   id?: number;
@@ -23,6 +26,7 @@ type Message = {
   // message and never touched again by a later turn -- see the removal of
   // the old single global `artifact` state further down for why.
   artifact?: Artifact;
+  workspaceAnswer?: WorkspaceAnswer;
   reportSaveState?: 'idle' | 'saving' | 'saved' | 'error';
   savedReportId?: number;
   tableExpanded?: boolean;
@@ -130,12 +134,13 @@ async function saveReport(
   }
 }
 
-export function ChatWorkspace({ initialData = null }: { initialData?: DashboardData | null }) {
+export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initialData?: DashboardData | null; databaseWorkspace?: { id: string; sourceId: string; database: string; name?: string } }) {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSessionId = searchParams.get('session');
-  const requestedWorkspaceId = searchParams.get('workspace');
+  const requestedWorkspaceId = databaseWorkspace?.id || searchParams.get('workspace');
+  const welcomeMessage = databaseWorkspace ? { role: 'assistant' as const, text: `Hi. Ask a question or request a report from ${databaseWorkspace.name || databaseWorkspace.database}.` } : WELCOME_MESSAGE;
 
   // FIX 2026-09-17: previously the ONLY source of this data was the
   // `initialData` prop, fetched server-side in app/chat/page.tsx BEFORE the
@@ -168,6 +173,11 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
 
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [streamText, setStreamText] = useState('');
+  const [streamProgress, setStreamProgress] = useState('Understanding your question');
+  const followStreamRef = useRef(true);
+  const chatAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => chatAbortRef.current?.abort(), []);
   // FIX 2026-09-15: the loading bubble below used to say the same fixed
   // sentence no matter how long a turn actually took -- a real compound
   // question (two metrics, a wide POP range) can genuinely take up to the
@@ -177,19 +187,19 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   // as slow, not dead.
   const [slowRequest, setSlowRequest] = useState(false);
   const slowRequestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
+  const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [sessionWarehouseId, setSessionWarehouseId] = useState<string | null>(null);
   const sessionSetupRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const routeKey = `${requestedSessionId || ''}:${requestedWorkspaceId || ''}`;
+  const routeKey = `${requestedSessionId || ''}:${requestedWorkspaceId || ''}:${databaseWorkspace?.sourceId || ''}`;
   const [previousRouteKey, setPreviousRouteKey] = useState(routeKey);
   if (previousRouteKey !== routeKey) {
     setPreviousRouteKey(routeKey);
     if (!requestedSessionId || sessionId !== Number(requestedSessionId)) {
       setSessionId(null); setSessionTitle(null); setSessionWarehouseId(null);
-      setMessages([WELCOME_MESSAGE]);
+      setMessages([welcomeMessage]);
     }
   }
 
@@ -217,8 +227,9 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
 
     fetch(`/api/chat-sessions/${requestedSessionId}`)
       .then((res) => { if (!res.ok) throw new Error('Conversation could not be loaded.'); return res.json(); })
-      .then((body: { session: { id: number; title: string; warehouse_id?: string | null } | null; messages: Array<{ id: number; role: 'user' | 'assistant'; content: string; tables_used: string[] | null; report_data: Artifact | null; created_at: string }> }) => {
+      .then((body: { session: { id: number; title: string; warehouse_id?: string | null } | null; messages: Array<{ id: number; role: 'user' | 'assistant'; content: string; tables_used: string[] | null; report_data: (Artifact & { workspaceToolAnswer?: WorkspaceAnswer & { sourceId?: string } }) | null; created_at: string }> }) => {
         if (cancelled || !body.session) return;
+        if (databaseWorkspace && (body.session.warehouse_id !== databaseWorkspace.id || body.messages.some((m) => m.report_data?.workspaceToolAnswer?.sourceId && m.report_data.workspaceToolAnswer.sourceId !== databaseWorkspace.sourceId))) throw new Error('This conversation belongs to another database workspace.');
         setSessionId(body.session.id);
         setSessionTitle(body.session.title);
         setSessionWarehouseId(body.session.warehouse_id || null);
@@ -234,7 +245,8 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               // tables/charts it had originally while scrolling, not just
               // text. Undefined for a plain answer, or a message saved
               // before this column existed.
-              artifact: (m.report_data as Artifact | null | undefined) ?? undefined,
+              artifact: m.report_data?.workspaceToolAnswer ? undefined : (m.report_data as Artifact | null | undefined) ?? undefined,
+              workspaceAnswer: m.report_data?.workspaceToolAnswer,
               savedReportId: m.report_data?.savedReportId,
               reportSaveState: m.report_data?.savedReportId ? 'saved' : m.report_data ? 'idle' : undefined,
               tableExpanded: false,
@@ -280,27 +292,68 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   useEffect(() => {
     const grew = messages.length > prevMessageCountRef.current;
     prevMessageCountRef.current = messages.length;
-    if (!grew && !loading) return;
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, loading]);
+    if (!grew && (!loading || !followStreamRef.current)) return;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: loading ? 'auto' : 'smooth' });
+  }, [messages, loading, streamText]);
 
   function handleNewChat() {
-    setMessages([WELCOME_MESSAGE]);
+    setMessages([welcomeMessage]);
     setSessionId(null);
     setSessionTitle(null);
     const warehouseId = sessionWarehouseId || requestedWorkspaceId || activeData?.warehouseQuery?.workspaceId;
     setSessionWarehouseId(null);
     sessionSetupRef.current = null;
-    router.push(warehouseId ? `/chat?workspace=${encodeURIComponent(warehouseId)}` : '/chat');
+    router.push(databaseWorkspace ? `/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}` : warehouseId ? `/chat?workspace=${encodeURIComponent(warehouseId)}` : '/chat');
+  }
+
+  async function submitDatabaseQuestion(message: string) {
+    if (!databaseWorkspace || !user) return;
+    setInput(''); setLoading(true); setStreamText(''); setStreamProgress('Understanding your question');
+    setSlowRequest(false);
+    if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current);
+    slowRequestTimerRef.current = setTimeout(() => setSlowRequest(true), 8_000);
+    followStreamRef.current = true;
+    setMessages((prev) => [...prev, { role: 'user', text: message, createdAt: new Date().toISOString() }]);
+    try {
+      const response = await fetch(`/api/workspaces/${databaseWorkspace.id}/chat`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        signal: (chatAbortRef.current = new AbortController()).signal,
+        body: JSON.stringify({ message, sourceId: databaseWorkspace.sourceId, sessionId: sessionId || undefined }),
+      });
+      if (!response.ok) { const body = await response.json(); throw new Error(body.error || 'Query failed.'); }
+      let answer: WorkspaceAnswer | undefined, finished = false, draft = '';
+      await readEventStream(response.body, (event: { type: string; name?: string; value?: unknown; delta?: string; message?: string; messages?: { content: string }[] }) => {
+        if (event.type === 'TEXT_MESSAGE_CONTENT') { draft += event.delta || ''; setStreamText(draft); }
+        else if (event.type === 'MESSAGES_SNAPSHOT') { draft = event.messages?.[0]?.content || ''; setStreamText(draft); }
+        else if (event.type === 'CUSTOM' && event.name === 'bi_progress') setStreamProgress(String(event.value));
+        else if (event.type === 'CUSTOM' && event.name === 'bi_result') answer = event.value as WorkspaceAnswer;
+        else if (event.type === 'RUN_FINISHED') finished = true;
+        else if (event.type === 'RUN_ERROR') throw new Error(event.message || 'Query failed.');
+      });
+      if (!finished || !answer) throw new Error('The answer did not finish. Please try again.');
+      const completed = answer;
+      setMessages((prev) => [...prev, { role: 'assistant', text: completed.narrative, workspaceAnswer: completed, createdAt: new Date().toISOString() }]);
+      if (completed.sessionId) {
+        setSessionId(completed.sessionId); if (!sessionId) setSessionTitle(message.slice(0, 80));
+        router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${completed.sessionId}`, { scroll: false });
+        window.dispatchEvent(new Event('bi:chat-session-created'));
+      }
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: error instanceof Error ? error.message : 'Could not complete this query.' }]);
+    } finally { setLoading(false); setStreamText(''); chatAbortRef.current = null; if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current); }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = input.trim();
     if (!message || loading) return;
+    if (databaseWorkspace) { await submitDatabaseQuestion(message); return; }
 
     setInput('');
     setLoading(true);
+    setStreamText('');
+    setStreamProgress('Understanding your question');
+    followStreamRef.current = true;
     setSlowRequest(false);
     if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current);
     slowRequestTimerRef.current = setTimeout(() => setSlowRequest(true), 8_000);
@@ -331,7 +384,8 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
         '/api/chat',
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+          signal: (chatAbortRef.current = new AbortController()).signal,
           body: JSON.stringify({
             message,
             workspaceId: sessionWarehouseId || requestedWorkspaceId || activeData?.warehouseQuery?.workspaceId || undefined,
@@ -364,7 +418,19 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
         throw new Error(message);
       }
 
-      const result = (await response.json()) as ChatResponse;
+      let result: ChatResponse | undefined;
+      if (response.headers.get('content-type')?.includes('text/event-stream') && response.body) {
+        let draft = '', finished = false;
+        await readEventStream(response.body, (event: { type: string; name?: string; value?: unknown; delta?: string; message?: string; messages?: { content: string }[] }) => {
+          if (event.type === 'TEXT_MESSAGE_CONTENT') { draft += event.delta || ''; setStreamText(draft); }
+          else if (event.type === 'MESSAGES_SNAPSHOT') { draft = event.messages?.[0]?.content || ''; setStreamText(draft); }
+          else if (event.type === 'CUSTOM' && event.name === 'bi_progress') setStreamProgress(String(event.value));
+          else if (event.type === 'CUSTOM' && event.name === 'bi_result') result = event.value as ChatResponse;
+          else if (event.type === 'RUN_FINISHED') finished = true;
+          else if (event.type === 'RUN_ERROR') throw new Error(event.message || 'The answer could not be completed.');
+        });
+        if (!finished || !result) throw new Error('The connection ended before the answer was complete. Please try again.');
+      } else result = (await response.json()) as ChatResponse;
       // A turn can come back with real, freshly-queried breakdown data even
       // when the report gate didn't call this a "create a report" request --
       // e.g. a correction like "i meant X" that answers a question about a
@@ -388,14 +454,15 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
               tablesUsed: result.tablesUsed,
             }
           : undefined;
-      const messageId = user && activeSessionId ? await saveMessage(activeSessionId, 'assistant', result.narrative, result.tablesUsed, newArtifact) : undefined;
+      const completed = result;
+      const messageId = user && activeSessionId ? await saveMessage(activeSessionId, 'assistant', completed.narrative, completed.tablesUsed, newArtifact) : undefined;
       setMessages((prev) => [
         ...prev,
         {
           id: messageId,
           role: 'assistant',
-          text: result.narrative,
-          tablesUsed: result.tablesUsed,
+          text: completed.narrative,
+          tablesUsed: completed.tablesUsed,
           artifact: newArtifact,
           reportSaveState: newArtifact ? 'idle' : undefined,
           tableExpanded: false,
@@ -422,6 +489,8 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
         slowRequestTimerRef.current = null;
       }
       setLoading(false);
+      setStreamText('');
+      chatAbortRef.current = null;
       setSlowRequest(false);
     }
   }
@@ -498,25 +567,24 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/90 shadow-[0_6px_18px_rgb(15_23_42/9%)] ring-1 ring-slate-950/5 backdrop-blur">
-      <div className="shrink-0 border-b border-slate-200/70 bg-white/70 px-5 py-4">
-        <div className="flex items-center justify-between gap-4">
+    <div className="bi-chat flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
+      <div className="shrink-0 border-b border-zinc-200/70 bg-white/70 px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="truncate text-base font-bold">
               {sessionTitle && sessionTitle !== 'New conversation' ? sessionTitle : 'Conversation'}
             </h2>
-            <p className="text-sm text-slate-500">Ask a question, or ask for a report.</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {user ? (
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={handleNewChat}>
+              <Button variant="outline" size="sm" className="gap-1.5" disabled={loading} onClick={handleNewChat}>
                 <Plus size={14} />
                 New chat
               </Button>
             ) : !authLoading ? (
               <Link
                 href="/login"
-                className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-blue-200 hover:text-blue-700"
+                className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs font-semibold text-zinc-600 shadow-sm transition hover:border-rose-200 hover:text-rose-800"
               >
                 <LogIn size={12} />
                 Sign in to save history
@@ -532,7 +600,7 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           side panel that only ever showed the LATEST one. Scrolling back
           up through the conversation shows every report exactly as it
           looked when it was generated. */}
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-auto bg-gradient-to-b from-slate-50/70 to-white p-5">
+      <div ref={scrollRef} onScroll={() => { const el = scrollRef.current; if (el) followStreamRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }} className="min-h-0 flex-1 space-y-6 overflow-auto bg-[#fcfcfd] p-3 sm:p-5">
         {messages.map((message, index) =>
           message.role === 'user' ? (
             <div key={`${message.role}-${index}`} className="flex flex-col items-end gap-1">
@@ -551,15 +619,15 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                   right edge, which is now, structurally, the exact same
                   coordinate the assistant content ends at. */}
               <div className="flex w-full items-start justify-end gap-3">
-                <div className="rounded-2xl rounded-tr-md bg-gradient-to-br from-blue-600 to-indigo-600 px-4 py-3 text-sm font-medium leading-6 text-white shadow-lg shadow-blue-600/20">
+                <div className="bi-message max-w-[85%] break-words rounded-lg border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-medium leading-6 text-zinc-800">
                   {message.text}
                 </div>
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-700 to-slate-900 text-white shadow-md">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500">
                   <User size={16} />
                 </div>
               </div>
               {formatMessageTime(message.createdAt) ? (
-                <p className="mr-12 text-[11px] text-slate-400">{formatMessageTime(message.createdAt)}</p>
+                <p className="mr-12 text-[11px] text-zinc-400">{formatMessageTime(message.createdAt)}</p>
               ) : null}
             </div>
           ) : (
@@ -570,22 +638,22 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                   fixed distance short of the row's right edge no matter
                   how much text there is. */}
               <div className="flex w-full max-w-full items-start gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-rose-50 text-rose-700">
                   <Sparkles size={16} />
                 </div>
-                <div className="min-w-0 flex-1 mr-12">
-                <div className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-white/70 bg-white/90 px-4 py-3 text-sm leading-6 text-slate-700 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur">
+                <div className="min-w-0 flex-1 sm:mr-12">
+                <div className="bi-message min-w-0 max-w-full rounded-lg border border-zinc-200/80 bg-white px-4 py-3 text-sm leading-7 text-zinc-700">
                   <p className="whitespace-pre-line break-words">{message.text}</p>
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2">
-                      <Database size={12} className="text-slate-400" />
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-zinc-100 pt-2">
+                      <Database size={12} className="text-zinc-400" />
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">
                         Tables used:
                       </span>
                       {message.tablesUsed.map((table) => (
                         <span
                           key={table}
-                          className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600"
+                          className="rounded-md border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[11px] font-medium text-zinc-600"
                         >
                           {table}
                         </span>
@@ -594,11 +662,16 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                   ) : null}
                 </div>
                 {formatMessageTime(message.createdAt) ? (
-                  <p className="mt-1 ml-1 text-[11px] text-slate-400">{formatMessageTime(message.createdAt)}</p>
+                  <p className="mt-1 ml-1 text-[11px] text-zinc-400">{formatMessageTime(message.createdAt)}</p>
                 ) : null}
                 </div>
               </div>
 
+              {message.workspaceAnswer && databaseWorkspace && message.workspaceAnswer.rows.length > 0 ? (
+                <div className="mx-0 sm:ml-12 sm:mr-12">
+                  <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} />
+                </div>
+              ) : null}
               {message.artifact ? (
                 // Same left inset as the bubble above (avatar width + the
                 // row's own gap-3 -- h-9 avatar is 36px, gap-3 is 12px,
@@ -624,23 +697,23 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
           ),
         )}
         {loading ? (
-          <div className="flex max-w-[76%] items-start gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md">
+          <div className="flex w-full items-start gap-3" role="status" aria-label={streamProgress}>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-rose-50 text-rose-700">
               <Sparkles size={16} />
             </div>
-            <div className="rounded-2xl rounded-tl-md border border-white/70 bg-white/90 px-4 py-3 text-sm leading-6 text-slate-500 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur">
-              {slowRequest
-                ? 'Still working -- this question needs more than one real database lookup, so it is taking longer than usual (up to ~90s for a heavy or multi-part question).'
-                : 'Reading the database and preparing a grounded answer...'}
+            <div className="bi-message min-w-0 flex-1 rounded-lg border border-zinc-200/80 bg-white px-4 py-3 text-sm leading-7 text-zinc-700 sm:mr-12">
+              {streamText ? <p className="whitespace-pre-line break-words">{streamText}<span className="bi-cursor" aria-hidden="true" /></p> : null}
+              <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500"><span className="bi-dots" aria-hidden="true"><i /><i /><i /></span>{streamText ? 'Composing insight' : slowRequest ? `${streamProgress} - still working` : streamProgress}</div>
             </div>
           </div>
         ) : null}
       </div>
 
-      <form onSubmit={handleSubmit} className="shrink-0 border-t border-slate-200/80 bg-white/90 p-4">
-        <div className="flex items-end gap-3 rounded-2xl border border-indigo-200 bg-white p-3 shadow-[0_14px_34px_rgb(79_70_229/14%)] ring-4 ring-indigo-50">
+      <form onSubmit={handleSubmit} className="shrink-0 border-t border-zinc-200/80 bg-white/90 p-4">
+        <div className="flex items-end gap-3 rounded-lg border border-zinc-200 bg-white p-3 transition-shadow focus-within:border-rose-300 focus-within:ring-2 focus-within:ring-rose-100">
           <textarea
             value={input}
+            aria-label="Your question"
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
@@ -648,13 +721,13 @@ export function ChatWorkspace({ initialData = null }: { initialData?: DashboardD
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            className="max-h-32 min-h-16 flex-1 resize-none bg-transparent text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400"
-            placeholder="Ask anything about billing, collections, POPs, or tickets..."
+            className="max-h-32 min-h-12 min-w-0 flex-1 resize-none bg-transparent text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-500"
+            placeholder={databaseWorkspace ? `Ask about ${databaseWorkspace.name || databaseWorkspace.database}...` : "Ask anything about billing, collections, POPs, or tickets..."}
           />
           <Button
             type="submit"
-            disabled={loading || !input.trim()}
-            className="h-11 gap-2 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 px-5 font-semibold shadow-lg shadow-indigo-600/25 hover:from-indigo-700 hover:to-violet-700"
+            disabled={loading || !input.trim() || (!!databaseWorkspace && !user)}
+            className="h-10 shrink-0 gap-2 rounded-md bg-rose-700 px-4 font-semibold text-white shadow-none transition-colors hover:bg-rose-800 disabled:opacity-50"
           >
             <Send size={16} />
             {loading ? 'Working' : 'Ask'}
@@ -719,14 +792,7 @@ function ReportBlock({
   const isInlineCapped = tableExpanded && totalRows > MAX_INLINE_TABLE_ROWS;
 
   return (
-    <section className="min-w-0 space-y-5 rounded-2xl border border-white/70 bg-white/90 p-4 shadow-[0_4px_14px_rgb(15_23_42/7%)] ring-1 ring-slate-950/5 backdrop-blur sm:p-6">
-      <div className="flex items-center gap-2.5">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
-          <FileSpreadsheet size={16} />
-        </div>
-        <p className="text-base font-semibold tracking-tight text-slate-900">{artifact.title}</p>
-      </div>
-
+    <ReportCard title={artifact.title}>
       <div className="flex flex-wrap gap-2">
         {user ? (
           <Button
@@ -747,7 +813,7 @@ function ReportBlock({
         ) : (
           <Link
             href="/login"
-            className="inline-flex h-9 items-center justify-center rounded-lg bg-blue-600 px-3 text-sm font-medium text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
+            className="inline-flex h-9 items-center justify-center rounded-md bg-rose-700 px-3 text-sm font-medium text-white transition hover:bg-rose-800"
           >
             Sign In To Save
           </Link>
@@ -755,7 +821,7 @@ function ReportBlock({
         {user ? (
           <Link
             href="/reports"
-            className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+            className="inline-flex h-9 items-center justify-center rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50"
           >
             Saved Reports
           </Link>
@@ -782,7 +848,7 @@ function ReportBlock({
           // eslint-disable-next-line @next/next/no-html-link-for-pages
           <a
             href="/api/exports/customers"
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50"
           >
             <Download size={14} />
             Download Full Customer List (Excel)
@@ -791,24 +857,24 @@ function ReportBlock({
 
       </div>
       {reportSaveState !== 'saved' ? (
-        <p className="text-xs text-slate-400">This report is not saved yet -- click Save Report to keep it.</p>
+        <p className="text-xs text-zinc-400">This report is not saved yet -- click Save Report to keep it.</p>
       ) : null}
 
       <ReportGraph source={reportGraphSource(artifact.data)} title={artifact.title} spec={artifact.chartSpec?.reportGraph} onChange={onGraphChange} />
 
-      <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
-        <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-4 py-2.5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+      <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+        <div className="flex items-center justify-between border-b border-zinc-100 bg-zinc-50/60 px-4 py-2.5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
             {totalRows
               ? `Table Preview (${visibleRows.length} of ${totalRows} row${totalRows === 1 ? '' : 's'})`
               : 'Table Preview'}
           </p>
           {isTruncated ? (
-            <button type="button" onClick={onToggleExpand} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
+            <button type="button" onClick={onToggleExpand} className="text-xs font-semibold text-rose-700 hover:text-rose-800">
               View all {totalRows} rows
             </button>
           ) : tableExpanded && totalRows > PREVIEW_ROW_COUNT ? (
-            <button type="button" onClick={onToggleExpand} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
+            <button type="button" onClick={onToggleExpand} className="text-xs font-semibold text-rose-700 hover:text-rose-800">
               Collapse
             </button>
           ) : null}
@@ -821,25 +887,25 @@ function ReportBlock({
         ) : null}
         <div className="max-h-[360px] overflow-auto">
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+            <thead className="sticky top-0 bg-zinc-50 text-xs uppercase tracking-wider text-zinc-500">
               <tr>
                 {inlineTable.headers.map((header, i) => (
                   <th key={`${header}-${i}`} className="px-4 py-2.5 font-semibold">{header}</th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-zinc-100">
               {visibleRows.length ? (
                 visibleRows.map((row, i) => (
-                  <tr key={i} className="odd:bg-white even:bg-slate-50/40">
+                  <tr key={i} className="odd:bg-white even:bg-zinc-50/40">
                     {row.map((cell, j) => (
-                      <td key={j} className="px-4 py-2.5 text-slate-700">{cell}</td>
+                      <td key={j} className="px-4 py-2.5 text-zinc-700">{cell}</td>
                     ))}
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={inlineTable.headers.length} className="px-4 py-6 text-center text-slate-400">
+                  <td colSpan={inlineTable.headers.length} className="px-4 py-6 text-center text-zinc-400">
                     No data available for this view.
                   </td>
                 </tr>
@@ -849,6 +915,6 @@ function ReportBlock({
         </div>
       </div>
 
-    </section>
+    </ReportCard>
   );
 }

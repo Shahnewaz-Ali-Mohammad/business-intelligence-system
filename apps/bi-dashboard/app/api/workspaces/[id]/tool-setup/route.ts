@@ -41,7 +41,7 @@ const Body = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("discover"),
     serverId: id,
-    database: z.string().min(1).max(128),
+    database: z.string().min(1).max(128).optional(),
   }),
   z.object({
     action: z.literal("generate"),
@@ -174,15 +174,7 @@ export async function POST(
           query("SELECT 1 AS connected"),
       );
       const serverId = await saveServer(workspaceId, body.name, body.config);
-      let databases: string[] = [],
-        warning: string | null = null;
-      try {
-        databases = await listDatabases(body.config);
-      } catch {
-        warning =
-          "Connected, but database listing is unavailable. Enter a database name manually.";
-      }
-      return NextResponse.json({ serverId, databases, warning });
+      return NextResponse.json({ serverId });
     }
     if (body.action === "databases") {
       stage = "connection";
@@ -194,13 +186,12 @@ export async function POST(
     }
     if (body.action === "discover") {
       const config = await getServer(workspaceId, body.serverId);
+      const setup=await listSetup(workspaceId);
+      const database=body.database || setup.sources.find((source)=>source.serverId===body.serverId)?.database || config.database;
       stage = "discovery";
-      const catalog = await discoverDatabase({
-        ...config,
-        database: body.database,
-      });
+      const catalog = await discoverDatabase({...config,database});
       stage = "storage";
-      const sourceId = await saveSource(body.serverId, body.database, catalog);
+      const sourceId = await saveSource(body.serverId, database, catalog);
       return NextResponse.json({ sourceId, catalog });
     }
     if (body.action === "draft") {

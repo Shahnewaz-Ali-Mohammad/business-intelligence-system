@@ -30,7 +30,7 @@ function DatabaseChat({ id }: { id: string }) {
           if (sourceId && saved && sourceId !== saved) throw new Error("Conversation belongs to another database.");
           sourceId = saved || sourceId;
         }
-        if (!sourceId && data.sources.length === 1) sourceId = data.sources[0].id;
+        if (!sourceId && data.sources.length) sourceId = data.sources[0].id;
         if (sourceId && !data.sources.some((s: Source) => s.id === sourceId)) throw new Error("This saved database is no longer available.");
         if (!cancelled) {
           setSources(data.sources); setResolvedSource(sourceId); setError(""); setLoaded(true);
@@ -48,14 +48,9 @@ function DatabaseChat({ id }: { id: string }) {
     window.addEventListener('bi:workspaces-changed',update);return()=>window.removeEventListener('bi:workspaces-changed',update);
   },[id]);
   const source = sources.find((s) => s.id === resolvedSource);
-  return <WorkspacePage active="Chat" title="Chat Workspace" subtitle={source ? `${name}${name.toLowerCase()===source.database.toLowerCase()?"":` · ${source.database}`} · Ask questions, explore your data, and save reports.` : "Choose your connected database"}>
+  return <WorkspacePage active="Chat" title="Chat Workspace" subtitle={source ? `${name} · Ask questions, explore your data, and save reports.` : "Choose your connected database"}>
     <div className="flex h-full min-h-0 flex-col gap-3">
-      {sources.length > 1 && <div className="flex shrink-0 items-center gap-3">
-        <select aria-label="Database workspace" className="h-10 max-w-full rounded-md border border-zinc-200 bg-white px-3 text-sm" value={resolvedSource} disabled={!loaded || !!error} onChange={(e) => { setResolvedSource(e.target.value); router.push(`/data-sources/${id}/chat?source=${encodeURIComponent(e.target.value)}`); }}>
-          <option value="">Choose database</option>{sources.map((s) => <option key={s.id} value={s.id}>{s.database}</option>)}
-        </select>
-      </div>}
-      {error ? <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p> : source ? <div className="min-h-0 flex-1"><ChatWorkspace key={`${id}:${source.id}`} databaseWorkspace={{ id, sourceId: source.id, database: source.database }} /></div> : <p className="text-sm text-zinc-500">{!loaded ? 'Loading workspace...' : sources.length ? 'Choose a connected database.' : 'Connect a database in Tool setup.'}</p>}
+      {error ? <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p> : source ? <div className="min-h-0 flex-1"><ChatWorkspace key={`${id}:${source.id}`} databaseWorkspace={{ id, sourceId: source.id, database: source.database, name }} /></div> : <p className="text-sm text-zinc-500">{!loaded ? 'Loading workspace...' : sources.length ? 'Choose a connected database.' : 'Connect a database in Tool setup.'}</p>}
     </div>
   </WorkspacePage>;
 }
