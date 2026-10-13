@@ -15,10 +15,10 @@
 // itself, just real, immediate feedback instead of a dead screen.
 export default function ChatLoading() {
   return (
-    <main className="flex h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,#e0f2fe_0,#f8fafc_34%,#eef2f7_100%)]">
-      <div className="flex items-center gap-3 rounded-xl border border-slate-200/80 bg-white/90 px-5 py-4 shadow-[0_12px_30px_rgb(15_23_42/8%)]">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-blue-600" />
-        <p className="text-sm font-medium text-slate-600">Loading real billing, collection, and ticket data...</p>
+    <main className="flex h-screen items-center justify-center bg-background">
+      <div className="flex items-center gap-3 rounded-lg border border-zinc-200/80 bg-white/90 px-5 py-4 shadow-sm">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-rose-700" />
+        <p className="text-sm font-medium text-zinc-600">Loading real billing, collection, and ticket data...</p>
       </div>
     </main>
   );

@@ -31,6 +31,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dashboardData } from './lib/dashboard-data.mjs';
 import { runBiAgent } from './chat/agent.mjs';
+import { createRunEvents, eventFrame } from './lib/ag-ui-stream.mjs';
 
 // A plain append-only file next to this script, so a real failure's full
 // detail (message + stack) survives even if nobody is watching this
@@ -112,6 +113,20 @@ const server = http.createServer(async (request, response) => {
               .slice(-12)
           : [];
         console.log(`[chat] incoming message: ${JSON.stringify(message)}`);
+        if (request.headers.accept?.includes('text/event-stream')) {
+          response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+          response.flushHeaders();
+          const run = createRunEvents((event) => { if (!response.destroyed) response.write(eventFrame(event)); }, { threadId: String(payload.sessionId || 'chat'), runId: crypto.randomUUID(), messageId: crypto.randomUUID() });
+          const heartbeat = setInterval(() => { if (!response.destroyed) response.write(': heartbeat\n\n'); }, 10000);
+          try {
+            const result = await withTimeout(handleChatMessage(message, pageState, history, { onText: (text) => run.text(text), onProgress: (name) => run.progress(name) }), REQUEST_TIMEOUT_MS);
+            run.finish(result);
+          } catch (error) {
+            console.error('[chat stream]', error);
+            run.error('Could not complete this answer. Please try again.');
+          } finally { clearInterval(heartbeat); response.end(); }
+          return;
+        }
         const result = await withTimeout(handleChatMessage(message, pageState, history), REQUEST_TIMEOUT_MS);
         console.log(`[chat] responded via pipeline, intent=${result.intent}, narrative="${result.narrative.slice(0, 120)}"`);
         response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -180,12 +195,12 @@ server.listen(port, BIND_HOST, () => {
 // fails and the error is returned to the caller -- see the /api/chat
 // handler's catch block above -- instead of silently degrading to a worse
 // answer that looks the same as a good one.
-async function handleChatMessage(message, pageState, history = []) {
+async function handleChatMessage(message, pageState, history = [], callbacks = {}) {
   if (!message.trim()) {
     throw new Error('Message is empty.');
   }
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not configured.');
   }
-  return runBiAgent({ message, history, pageState });
+  return runBiAgent({ message, history, pageState, ...callbacks });
 }

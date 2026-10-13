@@ -32,15 +32,15 @@ export function AssistantPanel({
   onUsePrompt: (prompt: string) => void;
 }) {
   return (
-    <aside className="hidden h-screen w-[340px] shrink-0 overflow-hidden border-l border-slate-200/80 bg-white/95 shadow-[-8px_0_30px_rgb(15_23_42/4%)] xl:flex xl:flex-col">
-      <div className="shrink-0 border-b border-slate-200/80 px-5 py-4">
+    <aside className="hidden h-screen w-[340px] shrink-0 overflow-hidden border-l border-zinc-200/80 bg-white/95 shadow-sm xl:flex xl:flex-col">
+      <div className="shrink-0 border-b border-zinc-200/80 px-5 py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 shadow-sm">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-rose-50 text-rose-700 shadow-sm">
             <MessageSquareText size={18} />
           </div>
           <div>
-            <h2 className="text-sm font-bold text-slate-950">Chat with Data</h2>
-            <p className="text-xs text-slate-500">Answers, sources, and generated analysis.</p>
+            <h2 className="text-sm font-bold text-zinc-800">Chat with Data</h2>
+            <p className="text-xs text-zinc-500">Answers, sources, and generated analysis.</p>
           </div>
         </div>
       </div>
@@ -48,20 +48,20 @@ export function AssistantPanel({
       <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
         {chatMessages.length === 0 ? (
           <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm">
+            <div className="rounded-lg border border-zinc-200 bg-zinc-50/80 px-4 py-3 text-sm leading-6 text-zinc-700 shadow-sm">
               Ask a question about the live ecommerce data, or request a new analysis page. Numbers are pulled from the read-only database path.
             </div>
             <div>
-              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Try asking</p>
+              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">Try asking</p>
               <div className="space-y-2">
                 {SUGGESTED_PROMPTS.map((prompt) => (
                   <button
                     key={prompt}
                     type="button"
                     onClick={() => onUsePrompt(prompt)}
-                    className="flex w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-left text-sm font-medium text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    className="flex w-full items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-3 text-left text-sm font-medium text-zinc-700 shadow-sm transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-800"
                   >
-                    <SlidersHorizontal size={15} className="shrink-0 text-blue-600" />
+                    <SlidersHorizontal size={15} className="shrink-0 text-rose-700" />
                     <span>{prompt}</span>
                   </button>
                 ))}
@@ -73,13 +73,13 @@ export function AssistantPanel({
             {chatMessages.map((message, index) => (
               <div
                 key={`${message.role}-${index}-${message.text}`}
-                className={`rounded-xl border px-3 py-2.5 text-sm shadow-sm ${
+                className={`rounded-lg border px-3 py-2.5 text-sm shadow-sm ${
                   message.role === 'user'
-                    ? 'ml-8 border-blue-100 bg-blue-50 text-blue-950'
-                    : 'mr-8 border-slate-200 bg-slate-50/90 text-slate-700'
+                    ? 'ml-8 border-rose-100 bg-rose-50 text-rose-950'
+                    : 'mr-8 border-zinc-200 bg-zinc-50/90 text-zinc-700'
                 }`}
               >
-                <p className="mb-1 text-[11px] font-semibold uppercase text-slate-400">
+                <p className="mb-1 text-[11px] font-semibold uppercase text-zinc-400">
                   {message.role === 'user' ? 'You' : 'Assistant'}
                 </p>
                 <p className="leading-5">{message.text}</p>
@@ -89,12 +89,12 @@ export function AssistantPanel({
         )}
       </div>
 
-      <form onSubmit={onSubmit} className="shrink-0 border-t border-slate-200/80 bg-white/95 p-4">
-        <div className="rounded-xl border border-blue-200 bg-white p-2 shadow-[0_10px_25px_rgb(37_99_235/10%)]">
+      <form onSubmit={onSubmit} className="shrink-0 border-t border-zinc-200/80 bg-white/95 p-4">
+        <div className="rounded-lg border border-rose-200 bg-white p-2 shadow-sm">
           <textarea
             value={chatInput}
             onChange={(event) => onInputChange(event.target.value)}
-            className="min-h-20 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400"
+            className="min-h-20 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400"
             placeholder={frozen ? 'Unfreeze this page before asking.' : data.promptSuggestion}
           />
           <div className="mt-2 flex items-center justify-between gap-2">
@@ -102,7 +102,7 @@ export function AssistantPanel({
             <Button
               type="submit"
               size="sm"
-              className="h-9 gap-2 rounded-lg bg-blue-600 px-4 font-semibold shadow-sm shadow-blue-600/20 hover:bg-blue-700"
+              className="h-9 gap-2 rounded-lg bg-rose-700 px-4 font-semibold shadow-sm  hover:bg-rose-800"
               disabled={loading || frozen || !chatInput.trim()}
             >
               <Send size={15} />
