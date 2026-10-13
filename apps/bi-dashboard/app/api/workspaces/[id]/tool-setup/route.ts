@@ -1,3 +1,4 @@
+import { createRunEvents, eventFrame } from '@/scripts/lib/ag-ui-stream.mjs';
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth/session";
@@ -155,6 +156,35 @@ export async function POST(
       { status: 400 },
     );
   const body = parsed.data;
+  if (body.action === 'generate' && request.headers.get('accept')?.includes('text/event-stream')) {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(250000)]);
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(out) {
+        let closed = false;
+        let progress = 'Preparing selected schema';
+        const started = Date.now();
+        const send = (event: unknown) => { if (!closed) out.enqueue(encoder.encode(eventFrame(event))); };
+        const run = createRunEvents(send, { threadId: workspaceId, runId: crypto.randomUUID(), messageId: crypto.randomUUID() });
+        const heartbeat = setInterval(() => { if (!closed) run.progress(`${progress} · ${Math.floor((Date.now() - started) / 1000)}s elapsed`); }, 5000);
+        try {
+          run.progress(progress);
+          const source = await getSource(workspaceId, body.sourceId);
+          const definitions = await generateTools(source.catalog, body.selected, body.request, { signal, onProgress: (message) => { progress = message; run.progress(message); } });
+          signal.throwIfAborted();
+          definitions.forEach((t) => validateTool(t, source.catalog));
+          progress = 'Saving validated drafts'; run.progress(progress);
+          await saveDrafts(body.sourceId, source.catalog.fingerprint, definitions);
+          run.finish({ narrative: "Validated tool drafts saved.", count: definitions.length, genericCount: definitions.filter((t) => t.name.startsWith('schema_')).length, aiCount: definitions.filter((t) => !t.name.startsWith('schema_')).length });
+        } catch (error) {
+          run.error(signal.aborted ? 'Generation cancelled or exceeded the four-minute time limit. Previously saved tools are unchanged.' : error instanceof Error ? error.message : 'Generation failed. Previously saved tools are unchanged.');
+        } finally { clearInterval(heartbeat); closed = true; try { out.close(); } catch {} }
+      },
+      cancel() { controller.abort(); },
+    });
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' } });
+  }
   let stage = "validation";
   try {
     if (body.action === "connect") {
@@ -198,7 +228,7 @@ export async function POST(
       const source = await getSource(workspaceId, body.sourceId);
       const definitions =
         body.action === "generate"
-          ? await generateTools(source.catalog, body.selected, body.request)
+          ? await generateTools(source.catalog, body.selected, body.request, { signal: request.signal })
           : [body.definition];
       definitions.forEach((t) => validateTool(t, source.catalog));
       stage = "storage";

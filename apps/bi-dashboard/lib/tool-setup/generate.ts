@@ -12,7 +12,10 @@ export async function generateTools(
   catalog: Catalog,
   selected: { id: string; columns: string[] }[],
   request: string,
+  options: { signal?: AbortSignal; onProgress?: (message: string) => void } = {},
 ) {
+  const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(240000)]);
+  signal.throwIfAborted();
   const model = generationModel();
   const objects = selected.map((selection) => {
     const object = catalog.objects.find(
@@ -47,7 +50,11 @@ export async function generateTools(
   if (!process.env.OPENAI_API_KEY)
     throw new Error("Configure the OpenAI key on the application server.");
   const llm = new ChatOpenAI({ ...generationSettings(), model }).withStructuredOutput(BusinessDraftSchema, { method: "jsonSchema", strict: true });
-  for (const batch of generationBatches(selectedCatalog)) {
+  const batches = generationBatches(selectedCatalog);
+  let completed = 0;
+  const generateBatch = async (batch: Catalog, index: number) => {
+    signal.throwIfAborted();
+    options.onProgress?.(`Generating schema group ${index + 1} of ${batches.length}: ${batch.objects.map((o) => o.name).join(', ')}`);
     const messages: [string, string][] = [
       [
         "system",
@@ -57,7 +64,8 @@ export async function generateTools(
     ];
     let parsed: ReturnType<typeof DraftSchema.parse> | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const draft = await llm.invoke(messages);
+      signal.throwIfAborted();
+      const draft = await llm.invoke(messages, { signal });
       try {
         parsed = DraftSchema.parse(draft);
         parsed.tools = parsed.tools.map(normalizeFilterParameters);
@@ -67,18 +75,24 @@ export async function generateTools(
       } catch (error) {
         parsed = undefined;
         if (attempt === 1) throw error;
-        messages.push(['assistant', JSON.stringify(draft)], ['human', `Correct the proposed tools using only the supplied schema. Validation failed: ${error instanceof Error ? error.message : 'Invalid tool definition'}. For COUNT(*) use JSON null, never the string "null", as field. Never use null in columns, groupBy, filters or joins. Return the complete corrected tool definitions.`]);
+        options.onProgress?.(`Repairing schema group ${index + 1} after validation`);
+        messages.push(['assistant' , JSON.stringify(draft)], ['human', `Correct the proposed tools using only the supplied schema. Validation failed: ${error instanceof Error ? error.message : 'Invalid tool definition'}. For COUNT(*) use JSON null, never the string "null", as field. Never use null in columns, groupBy, filters or joins. Return the complete corrected tool definitions.`]);
       }
     }
     if (!parsed) throw new Error('Generation did not produce validated tool definitions.');
-    for (const tool of parsed.tools) {
-      if (tool.name.startsWith("auto_"))
-        throw new Error("Reserved tool name returned by model.");
-      if (!definitions.some((t) => t.name === tool.name)) {
-        definitions.push(tool as ToolDefinition);
-        aiGenerated += 1;
-      }
-    }
+    completed += 1;
+    options.onProgress?.(`Validated ${completed} of ${batches.length} schema groups`);
+    return parsed.tools;
+  };
+  const results: ToolDefinition[][] = [];
+  for (let offset = 0; offset < batches.length; offset += 2) {
+    const group = await Promise.all(batches.slice(offset, offset + 2).map((batch, i) => generateBatch(batch as Catalog, offset + i)));
+    results.push(...group as ToolDefinition[][]);
+  }
+  signal.throwIfAborted();
+  for (const group of results) for (const tool of group) {
+    if (tool.name.startsWith('auto_')) throw new Error('Reserved tool name returned by model.');
+    if (!definitions.some((t) => t.name === tool.name)) { definitions.push(tool); aiGenerated += 1; }
   }
   if (!aiGenerated) throw new Error('AI generation produced no business tools. Previously saved tools are unchanged.');
   return definitions;
