@@ -208,9 +208,13 @@ export async function POST(
         const server = createToolServer(tools, async (chosen: { id: string }, args: Record<string, unknown>) => {
           const latest = await approvedNow(chosen.id);
           const parameters = { query: queryFor(latest.definition, args) };
-          const summary = await summarizeTool(source.config, latest.definition, catalog, parameters);
-          const population = Number(summary.population) || 0;
-          const preview = latest.definition.mode === 'aggregate' || population <= 5
+          // Statistics are best-effort: if they cannot be computed, the agent
+          // still gets a small preview instead of a failed call.
+          let summary: Awaited<ReturnType<typeof summarizeTool>> | null = null;
+          try { summary = await summarizeTool(source.config, latest.definition, catalog, parameters); }
+          catch (error) { console.error('[workspace tool] statistics failed:', error instanceof Error ? error.message : error); }
+          const population = summary ? Number(summary.population) || 0 : 0;
+          const preview = !summary || latest.definition.mode === 'aggregate' || population <= 5
             ? await executeTool(source.config, latest.definition, catalog, parameters, 50)
             : null;
           return {
