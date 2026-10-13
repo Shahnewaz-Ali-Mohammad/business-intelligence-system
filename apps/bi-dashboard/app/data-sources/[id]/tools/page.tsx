@@ -23,6 +23,13 @@ import type {
   ToolDefinition,
 } from "@/lib/tool-setup/store";
 
+// One line describing what a generation run did to the saved tools.
+function generationSummary(data: { added?: number; updated?: number; unchanged?: number; removed?: number; aiCount?: number; genericCount?: number }) {
+  if (typeof data.added !== "number") return `${data.aiCount ?? 0} business tools saved for review.`;
+  return `Generation finished: ${data.added} new, ${data.updated ?? 0} updated, ${data.unchanged ?? 0} already existed, ${data.removed ?? 0} old drafts removed. Approved tools were not changed. Review and approve the tools you want in chat.`;
+}
+
+
 type Server = {
   id: string;
   name: string;
@@ -179,7 +186,7 @@ export default function ToolSetupPage({
       if(['failed','cancelled'].includes(body.job.status)){setResumableJob(body.job.jobId);setGenerationProgress(body.job.progress||'Generation stopped');return;}
       if(!['queued','running'].includes(body.job.status))return;
       generationJobRef.current=body.job.jobId;generationStartedAt.current=Number(body.job.startedAt)||Date.now();operationAbort.current=controller;setBusy('generate');
-      try{const result=await followGeneration(body.job.jobId,controller.signal);if(!disposed){await reload();setNotice(`${result.aiCount} business tools saved for review.`);}}
+      try{const result=await followGeneration(body.job.jobId,controller.signal);if(!disposed){await reload();setNotice(generationSummary(result));}}
       catch(error){if(!disposed)setError(error instanceof Error?error.message:'Could not follow generation.');}
       finally{if(!disposed){operationAbort.current=null;setBusy('');}}
     }).catch(()=>{});
@@ -715,9 +722,7 @@ export default function ToolSetupPage({
                           consent,
                         },
                         (data) =>
-                          setNotice(
-                            `${data.aiCount} AI business tools and ${data.genericCount} generic query tools saved as drafts. Review and approve the tools you want in chat.`,
-                          ),
+                          setNotice(generationSummary(data)),
                       )
                     }
                   >
@@ -751,6 +756,17 @@ export default function ToolSetupPage({
                 >
                   <Plus size={16} />
                   Add tool
+                </button>
+                <button
+                  disabled={!!busy || !tools.length}
+                  className={buttonClass}
+                  onClick={() => {
+                    if (!window.confirm(`Delete all ${tools.length} tools for this database, including approved ones? They will be removed from chat until you generate and approve tools again.`)) return;
+                    action({ action: 'removeAllTools', sourceId }, (data) => setNotice(`${data.removed ?? 0} tools deleted. Generate tool suggestions to create them again.`));
+                  }}
+                >
+                  <Trash2 size={16} />
+                  {busy === 'removeAllTools' ? 'Deleting...' : 'Delete all tools'}
                 </button>
                 </div>
               </div>

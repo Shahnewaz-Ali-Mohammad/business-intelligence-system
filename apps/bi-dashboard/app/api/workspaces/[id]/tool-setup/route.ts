@@ -80,6 +80,7 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("approveAll"), sourceId: id }),
   z.object({ action: z.literal("removeTool"), toolId: id }),
   z.object({ action: z.literal("removeSource"), sourceId: id }),
+  z.object({ action: z.literal("removeAllTools"), sourceId: id }),
 ]);
 async function access(workspaceId: string) {
   const user = await getCurrentUser();
@@ -199,8 +200,8 @@ export async function POST(
       const definitions = [body.definition];
       definitions.forEach((t) => validateTool(t, source.catalog));
       stage = "storage";
-      await saveDrafts(body.sourceId, source.catalog.fingerprint, definitions);
-      return NextResponse.json({ count: definitions.length,
+      const saved = await saveDrafts(body.sourceId, source.catalog.fingerprint, definitions);
+      return NextResponse.json({ ...saved, count: definitions.length,
         genericCount: definitions.filter((t) => t.name.startsWith('schema_')).length,
         aiCount: definitions.filter((t) => !t.name.startsWith('schema_')).length });
     }
@@ -217,6 +218,17 @@ export async function POST(
           { status: 404 },
         );
       return NextResponse.json({ removed: true });
+    }
+    if (body.action === "removeAllTools") {
+      // Deletes every tool (approved or not) for one database in this
+      // workspace, so it can be generated again from scratch.
+      const { getAppDb } = await import("@/lib/db/app-db");
+      stage = "storage";
+      const [result] = await getAppDb().execute(
+        "DELETE t FROM bi_generated_tools t INNER JOIN bi_tool_sources src ON src.id=t.source_id INNER JOIN bi_tool_servers srv ON srv.id=src.server_id WHERE src.id=? AND srv.workspace_id=?",
+        [body.sourceId, workspaceId],
+      );
+      return NextResponse.json({ removed: (result as { affectedRows: number }).affectedRows });
     }
     if (body.action === 'approveAll') {
       const source = await getSource(workspaceId, body.sourceId);

@@ -207,7 +207,7 @@ export async function getSource(workspaceId: string, sourceId: string) {
 export async function saveDrafts(sourceId: string, catalogFingerprint: string, definitions: ToolDefinition[]) {
   const {saveDraftDefinitions} = await import('./draft-storage.mjs');
   const connection = await getAppDb().getConnection();
-  try { await saveDraftDefinitions(connection, sourceId, catalogFingerprint, definitions); }
+  try { return await saveDraftDefinitions(connection, sourceId, catalogFingerprint, definitions) as { added: number; updated: number; unchanged: number; removed: number }; }
   finally { connection.release(); }
 }
 export async function getTool(workspaceId: string, toolId: string) {
