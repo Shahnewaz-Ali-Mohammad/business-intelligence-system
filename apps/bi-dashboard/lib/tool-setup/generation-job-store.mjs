@@ -1,8 +1,7 @@
 import {mkdir,open,readFile,readdir,rename,unlink,stat} from 'node:fs/promises';
-import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import crypto from 'node:crypto';
-const root=process.env.BI_GENERATION_JOB_DIR||fileURLToPath(new URL('../../.data/generation-jobs/',import.meta.url));
+const root=process.env.BI_GENERATION_JOB_DIR||path.join(process.cwd(),'.data','generation-jobs');
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function directory(workspace){if(!uuid.test(workspace))throw new Error('Invalid workspace.');return path.join(root,workspace);}
 function file(workspace,id){if(!uuid.test(id))throw new Error('Invalid generation job.');return path.join(directory(workspace),id+'.json');}
