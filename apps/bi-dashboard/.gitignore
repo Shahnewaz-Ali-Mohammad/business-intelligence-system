@@ -37,3 +37,7 @@ next-env.d.ts
 /work/
 *.tsbuildinfo
 chat-errors.log
+
+# Saved local generation jobs contain private schema metadata.
+/apps/bi-dashboard/.data/
+.data/

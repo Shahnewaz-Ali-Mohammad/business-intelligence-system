@@ -2,7 +2,6 @@
 
 import { use, useCallback, useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { readEventStream } from "@/scripts/lib/ag-ui-stream.mjs";
 import {
   Database,
   Plug,
@@ -97,13 +96,15 @@ export default function ToolSetupPage({
   const [busy, setBusy] = useState("");
   const [request, setRequest] = useState("");
   const operationAbort = useRef<AbortController | null>(null);
+  const generationJobRef = useRef<string | null>(null);
+  const generationStartedAt=useRef(0);
+  const [resumableJob,setResumableJob]=useState<string|null>(null);
   const [generationProgress, setGenerationProgress] = useState('');
   const [generationElapsed, setGenerationElapsed] = useState(0);
   useEffect(() => () => operationAbort.current?.abort(), []);
   useEffect(() => {
     if (busy !== 'generate') return;
-    const started = Date.now();
-    const timer = setInterval(() => setGenerationElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    const timer = setInterval(() => setGenerationElapsed(Math.floor((Date.now() - generationStartedAt.current) / 1000)), 1000);
     return () => clearInterval(timer);
   }, [busy]);
   const [consent, setConsent] = useState(false);
@@ -135,6 +136,7 @@ export default function ToolSetupPage({
         if (!cancelled) {
           setSetup(body);
           setAvailable(true);
+          if(body.sources?.length===1)setSourceId(body.sources[0].id);
         }
       })
       .catch((e) => {
@@ -144,51 +146,87 @@ export default function ToolSetupPage({
       cancelled = true;
     };
   }, [id]);
+  async function followGeneration(jobId:string,signal:AbortSignal):Promise<Record<string,unknown>> {
+    while(!signal.aborted) {
+      const response=await fetch(`${endpoint}?generationJob=${encodeURIComponent(jobId)}`,{signal});
+      const body=await response.json();
+      if(!response.ok||!body.job)throw new Error(body.error||'Generation job unavailable.');
+      const job=body.job;
+      generationStartedAt.current=Number(job.startedAt)||generationStartedAt.current;
+      setGenerationProgress(job.progress||'Generating');
+      if(job.status==='completed') {generationJobRef.current=null;setResumableJob(null);return job.result;}
+      if(job.status==='failed'||job.status==='cancelled'){setResumableJob(jobId);throw new Error(job.error||'Generation cancelled. Completed work is kept for retry.');}
+      await new Promise<void>((resolve,reject)=>{
+        const abort=()=>{clearTimeout(timer);reject(new Error('Stopped watching generation'));};
+        const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve();},2000);
+        signal.addEventListener('abort',abort,{once:true});
+      });
+    }
+    throw new Error('Stopped watching generation');
+  }
+  async function cancelJob() {
+    if(!generationJobRef.current)return;
+    try {
+      const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancelGeneration',jobId:generationJobRef.current})});
+      if(!response.ok)throw new Error('Could not cancel generation.');
+      setGenerationProgress('Cancelling; completed work is kept for retry');
+    } catch(error){setError(error instanceof Error?error.message:'Could not cancel generation.');}
+  }
+  useEffect(()=>{
+    if(!sourceId)return;
+    let disposed=false;
+    const controller=new AbortController();
+    fetch(`/api/workspaces/${id}/tool-setup?generationSource=${encodeURIComponent(sourceId)}`,{signal:controller.signal}).then(r=>r.json()).then(async(body)=>{
+      if(disposed||operationAbort.current||!body.job)return;
+      if(['failed','cancelled'].includes(body.job.status)){setResumableJob(body.job.jobId);setGenerationProgress(body.job.progress||'Generation stopped');return;}
+      if(!['queued','running'].includes(body.job.status))return;
+      generationJobRef.current=body.job.jobId;generationStartedAt.current=Number(body.job.startedAt)||Date.now();operationAbort.current=controller;setBusy('generate');
+      try{const result=await followGeneration(body.job.jobId,controller.signal);if(!disposed){await reload();setNotice(`${result.aiCount} business tools saved for review.`);}}
+      catch(error){if(!disposed)setError(error instanceof Error?error.message:'Could not follow generation.');}
+      finally{if(!disposed){operationAbort.current=null;setBusy('');}}
+    }).catch(()=>{});
+    return()=>{disposed=true;controller.abort();};
+    // Resume the selected database's saved job after navigation or refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[id,sourceId]);
   async function action(
     body: Record<string, unknown>,
     work: (data: Record<string, unknown>) => void = () => {},
   ) {
     if (busy) return;
-    setBusy(String(body.action));
+    const isGeneration=body.action==='generate'||body.action==='resumeGeneration';
+    setBusy(isGeneration?'generate':String(body.action));
     setError("");
     setNotice("");
     let completed = false;
     const controller = new AbortController();
     operationAbort.current = controller;
-    const signal = body.action === 'generate' ? AbortSignal.any([controller.signal, AbortSignal.timeout(260000)]) : controller.signal;
-    if (body.action === 'generate') { setGenerationProgress('Preparing selected schema'); setGenerationElapsed(0); }
+    const signal = controller.signal;
+    if (isGeneration) { generationJobRef.current=null; generationStartedAt.current=Date.now(); setGenerationProgress('Preparing selected schema'); setGenerationElapsed(0); }
     try {
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(body.action === 'generate' ? { Accept: 'text/event-stream' } : {}) },
+        headers: { "Content-Type": "application/json" },
         signal,
         body: JSON.stringify(body),
       });
-      let data: Record<string, unknown>;
-      if (response.ok && response.headers.get('content-type')?.includes('text/event-stream')) {
-        let result: Record<string, unknown> | undefined, finished = false;
-        await readEventStream(response.body, (event: { type: string; name?: string; value?: unknown; message?: string }) => {
-          if (event.type === 'CUSTOM' && event.name === 'bi_progress') setGenerationProgress(String(event.value));
-          else if (event.type === 'CUSTOM' && event.name === 'bi_result') result = event.value as Record<string, unknown>;
-          else if (event.type === 'RUN_FINISHED') finished = true;
-          else if (event.type === 'RUN_ERROR') throw new Error(event.message || 'Generation failed.');
-        });
-        if (!finished || !result) throw new Error('Generation stopped before saving drafts. Please try again.');
-        data = result;
-      } else {
-        data = await response.json();
-        if (!response.ok) throw new Error(String(data.error || 'Operation failed.'));
+      let data = await response.json();
+      if(!response.ok)throw new Error(String(data.error||'Operation failed.'));
+      if(isGeneration) {
+        generationJobRef.current=String(data.jobId);
+        data=await followGeneration(String(data.jobId),signal);
       }
       completed = true;
       await reload();
       work(data);
     } catch (e) {
-      const reason = signal.aborted ? controller.signal.aborted ? 'Generation cancelled.' : 'Generation exceeded the time limit. Please try again.' : e instanceof Error ? e.message : 'Operation failed.';
+      const reason = signal.aborted ? 'Stopped watching generation. The saved job remains available.' : e instanceof Error ? e.message : 'Operation failed.';
+      if(isGeneration&&generationJobRef.current)setResumableJob(generationJobRef.current);
       setError(
-        body.action === "generate"
+        isGeneration
           ? completed
             ? `Tools were generated and saved, but refreshing the registry failed. ${reason} Reload the page to see the saved tools.`
-            : `Tool generation failed. ${reason} Previously saved tools are unchanged; the registry count does not indicate a successful new generation.`
+            : `Generation status: ${reason} Completed schema groups are kept; use Resume generation to continue or reconnect.`
           : reason,
       );
     } finally {
@@ -198,6 +236,7 @@ export default function ToolSetupPage({
   }
   function chooseSource(next: string) {
     setSourceId(next);
+    setResumableJob(null);
     setSelected({});
     setExpanded(null);
     setTesting(null);
@@ -692,9 +731,10 @@ export default function ToolSetupPage({
                   relationships, and this request to OpenAI. No rows or
                   credentials are included.
                 </label>
+                {!busy && resumableJob && <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-600"><span>Completed schema groups are saved.</span><button type="button" className={buttonClass} onClick={()=>action({action:'resumeGeneration',jobId:resumableJob},()=>setNotice('Generation completed; drafts saved for review.'))}>Resume generation</button></div>}
                 {busy === 'generate' && <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3 text-sm text-zinc-600">
                   <span>{generationProgress} · {generationElapsed}s elapsed</span>
-                  <button type="button" className={buttonClass} onClick={() => operationAbort.current?.abort()}>Cancel generation</button>
+                  <button type="button" className={buttonClass} onClick={cancelJob}>Cancel generation</button>
                 </div>}
                 <div className="flex flex-wrap items-center gap-3">
                   <button

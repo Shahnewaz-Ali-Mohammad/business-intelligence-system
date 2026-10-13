@@ -12,9 +12,9 @@ export async function generateTools(
   catalog: Catalog,
   selected: { id: string; columns: string[] }[],
   request: string,
-  options: { signal?: AbortSignal; onProgress?: (message: string) => void } = {},
+  options: { signal?: AbortSignal; onProgress?: (message: string) => void | Promise<void>; completedBatches?: Record<string, ToolDefinition[]>; onBatchValidated?: (index: number, tools: ToolDefinition[]) => Promise<void> } = {},
 ) {
-  const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(240000)]);
+  const signal = options.signal || new AbortController().signal;
   signal.throwIfAborted();
   const model = generationModel();
   const objects = selected.map((selection) => {
@@ -54,7 +54,9 @@ export async function generateTools(
   let completed = 0;
   const generateBatch = async (batch: Catalog, index: number) => {
     signal.throwIfAborted();
-    options.onProgress?.(`Generating schema group ${index + 1} of ${batches.length}: ${batch.objects.map((o) => o.name).join(', ')}`);
+    const saved = options.completedBatches?.[index];
+    if (saved) { saved.forEach((tool) => validateTool(tool, batch)); completed += 1; await options.onProgress?.(`Resumed ${completed} of ${batches.length} completed schema groups`); return saved; }
+    await options.onProgress?.(`Generating schema group ${index + 1} of ${batches.length}: ${batch.objects.map((o) => o.name).join(', ')}`);
     const messages: [string, string][] = [
       [
         "system",
@@ -75,13 +77,14 @@ export async function generateTools(
       } catch (error) {
         parsed = undefined;
         if (attempt === 1) throw error;
-        options.onProgress?.(`Repairing schema group ${index + 1} after validation`);
+        await options.onProgress?.(`Repairing schema group ${index + 1} after validation`);
         messages.push(['assistant' , JSON.stringify(draft)], ['human', `Correct the proposed tools using only the supplied schema. Validation failed: ${error instanceof Error ? error.message : 'Invalid tool definition'}. For COUNT(*) use JSON null, never the string "null", as field. Never use null in columns, groupBy, filters or joins. Return the complete corrected tool definitions.`]);
       }
     }
     if (!parsed) throw new Error('Generation did not produce validated tool definitions.');
     completed += 1;
-    options.onProgress?.(`Validated ${completed} of ${batches.length} schema groups`);
+    await options.onBatchValidated?.(index, parsed.tools as ToolDefinition[]);
+    await options.onProgress?.(`Validated ${completed} of ${batches.length} schema groups`);
     return parsed.tools;
   };
   const results: ToolDefinition[][] = [];
