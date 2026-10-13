@@ -9,9 +9,8 @@
 // exposed to the browser).
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
-import { warehouseContext } from '@/lib/workspaces/warehouse';
-import { runWarehouseAgent } from '../../../scripts/chat/warehouse-agent.mjs';
 import { getAppDb } from '@/lib/db/app-db';
+import { createRunEvents, eventFrame, readEventStream } from '../../../scripts/lib/ag-ui-stream.mjs';
 
 export const maxDuration = 180;
 
@@ -87,32 +86,56 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = body as Record<string, unknown>;
-  const pageState = payload.page_state as Record<string, unknown> | undefined;
-  const reportWarehouse = pageState?.warehouseQuery as { workspaceId?: string } | undefined;
-  let workspaceId = payload.workspaceId ?? reportWarehouse?.workspaceId;
+  // 2026-10-13: the warehouse-setup (Cube) chat was removed. This route
+  // only serves the original workspace; database workspaces use
+  // /api/workspaces/[id]/chat.
   if (payload.sessionId) {
     if (typeof payload.sessionId !== 'number' || !Number.isSafeInteger(payload.sessionId) || payload.sessionId < 1) return NextResponse.json({ error: 'Invalid conversation.' }, { status: 400 });
     const [rows] = await getAppDb().execute('SELECT warehouse_id FROM chat_sessions WHERE id=? AND user_id=?', [payload.sessionId, user.id]);
     const sessions = rows as { warehouse_id: string | null }[];
     if (!sessions.length) return NextResponse.json({ error: 'Conversation not found.' }, { status: 404 });
-    if (!sessions[0].warehouse_id && workspaceId) return NextResponse.json({ error: 'Start a new conversation to change warehouses.' }, { status: 409 });
-    if (sessions[0].warehouse_id) {
-      if (workspaceId && workspaceId !== sessions[0].warehouse_id) return NextResponse.json({ error: 'Start a new conversation to change warehouses.' }, { status: 409 });
-      workspaceId = sessions[0].warehouse_id;
-    }
+    if (sessions[0].warehouse_id && sessions[0].warehouse_id !== 'isp-default') return NextResponse.json({ error: 'This conversation belongs to another workspace.' }, { status: 409 });
   }
-  if (workspaceId) {
-    if (typeof workspaceId !== 'string') return NextResponse.json({ error: 'Invalid warehouse.' }, { status: 400 });
-    try {
-      const context = await warehouseContext(workspaceId, user.id);
-      const result = await runWarehouseAgent({ context: { ...context, signal: AbortSignal.any([req.signal, AbortSignal.timeout(150000)]) }, message, history: payload.history, pageState });
-      return NextResponse.json(result);
-    } catch (error) {
-      console.error('[warehouse chat]', error instanceof Error ? error.name : 'Error');
-      return NextResponse.json({ error: 'Could not answer from this warehouse. Check its active connection and model in Data Sources; no empty result has been inferred.' }, { status: 502 });
-    }
+  if (req.headers.get('accept')?.includes('text/event-stream')) {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([req.signal, controller.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
+    const encoder = new TextEncoder();
+    let currentText = '';
+    const stream = new ReadableStream({
+      async start(output) {
+        let closed = false;
+        const emit = (event: Record<string, unknown>) => { if (!closed && !signal.aborted) output.enqueue(encoder.encode(eventFrame(event))); };
+        const run = createRunEvents(emit, { threadId: String(payload.sessionId || 'chat'), runId: crypto.randomUUID(), messageId: crypto.randomUUID() });
+        const heartbeat = setInterval(() => { if (!closed && !signal.aborted) output.enqueue(encoder.encode(': heartbeat\n\n')); }, 10000);
+        try {
+          {
+            run.progress('Understanding your question');
+            const upstream = await fetch(CHAT_API_INTERNAL_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify(body), signal });
+            if (!upstream.ok) throw new Error('Chat backend unavailable');
+            if (upstream.headers.get('content-type')?.includes('text/event-stream') && upstream.body) {
+              let finished = false;
+              await readEventStream(upstream.body, (event: { type: string; name?: string; value?: unknown; delta?: string; messages?: { content: string }[] }) => {
+                if (event.type === 'CUSTOM' && event.name === 'bi_progress') run.progress(event.value);
+                else if (event.type === 'TEXT_MESSAGE_CONTENT') { currentText += event.delta || ''; run.text(currentText); }
+                else if (event.type === 'MESSAGES_SNAPSHOT') { currentText = event.messages?.[0]?.content || ''; run.text(currentText); }
+                else if (event.type === 'CUSTOM' && event.name === 'bi_result') { run.finish(event.value); finished = true; }
+                else if (event.type === 'RUN_ERROR') throw new Error('Upstream run failed');
+              });
+              if (!finished) throw new Error('Incomplete answer stream');
+            } else {
+              // Existing backend processes remain compatible until restarted.
+              run.finish(await upstream.json());
+            }
+          }
+        } catch {
+          if (!signal.aborted) run.error('Could not complete this answer. Please try again.');
+          else if (!req.signal.aborted && !controller.signal.aborted) output.enqueue(encoder.encode(eventFrame({ type: 'RUN_ERROR', message: 'The request took too long. Please try again.' })));
+        } finally { closed = true; clearInterval(heartbeat); try { output.close(); } catch {} }
+      },
+      cancel() { controller.abort(); },
+    });
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' } });
   }
-
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 

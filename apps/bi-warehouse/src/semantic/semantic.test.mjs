@@ -6,7 +6,6 @@ import { buildChartQuery, chartOptions, chartQueryForTool, endOfBucket } from '.
 import { loadCubeQuery, querySemanticLayerPage, recordCountQuery } from '../services/cubeQueryService.mjs';
 import { buildSemanticQueryTable } from '../../../bi-dashboard/scripts/lib/semantic-table.mjs';
 import { parseToolResult } from '../../../bi-dashboard/scripts/lib/tool-result.mjs';
-import { workspaceCubeLoad } from '../services/workspaceCube.mjs';
 import { buildWarehouseModel, modelCatalog } from './warehouseModel.mjs';
 
 test('live warehouse loads force fresh data; SQL compilation does not request execution', async () => {
@@ -18,12 +17,8 @@ test('live warehouse loads force fresh data; SQL compilation does not request ex
   const calls = [];
   globalThis.fetch = async (endpoint, options) => { calls.push({ endpoint, body: JSON.parse(options.body) }); return { ok: true, json: async () => ({ data: [] }) }; };
   try {
-    await workspaceCubeLoad({ model, ownerUserId: 1 }, query);
-    await workspaceCubeLoad({ model, ownerUserId: 1 }, query, 'sql');
     await loadCubeQuery({ measures: ['IspTicket.ticket_count'] });
     assert.equal(calls[0].body.cache, 'no-cache');
-    assert.equal(calls[1].body.cache, undefined);
-    assert.equal(calls[2].body.cache, 'no-cache');
   } finally { globalThis.fetch = originalFetch; if (url === undefined) delete process.env.CUBEJS_API_URL; else process.env.CUBEJS_API_URL = url; if (secret === undefined) delete process.env.CUBEJS_API_SECRET; else process.env.CUBEJS_API_SECRET = secret; }
 });
 

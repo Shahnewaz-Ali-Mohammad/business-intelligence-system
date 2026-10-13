@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 
 interface DataSourceRow {
@@ -11,6 +12,7 @@ interface DataSourceRow {
 }
 
 export default function DataSourcesPage() {
+  const router = useRouter();
   const [rows, setRows] = useState<DataSourceRow[]>([]);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(true);
@@ -21,12 +23,14 @@ export default function DataSourcesPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch('/api/workspaces');
-      const data = await res.json();
-      if (!cancelled) {
-        setRows(data.workspaces || []);
-        setLoading(false);
-      }
+      try {
+        const res = await fetch('/api/workspaces');
+        const data = await res.json();
+        if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Could not load workspaces.');
+        if (!cancelled) setRows(data.workspaces || []);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load workspaces.');
+      } finally { if (!cancelled) setLoading(false); }
     })();
     return () => {
       cancelled = true;
@@ -34,7 +38,7 @@ export default function DataSourcesPage() {
   }, []);
 
   async function deleteDataSource(id: string) {
-    if (!window.confirm('Remove this data source? Its saved connection and semantic model will be deleted too. This cannot be undone.')) {
+    if (!window.confirm('Remove this workspace? Its saved connections, semantic model, tools, and test history will be deleted too. Source databases will not be changed. This cannot be undone.')) {
       return;
     }
     setDeletingId(id);
@@ -47,6 +51,7 @@ export default function DataSourcesPage() {
       return;
     }
     setRows((prev) => prev.filter((row) => row.id !== id));
+    window.dispatchEvent(new Event('bi:workspaces-changed'));
   }
 
   async function createDataSource(e: React.FormEvent) {
@@ -66,46 +71,49 @@ export default function DataSourcesPage() {
       return;
     }
     setRows((prev) => [data.workspace, ...prev]);
+    window.dispatchEvent(new Event('bi:workspaces-changed'));
     setName('');
+    router.push(`/data-sources/${data.workspace.id}/tools`);
   }
 
   return (
     <WorkspacePage
-      active="Data Sources"
-      title="Data Sources"
-      subtitle="PostgreSQL warehouses"
+      active="Settings"
+      title="Settings"
+      subtitle="Database connections and workspaces"
       scroll
     >
-      <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)]">
+      <section className="rounded-lg border border-zinc-200/80 bg-white p-5 shadow-sm">
         <form onSubmit={createDataSource} className="flex gap-2">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Name this data source (e.g. Acme Retail Postgres)"
-            className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+            placeholder="Name this workspace (e.g. Ticketing & Billing)"
+            className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500"
           />
           <button
             type="submit"
             disabled={creating}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            {creating ? 'Creating...' : 'Add data source'}
+            {creating ? 'Creating...' : 'Create workspace'}
           </button>
         </form>
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="mt-2 text-sm text-red-600">{error}{error === 'Sign in required.' && <Link href="/login" className="ml-3 underline">Sign in</Link>}</p>}
 
-        <ul className="mt-6 divide-y divide-slate-100">
-          {loading && <li className="py-3 text-sm text-slate-500">Loading...</li>}
-          {!loading && rows.length === 0 && (
-            <li className="py-3 text-sm text-slate-500">No additional data sources yet -- add one above.</li>
+        <ul className="mt-6 divide-y divide-zinc-100">
+          {loading && <li className="py-3 text-sm text-zinc-500">Loading...</li>}
+          {!loading && !error && rows.length === 0 && (
+            <li className="py-3 text-sm text-zinc-500">No additional data sources yet -- add one above.</li>
           )}
           {rows.map((row) => (
-            <li key={row.id} className="flex items-center justify-between py-3">
-              <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}`} className="text-sm font-medium text-slate-900 hover:underline">
+            <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+              <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}/tools`} className="min-w-0 flex-1 break-words text-sm font-medium text-zinc-800 hover:underline">
                 {row.name}
               </Link>
               <div className="flex items-center gap-4">
-                <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}`} className="text-xs text-slate-500 hover:text-slate-900">
+                {row.id !== 'isp-default' && <Link href={`/data-sources/${row.id}/chat`} className="text-xs font-medium text-rose-700 hover:underline">Workspace chat</Link>}
+                <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}/tools`} className="text-xs text-rose-800 hover:text-rose-900">
                   Open &rarr;
                 </Link>
                 {row.id !== 'isp-default' && (

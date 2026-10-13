@@ -1,6 +1,6 @@
 import type { DashboardData } from './metrics';
 
-export type GraphSource = { query: Record<string, unknown>; workspaceId?: string; modelVersion?: string; maxRows?: number | null };
+export type GraphSource = { query: Record<string, unknown>; maxRows?: number | null };
 export type ReportGraphSpec = {
   version: 1; kind: 'bar' | 'line' | 'kpi' | 'histogram' | 'scatter' | 'density'; title: string;
   measure?: string; dimension?: string; time?: string; x?: string; y?: string;
@@ -19,6 +19,6 @@ export type GraphResult = {
   mode: 'aggregate' | 'bins' | 'points'; bounds?: { xmin: string; xmax: string; ymin?: string; ymax?: string; bins: number };
 };
 export function reportGraphSource(data: DashboardData): GraphSource | null {
-  const query = data.warehouseQuery?.query || data.semanticQuery || data.chartQuery;
-  return query ? { query, workspaceId: data.warehouseQuery?.workspaceId, modelVersion: data.warehouseQuery?.modelVersion, maxRows: data.semanticQueryMaxRows } : null;
+  const query = data.semanticQuery || data.chartQuery;
+  return query ? { query, maxRows: data.semanticQueryMaxRows } : null;
 }

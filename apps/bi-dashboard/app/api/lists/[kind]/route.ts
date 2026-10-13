@@ -5,10 +5,6 @@
 // the whole set. Export Excel (app/api/exports/*) streams all rows.
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
-import { warehouseContext } from '@/lib/workspaces/warehouse';
-import { workspaceCubePage } from '../../../../../bi-warehouse/src/services/workspaceCube.mjs';
-import { modelCatalog } from '../../../../../bi-warehouse/src/semantic/warehouseModel.mjs';
-import { warehouseTable } from '../../../../scripts/chat/warehouse-agent.mjs';
 import { getTicketList as getTicketListUntyped } from '../../../../../bi-warehouse/src/services/ticketService.mjs';
 import { getCustomerList as getCustomerListUntyped } from '../../../../../bi-warehouse/src/services/customerService.mjs';
 
@@ -98,13 +94,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ kind
         return NextResponse.json({ error: 'Bad query.' }, { status: 400 });
       }
       const maxRows = Number(sp.get('maxRows')) || undefined;
-      if (sp.get('workspaceId')) {
-        const version = sp.get('modelVersion');
-        if (!version) return NextResponse.json({ error: 'Warehouse model version is required.' }, { status: 400 });
-        const context = await warehouseContext(sp.get('workspaceId')!, user.id, version);
-        const pageResult = await workspaceCubePage(context, query, { offset, limit: pageSize, maxRows });
-        return NextResponse.json({ table: warehouseTable(pageResult.rows, query, modelCatalog(context.model)), totalCount: pageResult.total, page, pageSize });
-      }
       const result = await querySemanticLayerPage(query, { offset, limit: pageSize, ...(maxRows ? { maxRows } : {}) });
       return NextResponse.json({ table: buildSemanticQueryTable(result.rows), totalCount: result.total, page, pageSize });
     } else {

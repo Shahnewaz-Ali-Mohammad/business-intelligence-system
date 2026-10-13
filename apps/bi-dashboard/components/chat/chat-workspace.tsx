@@ -139,7 +139,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSessionId = searchParams.get('session');
-  const requestedWorkspaceId = databaseWorkspace?.id || searchParams.get('workspace');
+  const requestedWorkspaceId = databaseWorkspace?.id || null;
   const welcomeMessage = databaseWorkspace ? { role: 'assistant' as const, text: `Hi. Ask a question or request a report from ${databaseWorkspace.name || databaseWorkspace.database}.` } : WELCOME_MESSAGE;
 
   // FIX 2026-09-17: previously the ONLY source of this data was the
@@ -269,7 +269,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
       const res = await fetch('/api/chat-sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: firstMessage.slice(0, 80), workspaceId: requestedWorkspaceId || sessionWarehouseId || activeData?.warehouseQuery?.workspaceId }),
+        body: JSON.stringify({ title: firstMessage.slice(0, 80), workspaceId: requestedWorkspaceId || undefined }),
       });
       const body = (await res.json()) as { id: number; title: string };
       if (!res.ok || !Number.isSafeInteger(body.id) || body.id < 1) return null;
@@ -300,10 +300,9 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
     setMessages([welcomeMessage]);
     setSessionId(null);
     setSessionTitle(null);
-    const warehouseId = sessionWarehouseId || requestedWorkspaceId || activeData?.warehouseQuery?.workspaceId;
     setSessionWarehouseId(null);
     sessionSetupRef.current = null;
-    router.push(databaseWorkspace ? `/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}` : warehouseId ? `/chat?workspace=${encodeURIComponent(warehouseId)}` : '/chat');
+    router.push(databaseWorkspace ? `/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}` : '/chat');
   }
 
   async function submitDatabaseQuestion(message: string) {
@@ -388,7 +387,6 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
           signal: (chatAbortRef.current = new AbortController()).signal,
           body: JSON.stringify({
             message,
-            workspaceId: sessionWarehouseId || requestedWorkspaceId || activeData?.warehouseQuery?.workspaceId || undefined,
             sessionId: activeSessionId,
             history: messages.slice(-12).map((m) => ({ role: m.role, content: m.text })),
             page_state: {
@@ -398,7 +396,6 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
               kpis: activeData?.kpis?.map((kpi) => kpi.label) ?? [],
               chartSources: activeData?.chartSources ?? null,
               semanticQuery: activeData?.semanticQuery ?? activeData?.chartQuery ?? null,
-              warehouseQuery: activeData?.warehouseQuery ?? null,
             },
           }),
         },

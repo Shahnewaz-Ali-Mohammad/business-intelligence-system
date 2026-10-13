@@ -5,10 +5,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { getCurrentUser } from '@/lib/auth/session';
-import { warehouseContext } from '@/lib/workspaces/warehouse';
-import { workspaceCubePage } from '../../../../../../bi-warehouse/src/services/workspaceCube.mjs';
-import { modelCatalog } from '../../../../../../bi-warehouse/src/semantic/warehouseModel.mjs';
-import { warehouseTable } from '../../../../../scripts/chat/warehouse-agent.mjs';
 import { getAppDb } from '@/lib/db/app-db';
 import { getReportTable } from '@/lib/dashboard/report-table';
 import type { DashboardData } from '@/lib/dashboard/metrics';
@@ -68,12 +64,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ kind
     } else if (kind === 'semantic') {
       const query = JSON.parse(sp.get('q') || '{}') as Record<string, unknown>;
       const maxRows = Number(sp.get('maxRows')) || undefined;
-      const workspaceId = sp.get('workspaceId');
-      if (workspaceId && !sp.get('modelVersion')) return NextResponse.json({ error: 'Warehouse model version is required.' }, { status: 400 });
-      const context = workspaceId ? await warehouseContext(workspaceId, user.id, sp.get('modelVersion')!) : null;
       for (let offset = 0; ; offset += BATCH) {
-        const page = context ? await workspaceCubePage(context, query, { offset, limit: BATCH, maxRows }) : await querySemanticLayerPage(query, { offset, limit: BATCH, ...(maxRows ? { maxRows } : {}) });
-        const t = context ? warehouseTable(page.rows, query, modelCatalog(context.model)) : buildSemanticQueryTable(page.rows);
+        const page = await querySemanticLayerPage(query, { offset, limit: BATCH, ...(maxRows ? { maxRows } : {}) });
+        const t = buildSemanticQueryTable(page.rows);
         if (!headers.length && page.rows.length) headers = t.headers;
         rows.push(...t.rows);
         if (page.rows.length < BATCH || offset + BATCH >= page.total) break;

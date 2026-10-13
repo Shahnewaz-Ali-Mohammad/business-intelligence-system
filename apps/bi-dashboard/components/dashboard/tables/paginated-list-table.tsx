@@ -48,7 +48,7 @@ const PAGED: Record<ListTopic, {
     exportPath: '/api/exports/report/semantic',
     params: (d) =>
       d.semanticQuery
-        ? { q: JSON.stringify(d.semanticQuery), maxRows: d.semanticQueryMaxRows ?? undefined, workspaceId: d.warehouseQuery?.workspaceId, modelVersion: d.warehouseQuery?.modelVersion }
+        ? { q: JSON.stringify(d.semanticQuery), maxRows: d.semanticQueryMaxRows ?? undefined }
         : undefined,
     total: (d) => d.semanticQueryTotalCount,
   },
@@ -158,18 +158,18 @@ function PaginatedListTableBody({ topic, data }: { topic: ListTopic; data: Dashb
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-2.5">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50/60 px-5 py-2.5">
+        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
           Rows {firstRow.toLocaleString()}–{lastRow.toLocaleString()} of {total.toLocaleString()}
         </p>
-        <div className="flex items-center gap-2 text-xs text-slate-600">
+        <div className="flex items-center gap-2 text-xs text-zinc-600">
           <button type="button" onClick={() => go(page - 1)} disabled={page <= 1 || loading}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-medium disabled:opacity-40">
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 font-medium disabled:opacity-40">
             <ChevronLeft size={14} /> Prev
           </button>
           <span>Page {page.toLocaleString()} of {pageCount.toLocaleString()}</span>
           <button type="button" onClick={() => go(page + 1)} disabled={page >= pageCount || loading}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-medium disabled:opacity-40">
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 font-medium disabled:opacity-40">
             Next <ChevronRight size={14} />
           </button>
           <form
@@ -182,25 +182,25 @@ function PaginatedListTableBody({ topic, data }: { topic: ListTopic; data: Dashb
             className="flex items-center gap-1"
           >
             <input value={jump} onChange={(e) => setJump(e.target.value.replace(/[^0-9]/g, ''))} placeholder="Go to"
-              className="h-7 w-16 rounded-md border border-slate-200 px-2" />
+              className="h-7 w-16 rounded-md border border-zinc-200 px-2" />
           </form>
         </div>
       </div>
       {error ? <p className="border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">{error}</p> : null}
       <div className={`overflow-x-auto ${loading ? 'opacity-50' : ''}`}>
         <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+          <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
             <tr>
               {table.headers.map((header, i) => (
                 <th key={`${header}-${i}`} className="px-5 py-3 font-semibold">{header}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-zinc-100">
             {table.rows.map((row, i) => (
               <tr key={i}>
                 {row.map((cell, j) => (
-                  <td key={j} className="px-5 py-3 text-slate-700">
+                  <td key={j} className="px-5 py-3 text-zinc-700">
                     {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
                   </td>
                 ))}
@@ -224,18 +224,18 @@ export function ClientPaginatedTable({ headers, rows }: { headers: string[]; row
   return (
     <div>
       {rows.length > PAGE_SIZE ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-2.5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50/60 px-5 py-2.5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
             Rows {first.toLocaleString()}–{last.toLocaleString()} of {rows.length.toLocaleString()}
           </p>
-          <div className="flex items-center gap-2 text-xs text-slate-600">
+          <div className="flex items-center gap-2 text-xs text-zinc-600">
             <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
-              className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-medium disabled:opacity-40">
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 font-medium disabled:opacity-40">
               <ChevronLeft size={14} /> Prev
             </button>
             <span>Page {page.toLocaleString()} of {pageCount.toLocaleString()}</span>
             <button type="button" onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}
-              className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-medium disabled:opacity-40">
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 font-medium disabled:opacity-40">
               Next <ChevronRight size={14} />
             </button>
           </div>
@@ -243,18 +243,18 @@ export function ClientPaginatedTable({ headers, rows }: { headers: string[]; row
       ) : null}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+          <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
             <tr>
               {headers.map((header, i) => (
                 <th key={`${header}-${i}`} className="px-5 py-3 font-semibold">{header}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-zinc-100">
             {shown.map((row, i) => (
               <tr key={i}>
                 {row.map((cell, j) => (
-                  <td key={j} className="px-5 py-3 text-slate-700">
+                  <td key={j} className="px-5 py-3 text-zinc-700">
                     {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
                   </td>
                 ))}

@@ -4,7 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
-import { warehouseContext } from '@/lib/workspaces/warehouse';
+import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 
 // FIX 2026-09-17: this used to return every session in one shot (capped at
 // a flat LIMIT 100 with no page controls), unlike /api/reports which was
@@ -21,15 +21,26 @@ export async function GET(req: NextRequest) {
   const offset = (page - 1) * PAGE_SIZE;
 
   const db = getAppDb();
-  const [countRows] = await db.execute('SELECT COUNT(*) AS total FROM chat_sessions WHERE user_id = ?', [
-    user.id,
-  ]);
+  const workspace = req.nextUrl.searchParams.get('workspace');
+  const source = req.nextUrl.searchParams.get('source');
+  const clauses = ['s.user_id = ?'];
+  const bindings: (string | number)[] = [user.id];
+  if (!workspace || workspace === 'isp-default') clauses.push("(s.warehouse_id IS NULL OR s.warehouse_id='isp-default')");
+  else { clauses.push('s.warehouse_id = ?'); bindings.push(workspace); }
+  if (source) {
+    clauses.push("EXISTS(SELECT 1 FROM chat_messages sm WHERE sm.session_id=s.id AND JSON_UNQUOTE(JSON_EXTRACT(sm.report_data, '$.workspaceToolAnswer.sourceId'))=?)");
+    bindings.push(source);
+  }
+  const where = clauses.join(' AND ');
+  const [countRows] = await db.execute(`SELECT COUNT(*) AS total FROM chat_sessions s WHERE ${where}`, bindings);
   const total = Number((countRows as Array<{ total: number }>)[0]?.total ?? 0);
 
   const [rows] = await db.query(
     `SELECT
        s.id,
        s.title,
+       s.warehouse_id,
+       EXISTS(SELECT 1 FROM chat_messages tm WHERE tm.session_id=s.id AND JSON_EXTRACT(tm.report_data, '$.workspaceToolAnswer') IS NOT NULL) AS tool_chat,
        s.created_at,
        s.updated_at,
        COUNT(m.id) AS message_count,
@@ -45,11 +56,11 @@ export async function GET(req: NextRequest) {
        ) AS last_answer
      FROM chat_sessions s
      LEFT JOIN chat_messages m ON m.session_id = s.id
-     WHERE s.user_id = ?
+     WHERE ${where}
      GROUP BY s.id
      ORDER BY s.updated_at DESC
      LIMIT ? OFFSET ?`,
-    [user.id, PAGE_SIZE, offset],
+    [...bindings, PAGE_SIZE, offset],
   );
   return NextResponse.json({ sessions: rows, total, page, pageSize: PAGE_SIZE });
 }
@@ -62,8 +73,8 @@ export async function POST(req: NextRequest) {
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 255) : 'New conversation';
   const warehouseId = typeof body.workspaceId === 'string' ? body.workspaceId : null;
   if (warehouseId) {
-    try { await warehouseContext(warehouseId, user.id); }
-    catch { return NextResponse.json({ error: 'Warehouse is not available.' }, { status: 400 }); }
+    const workspace = warehouseId === 'isp-default' ? null : await getWorkspace(warehouseId);
+    if (warehouseId !== 'isp-default' && workspace?.ownerUserId !== user.id) return NextResponse.json({ error: 'Workspace is not available.' }, { status: 400 });
   }
 
   const db = getAppDb();

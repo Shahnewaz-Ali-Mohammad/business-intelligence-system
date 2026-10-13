@@ -2,21 +2,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { ChatOpenAI } from '@langchain/openai';
 import { getCurrentUser } from '@/lib/auth/session';
-import { configuredWarehouseUrl, warehouseContext } from '@/lib/workspaces/warehouse';
-import { modelCatalog, validateWarehouseQuery } from '../../../../bi-warehouse/src/semantic/warehouseModel.mjs';
 import { CUBE_CATALOG, validateCubeQuery } from '../../../../bi-warehouse/src/semantic/cubeCatalog.mjs';
 import { validateQueryJoins } from '../../../../bi-warehouse/src/semantic/valueGrounding.mjs';
-import { workspaceCubeLoad, workspaceCubePage } from '../../../../bi-warehouse/src/services/workspaceCube.mjs';
 import { loadCubeQuery, querySemanticLayerPage } from '../../../../bi-warehouse/src/services/cubeQueryService.mjs';
 import { graphOptions, defaultGraph, normalizeGraph, graphQuery, uncappedCubeSql, distributionSql } from '../../../../bi-warehouse/src/semantic/reportGraph.mjs';
 import { readWarehouse } from '../../../../bi-warehouse/src/introspection/discoverWarehouse.mjs';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
-const sourceSchema = z.object({ query: z.record(z.string(), z.unknown()), workspaceId: z.string().uuid().optional(), modelVersion: z.string().regex(/^[a-f0-9]{64}$/).optional(), maxRows: z.number().int().positive().nullable().optional() });
+const sourceSchema = z.object({ query: z.record(z.string(), z.unknown()), maxRows: z.number().int().positive().nullable().optional() });
 const inputSchema = z.object({ action: z.enum(['generate', 'render']), title: z.string().max(500).default('Report'), source: sourceSchema, spec: z.record(z.string(), z.unknown()).optional() });
 const suggestionSchema = z.object({ kind: z.enum(['bar', 'line', 'kpi', 'histogram', 'scatter', 'density', 'none']), title: z.string(), measure: z.string().nullable(), dimension: z.string().nullable(), time: z.string().nullable(), x: z.string().nullable(), y: z.string().nullable(), granularity: z.enum(['hour', 'day', 'week', 'month', 'quarter', 'year']), reason: z.string() });
 const recent = new Map<number, number[]>();
+// The configured analytics warehouse (from .env), used for distribution charts.
+function configuredWarehouseUrl() {
+  const { WAREHOUSE_PG_HOST: host, WAREHOUSE_PG_DATABASE: database, WAREHOUSE_PG_USER: user, WAREHOUSE_PG_PASSWORD: password, WAREHOUSE_PG_PORT: port } = process.env;
+  if (!host || !database || !user) throw new Error('The warehouse connection is not configured.');
+  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password || '')}@${host}:${port || 5432}/${encodeURIComponent(database)}`;
+}
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
@@ -32,16 +35,9 @@ export async function POST(req: NextRequest) {
     if (JSON.stringify(body.source.query).length > 50000) return NextResponse.json({ error: 'This graph query is too large.' }, { status: 400 });
     if (Object.keys(body.source.query).some((key) => !['measures', 'dimensions', 'filters', 'timeDimensions', 'order', 'limit', 'offset', 'total', 'timezone'].includes(key))) return NextResponse.json({ error: 'This report uses a query option not supported by graphs. Regenerate it as a semantic report.' }, { status: 422 });
     if (body.source.maxRows) return NextResponse.json({ error: 'This report has an explicit top-N limit. Generate an uncapped report to explore its full population; the graph will not silently include records outside your report.' }, { status: 422 });
-    if (body.source.workspaceId && !body.source.modelVersion) return NextResponse.json({ error: 'Warehouse model version is required.' }, { status: 400 });
-    let context: (Awaited<ReturnType<typeof warehouseContext>> & { signal?: AbortSignal }) | undefined;
-    if (body.source.workspaceId) {
-      try { context = await warehouseContext(body.source.workspaceId, user.id, body.source.modelVersion); }
-      catch { return NextResponse.json({ error: 'Warehouse access or report model is no longer valid. Reopen the connection or regenerate this report.' }, { status: 403 }); }
-    }
     const signal = AbortSignal.any([req.signal, AbortSignal.timeout(150000)]);
-    if (context) context = { ...context, signal };
-    const catalog = context ? modelCatalog(context.model) : CUBE_CATALOG;
-    const validate = (q: Record<string, unknown>) => { if (context) return validateWarehouseQuery(context.model, q); validateCubeQuery(q); validateQueryJoins(q); return q; };
+    const catalog = CUBE_CATALOG;
+    const validate = (q: Record<string, unknown>) => { validateCubeQuery(q); validateQueryJoins(q); return q; };
     validate(body.source.query);
     const options = graphOptions(catalog, body.source.query);
     if (!options.kinds.length) return NextResponse.json({ error: 'These report columns do not support a graph. Include a count, category, date, or numeric value.' }, { status: 422 });
@@ -80,10 +76,10 @@ export async function POST(req: NextRequest) {
     validate(query);
     const generatedAt = new Date().toISOString();
     if (['histogram', 'scatter', 'density'].includes(spec.kind)) {
-      const compiledBody = context ? await workspaceCubeLoad(context, query, 'sql') : await loadCubeQuery(query, 'sql');
+      const compiledBody = await loadCubeQuery(query, 'sql');
       const compiled = uncappedCubeSql(compiledBody);
       const statement = distributionSql(compiled, spec, options.count);
-      const result = await readWarehouse(context?.connectionString || configuredWarehouseUrl(), async (client: { query: (q: unknown) => Promise<{ rows: { result: Record<string, unknown> }[] }> }) => (await client.query(statement)).rows[0].result);
+      const result = await readWarehouse(configuredWarehouseUrl(), async (client: { query: (q: unknown) => Promise<{ rows: { result: Record<string, unknown> }[] }> }) => (await client.query(statement)).rows[0].result);
       const bins = result.rows as { bx: number; by?: number; value: string }[];
       const min = Number(result.xmin), max = Number(result.xmax), ymin = Number(result.ymin), ymax = Number(result.ymax);
       if (bins.length && (![min, max].every(Number.isFinite) || spec.kind !== 'histogram' && ![ymin, ymax].every(Number.isFinite))) throw new Error('Numeric values cannot be represented by this chart.');
@@ -93,7 +89,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ spec, options, rows, total: rows.length, pageSize: rows.length, population: result.population, included: result.included, generatedAt, recommendation, mode: exact ? 'points' : 'bins', bounds: { xmin: result.xmin, xmax: result.xmax, ymin: result.ymin, ymax: result.ymax, bins: 20 } });
     }
     const pageSize = spec.kind === 'kpi' ? 1 : spec.pageSize;
-    const page = context ? await workspaceCubePage(context, query, { offset: spec.offset, limit: pageSize }) : await querySemanticLayerPage(query, { offset: spec.offset, limit: pageSize });
+    const page = await querySemanticLayerPage(query, { offset: spec.offset, limit: pageSize });
     const key = spec.kind === 'line' ? `${spec.time}.${spec.granularity}` : spec.dimension;
     const rows = page.rows.map((row: Record<string, unknown>) => ({ label: spec.kind === 'kpi' ? options.measures.find((m: { name: string }) => m.name === spec.measure)?.title : options.fixedGrouping && spec.kind === 'bar' ? [key, ...((query.dimensions || []) as string[]).filter((d) => d !== key), ...((query.timeDimensions || []) as { dimension: string; granularity?: string }[]).filter((t) => t.granularity).map((t) => `${t.dimension}.${t.granularity}`)].map((d) => String(row[d!] ?? 'Unassigned')).join(' · ') : String(row[key!] ?? 'Unassigned'), missing: spec.kind === 'bar' && row[key!] == null, value: row[spec.measure!] == null ? '' : String(row[spec.measure!]) }));
     return NextResponse.json({ spec, options, rows, total: page.total, pageSize, generatedAt, recommendation, mode: 'aggregate' });
