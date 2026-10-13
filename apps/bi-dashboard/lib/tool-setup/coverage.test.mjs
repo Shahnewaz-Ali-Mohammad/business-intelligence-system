@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { coverageTools, generationBatches } from "./coverage.mjs";
+import { coverageTools, generationBatches, coverageReport } from "./coverage.mjs";
 import { compileTool } from "./model.mjs";
 const catalog = {
   objects: [
@@ -93,4 +93,14 @@ test('large selections still cover every selected field after batching',()=>{
  const batches=generationBatches(large);
  assert.equal(batches.length,3);
  assert.equal(new Set(batches.flatMap(b=>b.objects.flatMap(o=>o.columns.map(c=>c.name)))).size,250);
+});
+
+test('reusable scenarios cover a multi-hop path in both directions without enumerating queries',()=>{
+ const object=(id,key,extra)=>({id,schema:'dbo',name:id,kind:'table',columns:[{name:key,dataType:'int',isPrimaryKey:true},...extra.map(name=>({name,dataType:'int'}))]});
+ const graph={objects:[object('customers','CustomerID',[]),object('bills','BillID',['CustomerID']),object('lines','LineID',['BillID','Amount'])],relationships:[{id:'customer_bills',from:'bills',to:'customers',targetUnique:true,columns:[{from:'CustomerID',to:'CustomerID'}]},{id:'bill_lines',from:'lines',to:'bills',targetUnique:true,columns:[{from:'BillID',to:'BillID'}]}]};
+ const tools=coverageTools(graph);assert.equal(tools.length,6);
+ const tool=tools.find(t=>t.base==='customers'&&t.mode==='aggregate');
+ const compiled=compileTool(tool,graph,'sqlserver',{query:JSON.stringify({groupBy:['customers:CustomerID'],metrics:[{field:'lines:Amount',operation:'sum',alias:'amount'}]})});
+ assert.deepEqual(compiled.joinIds,['customer_bills','bill_lines']);
+ const report=coverageReport(graph,tools);assert.equal(report.totalFields,6);assert.equal(report.verifiedRelationships,2);assert.equal(report.gaps.length,0);
 });

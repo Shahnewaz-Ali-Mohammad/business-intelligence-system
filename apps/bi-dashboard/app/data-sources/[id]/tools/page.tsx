@@ -24,9 +24,10 @@ import type {
 } from "@/lib/tool-setup/store";
 
 // One line describing what a generation run did to the saved tools.
-function generationSummary(data: { added?: number; updated?: number; unchanged?: number; removed?: number; aiCount?: number; genericCount?: number }) {
+function generationSummary(data: { added?: number; updated?: number; unchanged?: number; removed?: number; aiCount?: number; genericCount?: number; coverage?: {totalFields:number;verifiedRelationships:number;inferredRelationships:number} }) {
   if (typeof data.added !== "number") return `${data.aiCount ?? 0} business tools saved for review.`;
-  return `Generation finished: ${data.added} new, ${data.updated ?? 0} updated, ${data.unchanged ?? 0} already existed, ${data.removed ?? 0} old drafts removed. Approved tools were not changed. Review and approve the tools you want in chat.`;
+  const coverage=data.coverage?` Coverage: ${data.coverage.totalFields} selected fields, ${data.coverage.verifiedRelationships} available relationship paths (${data.coverage.inferredRelationships} inferred from named primary keys).`:'';
+  return `Generation finished: ${data.added} new, ${data.updated ?? 0} updated, ${data.unchanged ?? 0} already existed, ${data.removed ?? 0} old drafts removed. Approved tools were not changed.${coverage} Review and approve the tools you want in chat.`;
 }
 
 

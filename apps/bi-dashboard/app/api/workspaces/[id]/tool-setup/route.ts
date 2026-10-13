@@ -50,7 +50,7 @@ const Body = z.discriminatedUnion("action", [
       .array(
         z.object({
           id: z.string().max(300),
-          columns: z.array(z.string().max(200)).min(1).max(200),
+          columns: z.array(z.string().max(200)).min(1).max(1000),
         }),
       )
       .min(1)

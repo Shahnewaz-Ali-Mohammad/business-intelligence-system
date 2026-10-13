@@ -1,3 +1,4 @@
+import {namedKeyLinks} from './named-key-links.mjs';
 import {
   fingerprint,
   fieldId,
@@ -6,6 +7,7 @@ import {
 } from "./model.mjs";
 
 export function coverageTools(catalog) {
+  catalog=namedKeyLinks(catalog);
   return catalog.objects.flatMap((base) => {
     const reachable = new Set([base.id]);
     const joins = [];
@@ -15,16 +17,16 @@ export function coverageTools(catalog) {
       for (const join of catalog.relationships) {
         if (
           join.targetUnique &&
-          reachable.has(join.from) &&
-          !reachable.has(join.to) &&
-          catalog.objects.some((o) => o.id === join.to)
+          (reachable.has(join.from) || reachable.has(join.to)) &&
+          (!reachable.has(join.from) || !reachable.has(join.to)) &&
+          catalog.objects.some((o) => o.id === join.from) && catalog.objects.some((o) => o.id === join.to)
         ) {
-          reachable.add(join.to);
-          joins.push(join.id);
+          reachable.add(join.from);reachable.add(join.to);
           changed = true;
         }
       }
     }
+    joins.push(...catalog.relationships.filter(j=>j.targetUnique&&reachable.has(j.from)&&reachable.has(j.to)&&j.from!==j.to).map(j=>j.id));
     const fields = catalog.objects
       .filter((o) => reachable.has(o.id))
       .flatMap((o) =>
@@ -94,4 +96,16 @@ export function generationBatches(catalog) {
     });
   }
   return batches;
+}
+
+export function coverageReport(catalog,definitions){
+ catalog=namedKeyLinks(catalog);
+ const bases=new Set(definitions.map(t=>t.base));
+ const fields=new Set(definitions.flatMap(t=>t.capabilities?.fields||[...t.columns,...t.groupBy,...t.metrics.map(m=>m.field).filter(Boolean)]));
+ const joinIds=new Set(definitions.flatMap(t=>t.capabilities?.joins||t.joins));
+ const relationships=catalog.relationships.filter(j=>bases.has(j.from)&&bases.has(j.to));
+ return {tables:catalog.objects.filter(o=>bases.has(o.id)).map(o=>({id:o.id,name:o.name,fields:o.columns.filter(c=>fields.has(`${o.id}:${c.name}`)).length})),totalFields:fields.size,verifiedRelationships:joinIds.size,inferredRelationships:relationships.filter(j=>j.kind==='inferred_named_primary_key'&&joinIds.has(j.id)).length,
+   scenarios:['Selected or all approved columns','Single records and ID lists','Nested AND/OR/NOT filters and ranges','Multiple sort fields and pagination','Distinct rows and distinct counts','Grouping and date buckets','Verified joins in both directions'],
+   gaps:relationships.filter(j=>!joinIds.has(j.id)).map(j=>({relationship:j.id,reason:j.from===j.to?'Self joins require separate aliases':!j.targetUnique?'Target uniqueness is not verified':'Select the relationship key columns to enable this path'})),
+   limitations:['Independent child-table sums need separate aggregations; multiplying joins are rejected','Disconnected tables and ambiguous join paths are not guessed']};
 }

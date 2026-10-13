@@ -1,3 +1,4 @@
+import {namedKeyLinks} from './named-key-links.mjs';
 import pg from "pg";
 import mysql from "mysql2/promise";
 import mssql from "mssql";
@@ -238,7 +239,7 @@ export async function discoverDatabase(config) {
       objects: [...objects.values()],
       relationships: [...relationships.values()],
     };
-    return { ...catalog, fingerprint: fingerprint(catalog) };
+    return namedKeyLinks({ ...catalog, fingerprint: fingerprint(catalog) });
   });
 }
 export async function executeTool(
@@ -274,10 +275,10 @@ export async function executeTool(
     hasMore: result.length > compiled.limit,
     limit: compiled.limit,
     elapsedMs: Date.now() - started,
-    scope:
+    scope: compiled.grain || (
       tool.mode === "aggregate"
         ? "Database aggregation; returned groups may be capped."
-        : "Bounded preview, not the complete dataset.",
+        : "Bounded preview, not the complete dataset."),
   };
 }
 
@@ -319,6 +320,7 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
     );
     const numeric = [];
     for (const [index, field] of compiled.outputFields.entries()) {
+      if(compiled.unsafeAggregateFields?.includes(field))continue;
       const column = columns.get(field);
       const metric = !column;
       if (
@@ -342,10 +344,10 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
     }
     return {
       population: count.population,
-      scope:
+      scope: compiled.grain || (
         tool.mode === "aggregate"
           ? "Full matching result groups"
-          : "Full matching records",
+          : "Full matching records"),
       numeric,
     };
   });

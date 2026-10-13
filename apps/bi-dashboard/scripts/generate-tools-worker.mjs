@@ -1,4 +1,5 @@
 import mysql from 'mysql2/promise';
+import {coverageReport} from '../lib/tool-setup/coverage.mjs';
 import {generateTools} from '../lib/tool-setup/generate.ts';
 import {saveDraftDefinitions} from '../lib/tool-setup/draft-storage.mjs';
 import {readJob,updateJob} from '../lib/tool-setup/generation-job-store.mjs';
@@ -20,7 +21,7 @@ try{
  });
  if(!mine(await readJob(workspaceId,jobId)))throw new Error('Generation cancelled');
  let saved;const connection=await db.getConnection();try{saved=await saveDraftDefinitions(connection,job.sourceId,job.input.catalog.fingerprint,definitions);}finally{connection.release();}
- const result={count:definitions.length,genericCount:definitions.filter(t=>t.name.startsWith('schema_')).length,aiCount:definitions.filter(t=>!t.name.startsWith('schema_')).length,...saved};
+ const result={coverage:coverageReport(job.input.catalog,definitions),count:definitions.length,genericCount:definitions.filter(t=>t.name.startsWith('schema_')).length,aiCount:definitions.filter(t=>!t.name.startsWith('schema_')).length,...saved};
  await updateJob(workspaceId,jobId,current=>mine(current)?{...current,status:'completed',progress:'Validated drafts saved',result,heartbeatAt:Date.now()}:null);
 }catch(error){if(owned)await updateJob(workspaceId,jobId,current=>mine(current)?{...current,status:'failed',error:error instanceof Error?error.message:'Generation failed',progress:'Stopped; completed schema groups kept for retry'}:null).catch(()=>{});}
 finally{clearInterval(heartbeat);await db.end();}

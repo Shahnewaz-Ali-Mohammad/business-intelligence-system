@@ -1,3 +1,4 @@
+import {namedKeyLinks} from '@/lib/tool-setup/named-key-links.mjs';
 import { NextRequest, NextResponse } from "next/server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { getCurrentUser } from "@/lib/auth/session";
@@ -33,6 +34,7 @@ export async function POST(
       { status: 403 },
     );
   const setup = await listSetup(id);
+  const toolCatalog={relationships:setup.sources.flatMap(source=>namedKeyLinks(source.catalog).relationships)};
   const server = createToolServer(
     setup.tools,
     async (
@@ -48,6 +50,7 @@ export async function POST(
         throw new Error("Schema changed.");
       return executeTool(source.config, tool.definition, catalog, arguments_);
     },
+    toolCatalog,
   );
   const transport = new WebStandardStreamableHTTPServerTransport({
     enableJsonResponse: true,

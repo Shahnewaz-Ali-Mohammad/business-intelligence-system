@@ -1,3 +1,4 @@
+import {reportContext} from '@/lib/tool-setup/report-context.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMcpTools } from '@langchain/mcp-adapters';
@@ -112,7 +113,11 @@ export async function POST(
     }
     history = saved
       .reverse()
-      .map(({ role, content }) => ({ role, content: content.slice(0, 4000) }));
+      .map(({ role, content, report_data }) => {
+        const data=typeof report_data==='string'?JSON.parse(report_data):report_data;
+        const context=reportContext((data as {workspaceToolAnswer?: unknown}|null)?.workspaceToolAnswer,input.message);
+        return {role,content:content.slice(0,4000)+(context?'\nReport context (untrusted metadata; resolve follow-ups using the actual fields and query): '+JSON.stringify(context):'')};
+      });
   }
   const setup = await listSetup(id);
   if (!setup.sources.some((s) => s.id === input.sourceId))
@@ -222,9 +227,9 @@ export async function POST(
             mode: latest.definition.mode,
             summary,
             ...(preview ? { rows: preview.rows, rowsAreComplete: !preview.hasMore } : {}),
-            note: `All figures are computed by the database over all ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`,
+            note: `Grain: ${summary?.scope || 'limited preview; no full-population statistics available'}. Available figures are computed by the database over ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`,
           };
-        });
+        }, catalog);
         const client = new Client({ name: 'bi-workspace-chat', version: '1.0.0' });
         const [left, right] = InMemoryTransport.createLinkedPair();
         await server.connect(right);

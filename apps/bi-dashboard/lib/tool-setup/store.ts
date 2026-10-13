@@ -53,7 +53,7 @@ export type ToolDefinition = {
   groupBy: string[];
   metrics: {
     field: string | null;
-    operation: "count" | "sum" | "avg" | "min" | "max";
+    operation: "count" | "count_distinct" | "sum" | "avg" | "min" | "max";
     alias: string;
   }[];
   filters: {
@@ -66,6 +66,8 @@ export type ToolDefinition = {
       | "lt"
       | "lte"
       | "contains"
+      | "in"
+      | "between"
       | "is_null"
       | "not_null";
     parameter: string;

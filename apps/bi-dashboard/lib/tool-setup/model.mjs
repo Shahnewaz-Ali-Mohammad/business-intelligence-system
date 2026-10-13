@@ -1,3 +1,4 @@
+import {queryValue,whereSchema,whereFields,orientJoins,inferJoins,measureIsSafe,dateExpression} from './query-scenarios.mjs';
 import { z } from "zod";
 import crypto from "node:crypto";
 
@@ -30,14 +31,14 @@ export const ToolSchema = z
       .optional(),
     joins: z.array(z.string()).max(8),
     mode: z.enum(["rows", "aggregate"]),
-    columns: z.array(Field).max(30),
+    columns: z.array(Field).max(1000),
     groupBy: z.array(Field).max(5),
     metrics: z
       .array(
         z
           .object({
             field: Field.nullable(),
-            operation: z.enum(["count", "sum", "avg", "min", "max"]),
+            operation: z.enum(["count", "count_distinct", "sum", "avg", "min", "max"]),
             alias: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),
           })
           .strict(),
@@ -56,6 +57,8 @@ export const ToolSchema = z
               "lt",
               "lte",
               "contains",
+              "in",
+              "between",
               "is_null",
               "not_null",
             ]),
@@ -120,24 +123,7 @@ export function validateTool(input, catalog) {
         throw new Error("Join keys must be approved capability fields.");
     }
   }
-  const selected = new Set([base.id]);
-  const joins = [];
-  for (const id of tool.joins) {
-    const join = catalog.relationships.find((j) => j.id === id);
-    if (
-      !join ||
-      !selected.has(join.from) ||
-      selected.has(join.to) ||
-      !catalog.objects.some((o) => o.id === join.to)
-    )
-      throw new Error(
-        "Join must follow an available foreign key from the selected objects.",
-      );
-    if (!join.targetUnique)
-      throw new Error("Join target uniqueness could not be verified.");
-    selected.add(join.to);
-    joins.push(join);
-  }
+  const {selected,joins}=orientJoins(base.id,tool.joins,catalog);
   const fields = new Map(
     catalog.objects
       .filter((o) => selected.has(o.id))
@@ -177,12 +163,16 @@ export function validateTool(input, catalog) {
       throw new Error("Only count can omit a field.");
     if (
       m.field &&
-      m.operation !== "count" &&
+      !["count","count_distinct"].includes(m.operation) &&
       !numericType(requireField(m.field).dataType)
     )
       throw new Error("Choose a numeric field for this metric.");
     if (m.field) requireField(m.field);
   });
+  if(joins.some(j=>j.fanout))for(const metric of tool.metrics){
+    if(metric.operation==='count_distinct'||['min','max'].includes(metric.operation))continue;
+    if(!metric.field||!measureIsSafe(requireField(metric.field).object.id,base.id,joins))throw new Error('This join would multiply the requested measure. Use a distinct count, aggregate the child table first, or separate tools for independent totals.');
+  }
   if (
     tool.mode === "rows" &&
     (!tool.columns.length || tool.groupBy.length || tool.metrics.length)
@@ -223,7 +213,7 @@ export function compileTool(
   if (!input.capabilities && parameters.query !== undefined) {
     if (Object.keys(parameters).some((k) => k !== 'query') || typeof parameters.query !== 'string' || parameters.query.length > 20000)
       throw new Error('Invalid fixed-tool plan.');
-    const plan = z.object({ values: z.record(z.string(), z.union([z.string().max(20000), z.number().finite(), z.boolean()])).default({}) }).strict().parse(JSON.parse(parameters.query));
+    const plan = z.object({ values: z.record(z.string(), queryValue).default({}) }).strict().parse(JSON.parse(parameters.query));
     return compileTool(input, catalog, dialect, plan.values, limit, offset, options);
   }
   if (input.capabilities && parameters.query !== undefined) {
@@ -234,15 +224,19 @@ export function compileTool(
       throw new Error("Invalid query plan.");
     const plan = z
       .object({
-        columns: ToolSchema.shape.columns.optional(),
+        columns: z.union([ToolSchema.shape.columns,z.literal("*")]).optional(),
         groupBy: ToolSchema.shape.groupBy.optional(),
         metrics: ToolSchema.shape.metrics.optional(),
         joins: ToolSchema.shape.joins.optional(),
         filters: ToolSchema.shape.filters.optional(),
+        where: whereSchema.optional(),
+        sort: z.array(z.object({field:Field,direction:z.enum(['asc','desc'])}).strict()).max(5).optional(),
+        distinct: z.boolean().optional(),
+        dateGroups: z.array(z.object({field:Field,grain:z.enum(['day','week','month','year'])}).strict()).max(5).optional(),
         values: z
           .record(
             z.string(),
-            z.union([z.string().max(1000), z.number().finite(), z.boolean()]),
+            queryValue,
           )
           .optional(),
       })
@@ -250,7 +244,7 @@ export function compileTool(
       .parse(JSON.parse(parameters.query));
     const candidate = {
       ...input,
-      columns: plan.columns ?? input.columns,
+      columns: plan.columns === "*" ? input.capabilities.fields : plan.columns ?? input.columns,
       groupBy: plan.groupBy ?? input.groupBy,
       metrics: plan.metrics ?? input.metrics,
       joins: plan.joins ?? [],
@@ -262,7 +256,11 @@ export function compileTool(
       ...candidate.groupBy,
       ...candidate.metrics.map((m) => m.field).filter(Boolean),
       ...candidate.filters.map((f) => f.field),
+      ...whereFields(plan.where),
+      ...(plan.dateGroups||[]).map(g=>g.field),
+      ...(plan.sort||[]).filter(sort=>!candidate.metrics.some(m=>m.alias===sort.field)).map(sort=>sort.field),
     ];
+    if(plan.joins===undefined)candidate.joins=inferJoins(candidate.base,used,catalog,input.capabilities.joins);
     if (
       used.some((f) => !input.capabilities.fields.includes(f)) ||
       candidate.joins.some((j) => !input.capabilities.joins.includes(j))
@@ -275,23 +273,26 @@ export function compileTool(
       plan.values ?? {},
       limit,
       offset,
-      options,
+      {...options,queryPlan:plan},
     );
   }
   const { tool, base, joins, fields } = validateTool(input, catalog);
   if (
     Object.keys(parameters).some(
-      (p) => !tool.filters.some((f) => f.parameter === p),
+      (p) => !tool.filters.some((f) => f.parameter === p) && !JSON.stringify(options.queryPlan?.where||{}).includes(`"parameter":"${p}"`),
     )
   )
     throw new Error("Unknown parameter.");
   const q = (id) => quote(id, dialect);
   const ids = [base.id, ...joins.map((j) => j.to)];
   const aliases = new Map(ids.map((id, index) => [id, `t${index}`]));
-  const ref = (id) => {
-    const f = fields.get(id);
+  const rawRef = (id) => {
+    const f=fields.get(id);if(!f||isProtectedColumn(f.name))throw new Error(`Unavailable query field: ${id}`);
     return `${q(aliases.get(f.object.id))}.${q(f.name)}`;
   };
+  const runtime=options.queryPlan||{};
+  for(const group of runtime.dateGroups||[]){if(!tool.groupBy.includes(group.field)||!/(date|time)/i.test(fields.get(group.field)?.dataType||''))throw new Error('Date grouping needs a grouped date/time field.');}
+  const ref=id=>{const group=runtime.dateGroups?.find(g=>g.field===id);return group?dateExpression(rawRef(id),group.grain,dialect):rawRef(id);};
   const table = (o) =>
     dialect === "mysql" ? q(o.name) : `${q(o.schema)}.${q(o.name)}`;
   const values = [];
@@ -307,7 +308,7 @@ export function compileTool(
   for (const f of tool.filters) {
     if (f.operator === "is_null" || f.operator === "not_null") {
       where.push(
-        `${ref(f.field)} IS ${f.operator === "not_null" ? "NOT " : ""}NULL`,
+        `${rawRef(f.field)} IS ${f.operator === "not_null" ? "NOT " : ""}NULL`,
       );
       continue;
     }
@@ -315,6 +316,10 @@ export function compileTool(
     if (value === undefined || value === "") {
       if (f.required) throw new Error(`Enter ${f.parameter}.`);
       continue;
+    }
+    if(f.operator==='in'||f.operator==='between'){
+      if(!Array.isArray(value)||!value.length||value.length>100||f.operator==='between'&&value.length!==2||value.some(v=>v===null||!['string','number','boolean'].includes(typeof v)||typeof v==='number'&&!Number.isFinite(v)))throw new Error('List filters need 1-100 scalar values; between needs two.');
+      where.push(f.operator==='in'?`${rawRef(f.field)} IN (${value.map(bind).join(', ')})`:`${rawRef(f.field)} BETWEEN ${bind(value[0])} AND ${bind(value[1])}`);continue;
     }
     if (
       value === null ||
@@ -329,18 +334,32 @@ export function compileTool(
         .replaceAll("%", "!%")
         .replaceAll("_", "!_")
         .replaceAll("[", "![");
-      where.push(`${ref(f.field)} LIKE ${bind(`%${escaped}%`)} ESCAPE '!'`);
+      where.push(`${rawRef(f.field)} LIKE ${bind(`%${escaped}%`)} ESCAPE '!'`);
     } else
       where.push(
-        `${ref(f.field)} ${{ eq: "=", ne: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=" }[f.operator]} ${bind(value)}`,
+        `${rawRef(f.field)} ${{ eq: "=", ne: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=" }[f.operator]} ${bind(value)}`,
       );
   }
+  const compileWhere=node=>{
+    if(node.and||node.or)return '('+(node.and||node.or).map(compileWhere).join(node.and?' AND ':' OR ')+')';
+    if(node.not)return `(NOT ${compileWhere(node.not)})`;
+    const column=rawRef(node.field);if(['is_null','not_null'].includes(node.operator))return `${column} IS ${node.operator==='not_null'?'NOT ':''}NULL`;
+    if(node.parameter&&node.value!==undefined)throw new Error('Use either a filter value or parameter, not both.');
+    const value=node.parameter?parameters[node.parameter]:node.value;
+    if(value===undefined)throw new Error('A filter value or parameter binding is required.');
+    if(['in','between'].includes(node.operator)){if(!Array.isArray(value)||!value.length||value.length>100||node.operator==='between'&&value.length!==2)throw new Error('Invalid list or range filter.');return node.operator==='in'?`${column} IN (${value.map(bind).join(', ')})`:`${column} BETWEEN ${bind(value[0])} AND ${bind(value[1])}`;}
+    if(Array.isArray(value))throw new Error('This operator requires one value.');
+    if(node.operator==='contains'){if(!/(char|text|clob|enum|set)/i.test(fields.get(node.field).dataType))throw new Error('Contains filters require a text column.');return `${column} LIKE ${bind('%'+String(value).replaceAll('!','!!').replaceAll('%','!%').replaceAll('_','!_').replaceAll('[','![')+'%')} ESCAPE '!'`;}
+    return `${column} ${{eq:'=',ne:'<>',gt:'>',gte:'>=',lt:'<',lte:'<='}[node.operator]} ${bind(value)}`;
+  };
+  if(runtime.where){whereFields(runtime.where);where.push(compileWhere(runtime.where));}
+  if(runtime.distinct&&tool.mode!=='rows')throw new Error('Distinct rows apply to a record query; use count_distinct for an aggregate.');
   const outputFields =
     tool.mode === "rows"
       ? tool.columns
       : [...tool.groupBy, ...tool.metrics.map((m) => m.alias)];
   const metric = (m) => {
-    let expression = m.field ? ref(m.field) : "*";
+    let expression = m.field ? rawRef(m.field) : "*";
     if (
       dialect === "sqlserver" &&
       ["avg", "sum"].includes(m.operation) &&
@@ -348,6 +367,7 @@ export function compileTool(
       /^(?:tinyint|smallint|int|bigint)$/i.test(fields.get(m.field).dataType)
     )
       expression = `CAST(${expression} AS DECIMAL(38,${m.operation === "avg" ? 6 : 0}))`;
+    if(m.operation==='count_distinct')return `${dialect==='sqlserver'?'COUNT_BIG':'COUNT'}(DISTINCT ${expression})`;
     return `${dialect === "sqlserver" && m.operation === "count" ? "COUNT_BIG" : m.operation.toUpperCase()}(${expression})`;
   };
   const selections =
@@ -368,7 +388,7 @@ export function compileTool(
   );
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000000)
     throw new Error("Invalid page offset.");
-  let sql = `SELECT ${dialect === "sqlserver" && !offset ? `TOP (${bound + 1}) ` : ""}${selections.join(", ")} FROM ${table(base)} AS ${q("t0")}`;
+  let sql = `SELECT ${runtime.distinct?'DISTINCT ':''}${dialect === "sqlserver" && !offset ? `TOP (${bound + 1}) ` : ""}${selections.join(", ")} FROM ${table(base)} AS ${q("t0")}`;
   for (const join of joins) {
     const target = catalog.objects.find((o) => o.id === join.to);
     sql += ` LEFT JOIN ${table(target)} AS ${q(aliases.get(join.to))} ON ${join.columns.map((c) => `${q(aliases.get(join.from))}.${q(c.from)} = ${q(aliases.get(join.to))}.${q(c.to)}`).join(" AND ")}`;
@@ -376,16 +396,25 @@ export function compileTool(
   if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
   if (tool.mode === "aggregate" && tool.groupBy.length)
     sql += ` GROUP BY ${tool.groupBy.map(ref).join(", ")}`;
-  const populationSql = sql.replace(/^SELECT TOP \(\d+\) /, "SELECT ");
-  if (tool.mode === "aggregate")
-    sql += ` ORDER BY ${q(`c${tool.groupBy.length}`)} DESC${tool.groupBy.map((_, i) => `, ${q(`c${i}`)} ASC`).join("")}`;
-  else {
-    const keys = base.columns.filter((c) => c.isPrimaryKey);
-    if (offset && !keys.length)
-      throw new Error("Pagination needs a stable primary key.");
-    if (keys.length)
-      sql += ` ORDER BY ${keys.map((c) => `${q("t0")}.${q(c.name)}`).join(", ")}`;
+  const populationSql = sql.replace(/^SELECT (DISTINCT )?TOP \(\d+\) /, "SELECT $1");
+  const ordering=[],orderedFields=new Set();
+  for(const sort of runtime.sort||[]){
+    const index=outputFields.indexOf(sort.field);
+    if(tool.mode==='aggregate'&&index<0)throw new Error('Aggregate sort must use a returned grouping or metric.');
+    if(runtime.distinct&&index<0)throw new Error('Distinct sorting requires a returned column.');
+    ordering.push(`${index>=0?q(`c${index}`):rawRef(sort.field)} ${sort.direction.toUpperCase()}`);orderedFields.add(sort.field);
   }
+  if(tool.mode==='aggregate'){
+    if(!ordering.length)ordering.push(`${q(`c${tool.groupBy.length}`)} DESC`);
+    tool.groupBy.forEach((field,index)=>{if(!orderedFields.has(field))ordering.push(`${q(`c${index}`)} ASC`);});
+  }else if(runtime.distinct){tool.columns.forEach((field,index)=>{if(!orderedFields.has(field))ordering.push(`${q(`c${index}`)} ASC`);});}
+  else for(const id of ids){
+    const object=catalog.objects.find(o=>o.id===id),keys=object.columns.filter(c=>c.isPrimaryKey);
+    const tieFields=keys.length?keys:object.columns.filter(c=>!isProtectedColumn(c.name)&&!/(?:^text$|^ntext$|image|xml|json|bytea|binary)/i.test(c.dataType));
+    if(offset&&!tieFields.length)throw new Error('Pagination needs comparable ordering fields or a verified key.');
+    tieFields.forEach(c=>{const field=`${id}:${c.name}`;if(!orderedFields.has(field)){ordering.push(`${q(aliases.get(id))}.${q(c.name)} ASC`);orderedFields.add(field);}});
+  }
+  if(ordering.length)sql+=` ORDER BY ${[...new Set(ordering)].join(', ')}`;
   if (dialect !== "sqlserver")
     sql += ` LIMIT ${bound + 1}${offset ? ` OFFSET ${offset}` : ""}`;
   else if (offset) {
@@ -393,5 +422,7 @@ export function compileTool(
       throw new Error("Pagination needs a stable ordering key.");
     sql += ` OFFSET ${offset} ROWS FETCH NEXT ${bound + 1} ROWS ONLY`;
   }
-  return { sql, populationSql, values, limit: bound, outputFields };
+  return { sql, populationSql, values, limit: bound, outputFields, joinIds:joins.map(j=>j.id),
+    grain:joins.some(j=>j.fanout)?'Joined rows; not a count of distinct base records. Aggregates follow the explicitly requested measure.':null,
+    unsafeAggregateFields:tool.mode==='rows'?tool.columns.filter(id=>!measureIsSafe(fields.get(id).object.id,base.id,joins)):[] };
 }

@@ -8,7 +8,8 @@ export function recordGraphPlan(tool, catalog, dialect, query, groupBy) {
   return JSON.stringify({
     groupBy: [groupBy],
     metrics: [{ field: null, operation: 'count', alias: 'record_count' }],
-    joins: plan.joins || [],
+    joins: original.joinIds || plan.joins || [],
+    ...(plan.where?{where:plan.where}:{}),
     filters: plan.filters || [],
     values: plan.values || {},
   });
