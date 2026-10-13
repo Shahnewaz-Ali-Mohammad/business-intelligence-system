@@ -829,7 +829,9 @@ export default function ToolSetupPage({
                       </button>
                       <button
                         disabled={!!busy}
-                        className={buttonClass}
+                        className={t.status === "approved" ? primaryClass : buttonClass}
+                        aria-pressed={t.status === "approved"}
+                        title={t.status === "approved" ? "Click to mark Not Approved" : "Click to approve without testing"}
                         onClick={() =>
                           action({ action: t.status === "approved" ? "unapprove" : "approve", toolId: t.id }, () =>
                             setNotice(t.status === "approved" ? "Tool marked Not Approved and removed from chat." : "Tool approved and saved."),
@@ -837,7 +839,7 @@ export default function ToolSetupPage({
                         }
                       >
                         <Check size={16} />
-                        {t.status === "approved" ? "Mark Not Approved" : "Approve"}
+                        {t.status === "approved" ? "Approved" : "Not Approved"}
                       </button>
                       <button
                         disabled={!!busy}
