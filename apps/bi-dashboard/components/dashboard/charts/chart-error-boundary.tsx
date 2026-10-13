@@ -25,7 +25,7 @@ export class ChartErrorBoundary extends Component<{ children: ReactNode }, { err
   render() {
     if (this.state.error) {
       return (
-        <section className="rounded-2xl border border-rose-200 bg-rose-50/80 p-5 shadow-[0_22px_60px_rgb(15_23_42/12%)]">
+        <section className="rounded-lg border border-rose-200 bg-rose-50/80 p-5 shadow-sm">
           <div className="mb-1 flex items-center gap-2">
             <BarChart3 size={18} className="text-rose-500" />
             <p className="font-semibold text-rose-700">Chart failed to render</p>

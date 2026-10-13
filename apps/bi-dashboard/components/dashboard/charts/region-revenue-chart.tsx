@@ -6,17 +6,17 @@ import type { DashboardData } from '@/lib/dashboard/metrics';
 
 export function RegionRevenueChart({ data }: { data: DashboardData }) {
   return (
-    <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)] ring-1 ring-white">
+    <section className="rounded-lg border border-zinc-200/80 bg-white p-5 shadow-sm ring-1 ring-white">
       <div className="mb-4 flex items-center justify-between">
         <div>
           {/* "region" data key kept for this component's existing contract
               (see dashboard-data.mjs) -- the values are real POP ids, not
               ecommerce ship-country codes, so the visible label is
               corrected here to say what it actually shows. */}
-          <h2 className="text-base font-bold text-slate-950">Billing by POP</h2>
-          <p className="text-xs text-slate-500">{data.chartSources.region}</p>
+          <h2 className="text-base font-bold text-zinc-800">Billing by POP</h2>
+          <p className="text-xs text-zinc-500">{data.chartSources.region}</p>
         </div>
-        <MoreHorizontal size={18} className="text-slate-400" />
+        <MoreHorizontal size={18} className="text-zinc-400" />
       </div>
       <div className="h-[320px]">
         <ResponsiveContainer width="100%" height="100%">
@@ -24,7 +24,7 @@ export function RegionRevenueChart({ data }: { data: DashboardData }) {
             <XAxis type="number" hide />
             <YAxis type="category" dataKey="region" tickLine={false} axisLine={false} width={40} fontSize={12} />
             <Tooltip />
-            <Bar dataKey="revenue" radius={[0, 5, 5, 0]} fill="#2563eb" maxBarSize={36} />
+            <Bar dataKey="revenue" radius={[0, 5, 5, 0]} fill="#be123c" maxBarSize={36} />
           </BarChart>
         </ResponsiveContainer>
       </div>

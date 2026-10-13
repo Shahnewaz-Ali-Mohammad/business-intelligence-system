@@ -15,14 +15,27 @@ export async function GET(req: NextRequest) {
   const offset = (page - 1) * PAGE_SIZE;
 
   const db = getAppDb();
-  const [countRows] = await db.execute('SELECT COUNT(*) AS total FROM generated_reports WHERE user_id = ?', [
-    user.id,
-  ]);
+  const workspace = req.nextUrl.searchParams.get('workspace');
+  const source = req.nextUrl.searchParams.get('source');
+  const clauses = ['r.user_id = ?'];
+  const bindings: (string | number)[] = [user.id];
+  if (!workspace || workspace === 'isp-default') {
+    clauses.push("(r.source_session_id IS NULL OR EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=r.source_session_id AND s.user_id=r.user_id AND (s.warehouse_id IS NULL OR s.warehouse_id='isp-default')))");
+  } else {
+    clauses.push('EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=r.source_session_id AND s.user_id=r.user_id AND s.warehouse_id=?)');
+    bindings.push(workspace);
+  }
+  if (source) {
+    clauses.push("JSON_UNQUOTE(JSON_EXTRACT(r.data, '$.workspaceToolAnswer.sourceId'))=?");
+    bindings.push(source);
+  }
+  const where = clauses.join(' AND ');
+  const [countRows] = await db.execute(`SELECT COUNT(*) AS total FROM generated_reports r WHERE ${where}`, bindings);
   const total = Number((countRows as Array<{ total: number }>)[0]?.total ?? 0);
 
   const [rows] = await db.query(
-    'SELECT id, title, narrative, topic, chart_type, chart_spec, created_at FROM generated_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-    [user.id, PAGE_SIZE, offset],
+    `SELECT r.id, r.title, r.narrative, r.topic, r.chart_type, r.chart_spec, r.created_at FROM generated_reports r WHERE ${where} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
+    [...bindings, PAGE_SIZE, offset],
   );
 
   return NextResponse.json({ reports: rows, total, page, pageSize: PAGE_SIZE });

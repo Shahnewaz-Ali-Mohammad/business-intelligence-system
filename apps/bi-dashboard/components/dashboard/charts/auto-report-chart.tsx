@@ -37,7 +37,7 @@ import {
 
 // Fixed categorical order -- never cycled/regenerated per render, so a
 // given measure keeps the same color across edits and reopens.
-const SERIES_COLORS = ['#2563eb', '#0f9f9a', '#d97706', '#7c3aed', '#e11d48'];
+const SERIES_COLORS = ['#be123c', '#be123c', '#b45309', '#64748b', '#6b7a36'];
 
 // A donut's slices are DIMENSION values (POP, package, ...), not a fixed
 // small set of measures -- a package breakdown can have 70+ slices, and
@@ -284,12 +284,12 @@ function ChartGroupCard({
   }
 
   return (
-    <section className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-[0_12px_30px_rgb(15_23_42/7%)] ring-1 ring-white">
+    <section className="rounded-lg border border-zinc-200/80 bg-white p-4 shadow-sm ring-1 ring-white">
       <div className="mb-3 space-y-2">
-        <p className="text-sm font-semibold text-slate-700">
+        <p className="text-sm font-semibold text-zinc-700">
           {displayTitle}
           {(override.kind === 'donut' || override.kind === 'pareto') && group.measureIndices.length > 1 ? (
-            <span className="ml-1 font-normal text-slate-400">(showing {table.headers[singleSeriesMeasure]} only)</span>
+            <span className="ml-1 font-normal text-zinc-400">(showing {table.headers[singleSeriesMeasure]} only)</span>
           ) : null}
         </p>
 
@@ -299,14 +299,14 @@ function ChartGroupCard({
             or wraps controls unpredictably next to it. */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Chart type switcher */}
-          <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+          <div className="flex rounded-lg border border-zinc-200 bg-zinc-50 p-0.5">
             {KIND_OPTIONS.map(({ kind, label, icon: Icon }) => (
               <button
                 key={kind}
                 type="button"
                 onClick={() => setOverride((prev) => ({ ...prev, kind }))}
                 className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition ${
-                  override.kind === kind ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-700'
+                  override.kind === kind ? 'bg-white text-rose-800 shadow-sm ring-1 ring-zinc-200' : 'text-zinc-500 hover:text-zinc-700'
                 }`}
                 title={`View as ${label.toLowerCase()} chart`}
               >
@@ -329,7 +329,7 @@ function ChartGroupCard({
             <select
               value={override.donutMeasureIndex}
               onChange={(e) => setOverride((prev) => ({ ...prev, donutMeasureIndex: Number(e.target.value) }))}
-              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600 outline-none"
+              className="rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-600 outline-none"
               title="Which metric the donut shows"
             >
               {group.measureIndices.map((i) => (
@@ -348,7 +348,7 @@ function ChartGroupCard({
             <select
               value={override.paretoMeasureIndex}
               onChange={(e) => setOverride((prev) => ({ ...prev, paretoMeasureIndex: Number(e.target.value) }))}
-              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600 outline-none"
+              className="rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-600 outline-none"
               title="Which metric the Pareto chart ranks by"
             >
               {group.measureIndices.map((i) => (
@@ -365,7 +365,7 @@ function ChartGroupCard({
             <select
               value={override.rowLimit}
               onChange={(e) => setOverride((prev) => ({ ...prev, rowLimit: Number(e.target.value) }))}
-              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600 outline-none"
+              className="rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-600 outline-none"
               title="How many rows to chart"
             >
               {rowLimitOptions.map((n) => (
@@ -392,7 +392,7 @@ function ChartGroupCard({
                 type="button"
                 onClick={() => toggleMeasure(i)}
                 className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
-                  active ? 'border-slate-200 bg-white text-slate-700' : 'border-slate-100 bg-slate-50 text-slate-400 line-through'
+                  active ? 'border-zinc-200 bg-white text-zinc-700' : 'border-zinc-100 bg-zinc-50 text-zinc-400 line-through'
                 }`}
               >
                 <span
@@ -407,22 +407,22 @@ function ChartGroupCard({
       )}
 
       {override.kind === 'donut' && donutMeasureHasNegatives ? (
-        <div className="flex h-[220px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-6 text-center">
-          <p className="text-sm font-medium text-slate-600">
+        <div className="flex h-[220px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-6 text-center">
+          <p className="text-sm font-medium text-zinc-600">
             A donut can&apos;t show {table.headers[donutMeasure]} here
           </p>
-          <p className="max-w-md text-xs text-slate-500">
+          <p className="max-w-md text-xs text-zinc-500">
             Some rows have a negative {table.headers[donutMeasure].toLowerCase()} (e.g. a customer credit/overpayment),
             and a donut slice can&apos;t represent a negative share of the whole. Pick Bar or Line instead, or switch to
             a measure that&apos;s never negative using the chips above.
           </p>
         </div>
       ) : override.kind === 'pareto' && paretoMeasureHasNegatives ? (
-        <div className="flex h-[220px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-6 text-center">
-          <p className="text-sm font-medium text-slate-600">
+        <div className="flex h-[220px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-6 text-center">
+          <p className="text-sm font-medium text-zinc-600">
             A Pareto chart can&apos;t rank by {table.headers[paretoMeasure]} here
           </p>
-          <p className="max-w-md text-xs text-slate-500">
+          <p className="max-w-md text-xs text-zinc-500">
             Some rows have a negative {table.headers[paretoMeasure].toLowerCase()} (e.g. a customer credit/overpayment),
             and a share-of-total ranking can&apos;t represent a negative share of the whole. Pick Bar or Line instead, or
             switch to a measure that&apos;s never negative using the selector above.
@@ -519,7 +519,7 @@ function DonutChart({ chartRows, measureHeader }: { chartRows: Record<string, st
   return (
     <div>
       {othersFolded > 0 ? (
-        <p className="mb-2 text-center text-xs text-slate-400">
+        <p className="mb-2 text-center text-xs text-zinc-400">
           Showing the top {MAX_DONUT_SLICES - 1} of {chartRows.length} -- the rest are grouped into &quot;Other ({othersFolded} more)&quot; below.
         </p>
       ) : null}
@@ -561,10 +561,10 @@ function DonutChart({ chartRows, measureHeader }: { chartRows: Record<string, st
           return (
             <div key={i} className="flex min-w-0 items-center gap-1.5">
               <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: sliceColor(i, slices.length) }} />
-              <span className="min-w-0 flex-1 truncate text-slate-700" title={String(row.__label)}>
+              <span className="min-w-0 flex-1 truncate text-zinc-700" title={String(row.__label)}>
                 {row.__label}
               </span>
-              <span className="shrink-0 font-medium text-slate-500">{pct}%</span>
+              <span className="shrink-0 font-medium text-zinc-500">{pct}%</span>
             </div>
           );
         })}
@@ -634,9 +634,9 @@ function ParetoChart({ chartRows, measureHeader }: { chartRows: Record<string, s
 
   return (
     <div>
-      <p className="mb-2 text-center text-xs text-slate-500">
+      <p className="mb-2 text-center text-xs text-zinc-500">
         Top {shownCount} of {totalCount.toLocaleString('en-US')} account for{' '}
-        <span className="font-semibold text-slate-700">{shownSharePct}%</span> of total {measureHeader}
+        <span className="font-semibold text-zinc-700">{shownSharePct}%</span> of total {measureHeader}
         {remainderCount > 0 ? ` -- the remaining ${remainderCount.toLocaleString('en-US')} make up the rest.` : '.'}
       </p>
       <div className="overflow-x-auto">

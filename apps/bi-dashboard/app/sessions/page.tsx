@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ChevronLeft, ChevronRight, LogIn, MessageSquareText, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { useAuth } from '@/components/auth/auth-provider';
@@ -22,7 +23,14 @@ type SessionRow = {
   updated_at: string;
 };
 
-export default function SessionsPage() {
+export default function SessionsPage() { return <Suspense fallback={null}><ScopedSessions /></Suspense>; }
+function ScopedSessions() { const search = useSearchParams(); return <SessionList key={search.toString()} />; }
+function SessionList() {
+  const search = useSearchParams();
+  const scope = new URLSearchParams();
+  scope.set('workspace', search.get('workspace') || 'isp-default');
+  if (search.get('source')) scope.set('source', search.get('source')!);
+  const scopeQuery = scope.toString();
   const { user, loading: authLoading } = useAuth();
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -39,8 +47,7 @@ export default function SessionsPage() {
   const pageSize = 6;
 
   const loadPage = useCallback((targetPage: number) => {
-    setSessions(null);
-    fetch(`/api/chat-sessions?page=${targetPage}`)
+    fetch(`/api/chat-sessions?page=${targetPage}&${scopeQuery}`)
       .then((res) => res.json())
       .then((body: { sessions: SessionRow[]; total: number; page: number }) => {
         setSessions(body.sessions);
@@ -48,7 +55,7 @@ export default function SessionsPage() {
         setPage(body.page);
       })
       .catch(() => setSessions([]));
-  }, []);
+  }, [scopeQuery]);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -93,20 +100,20 @@ export default function SessionsPage() {
   return (
     <WorkspacePage active="Sessions" title="Sessions" subtitle="Your saved conversations. Reopen any of them to keep chatting." scroll>
       {!authLoading && !user ? (
-        <div className="flex flex-col items-center gap-3 rounded-xl border border-slate-200/80 bg-white p-10 text-center shadow-sm">
-          <LogIn size={22} className="text-slate-400" />
-          <p className="text-sm text-slate-500">Sign in to see your saved conversations.</p>
-          <Link href="/login" className="text-sm font-semibold text-blue-600 hover:underline">
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-zinc-200/80 bg-white p-10 text-center shadow-sm">
+          <LogIn size={22} className="text-zinc-400" />
+          <p className="text-sm text-zinc-500">Sign in to see your saved conversations.</p>
+          <Link href="/login" className="text-sm font-semibold text-rose-700 hover:underline">
             Sign in / Create account
           </Link>
         </div>
       ) : sessions === null ? (
-        <p className="text-sm text-slate-500">Loading your conversations...</p>
+        <p className="text-sm text-zinc-500">Loading your conversations...</p>
       ) : sessions.length === 0 ? (
-        <div className="rounded-xl border border-slate-200/80 bg-white p-10 text-center shadow-sm">
-          <p className="text-sm text-slate-500">
+        <div className="rounded-lg border border-zinc-200/80 bg-white p-10 text-center shadow-sm">
+          <p className="text-sm text-zinc-500">
             No conversations yet. Start one in{' '}
-            <Link href="/chat" className="font-semibold text-blue-600 hover:underline">
+            <Link href="/chat" className="font-semibold text-rose-700 hover:underline">
               Chat
             </Link>{' '}
             and it will show up here.
@@ -118,12 +125,12 @@ export default function SessionsPage() {
             {sessions.map((session) => (
               <Link
                 key={session.id}
-                href={`/sessions/${session.id}`}
-                className="group rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgb(15_23_42/10%)]"
+                href={`/sessions/${session.id}?${scopeQuery}`}
+                className="group rounded-lg border border-zinc-200/80 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-sm"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 flex-1 items-center gap-2">
-                    <MessageSquareText size={18} className="shrink-0 text-blue-600" />
+                    <MessageSquareText size={18} className="shrink-0 text-rose-700" />
                     {renamingId === session.id ? (
                       <input
                         autoFocus
@@ -140,10 +147,10 @@ export default function SessionsPage() {
                             cancelRename();
                           }
                         }}
-                        className="min-w-0 flex-1 rounded-md border border-blue-300 bg-white px-2 py-1 font-bold text-slate-950 outline-none ring-2 ring-blue-100"
+                        className="min-w-0 flex-1 rounded-md border border-rose-300 bg-white px-2 py-1 font-bold text-zinc-800 outline-none ring-2 ring-rose-100"
                       />
                     ) : (
-                      <h2 className="min-w-0 flex-1 truncate font-bold text-slate-950">{session.title}</h2>
+                      <h2 className="min-w-0 flex-1 truncate font-bold text-zinc-800">{session.title}</h2>
                     )}
                   </div>
                   <DropdownMenu>
@@ -153,7 +160,7 @@ export default function SessionsPage() {
                           type="button"
                           onClick={(e) => e.preventDefault()}
                           aria-label={`Options for ${session.title}`}
-                          className="shrink-0 rounded-md p-1.5 text-slate-300 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100"
+                          className="shrink-0 rounded-md p-1.5 text-zinc-300 opacity-0 transition hover:bg-zinc-100 hover:text-zinc-700 focus-visible:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100"
                         />
                       }
                     >
@@ -174,22 +181,22 @@ export default function SessionsPage() {
 
                 {session.last_question ? (
                   <div className="mt-3 space-y-1.5 text-sm">
-                    <p className="truncate text-slate-500">
-                      <span className="font-semibold text-slate-400">You: </span>
+                    <p className="truncate text-zinc-500">
+                      <span className="font-semibold text-zinc-400">You: </span>
                       {session.last_question}
                     </p>
                     {session.last_answer ? (
-                      <p className="line-clamp-2 text-slate-600">
-                        <span className="font-semibold text-slate-400">Assistant: </span>
+                      <p className="line-clamp-2 text-zinc-600">
+                        <span className="font-semibold text-zinc-400">Assistant: </span>
                         {session.last_answer}
                       </p>
                     ) : null}
                   </div>
                 ) : (
-                  <p className="mt-3 text-sm text-slate-400">No messages yet.</p>
+                  <p className="mt-3 text-sm text-zinc-400">No messages yet.</p>
                 )}
 
-                <div className="mt-4 flex items-center justify-between text-xs text-slate-400">
+                <div className="mt-4 flex items-center justify-between text-xs text-zinc-400">
                   <span>
                     {session.message_count} message{session.message_count === 1 ? '' : 's'}
                   </span>
@@ -205,18 +212,18 @@ export default function SessionsPage() {
                 type="button"
                 onClick={() => loadPage(page - 1)}
                 disabled={page <= 1}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-600 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <ChevronLeft size={16} />
               </button>
-              <span className="text-sm text-slate-500">
+              <span className="text-sm text-zinc-500">
                 Page {page} of {totalPages}
               </span>
               <button
                 type="button"
                 onClick={() => loadPage(page + 1)}
                 disabled={page >= totalPages}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-600 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <ChevronRight size={16} />
               </button>

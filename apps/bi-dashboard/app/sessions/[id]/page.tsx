@@ -13,9 +13,10 @@ type ChatMessageRow = {
   content: string;
   tables_used: string[] | null;
   created_at: string;
+  report_data?: { workspaceToolAnswer?: unknown } | null;
 };
 
-type SessionRow = { id: number; title: string; created_at: string; updated_at: string };
+type SessionRow = { id: number; title: string; created_at: string; updated_at: string; warehouse_id?: string | null };
 
 const PAGE_SIZE = 10; // 5 exchanges per page (question + answer each)
 
@@ -67,7 +68,7 @@ export default function SessionDetailPage() {
   if (session === undefined) {
     return (
       <WorkspacePage active="Sessions" title="Loading conversation..." subtitle="">
-        <p className="text-sm text-slate-500">Loading...</p>
+        <p className="text-sm text-zinc-500">Loading...</p>
       </WorkspacePage>
     );
   }
@@ -75,7 +76,7 @@ export default function SessionDetailPage() {
   if (session === null) {
     return (
       <WorkspacePage active="Sessions" title="Conversation not found" subtitle="">
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-zinc-500">
           This conversation does not exist, or belongs to a different account.
         </p>
       </WorkspacePage>
@@ -88,8 +89,8 @@ export default function SessionDetailPage() {
       title={session.title}
       subtitle={`Started ${new Date(session.created_at).toLocaleString()}`}
       action={
-        <Link href={`/chat?session=${session.id}`}>
-          <Button className="gap-2 bg-blue-600 hover:bg-blue-700">
+        <Link href={session.warehouse_id && messages.some((m) => m.report_data?.workspaceToolAnswer) ? `/data-sources/${encodeURIComponent(session.warehouse_id)}/chat?session=${session.id}` : `/chat?session=${session.id}`}>
+          <Button className="gap-2 bg-rose-700 hover:bg-rose-800">
             Continue this conversation
             <ArrowRight size={16} />
           </Button>
@@ -109,34 +110,34 @@ export default function SessionDetailPage() {
         {exchanges.map((exchange, index) => (
           <section
             key={exchange.question?.id ?? exchange.answer?.id ?? index}
-            className="space-y-3 rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)]"
+            className="space-y-3 rounded-lg border border-zinc-200/80 bg-white p-5 shadow-sm"
           >
             {exchange.question ? (
               <div className="flex items-start gap-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-slate-700 to-slate-900 text-white">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-100 text-zinc-600">
                   <User size={14} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">You</p>
-                  <p className="mt-0.5 whitespace-pre-line text-sm text-slate-800">{exchange.question.content}</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">You</p>
+                  <p className="mt-0.5 whitespace-pre-line text-sm text-zinc-800">{exchange.question.content}</p>
                 </div>
               </div>
             ) : null}
             {exchange.answer ? (
-              <div className="flex items-start gap-3 border-t border-slate-100 pt-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-950 text-white">
+              <div className="flex items-start gap-3 border-t border-zinc-100 pt-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-white">
                   <Sparkles size={14} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Assistant</p>
-                  <p className="mt-0.5 whitespace-pre-line text-sm text-slate-700">{exchange.answer.content}</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Assistant</p>
+                  <p className="mt-0.5 whitespace-pre-line text-sm text-zinc-700">{exchange.answer.content}</p>
                   {exchange.answer.tables_used && exchange.answer.tables_used.length > 0 ? (
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      <Database size={11} className="text-slate-400" />
+                      <Database size={11} className="text-zinc-400" />
                       {exchange.answer.tables_used.map((table) => (
                         <span
                           key={table}
-                          className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600"
+                          className="rounded-md border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[11px] font-medium text-zinc-600"
                         >
                           {table}
                         </span>

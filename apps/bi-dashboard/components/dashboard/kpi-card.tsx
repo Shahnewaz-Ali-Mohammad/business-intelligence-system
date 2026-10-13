@@ -45,15 +45,15 @@ export function KpiCard({
     : '0%';
 
   return (
-    <section className="flex min-h-[390px] flex-col rounded-xl border border-slate-200/80 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/7%)] ring-1 ring-white transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgb(15_23_42/10%)]">
+    <section className="flex min-h-[390px] flex-col rounded-lg border border-zinc-200/80 bg-white p-5 shadow-sm ring-1 ring-white transition hover:-translate-y-0.5 hover:shadow-sm">
       <div className="mb-4 flex items-start justify-between">
         <div>
-          <p className="text-sm font-semibold text-slate-600">{kpi.label}</p>
-          <p className="mt-2 text-4xl font-bold tracking-tight text-slate-950">
+          <p className="text-sm font-semibold text-zinc-600">{kpi.label}</p>
+          <p className="mt-2 text-4xl font-bold tracking-normal text-zinc-800">
             {kpi.value}
           </p>
         </div>
-        <MoreHorizontal size={18} className="text-slate-400" />
+        <MoreHorizontal size={18} className="text-zinc-400" />
       </div>
       <p
         className={`mb-2 flex items-center gap-1 text-sm ${
@@ -63,13 +63,13 @@ export function KpiCard({
         <ArrowUpRight size={15} className={kpi.trend === 'down' ? 'rotate-90' : ''} />
         {kpi.delta}
       </p>
-      <p className="text-sm font-medium text-slate-700">{kpi.detail}</p>
-      <p className="mt-1 text-xs text-slate-500">{kpi.context}</p>
+      <p className="text-sm font-medium text-zinc-700">{kpi.detail}</p>
+      <p className="mt-1 text-xs text-zinc-500">{kpi.context}</p>
       {isCustomerMixCard ? (
-        <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3">
+        <div className="mt-4 rounded-lg border border-zinc-100 bg-zinc-50/80 px-3 py-3">
           {topCustomers && topCustomers.length > 0 ? (
             <>
-              <p className="mb-2 text-xs font-medium text-slate-500">
+              <p className="mb-2 text-xs font-medium text-zinc-500">
                 Top {topCustomers.length} customers by orders placed
               </p>
               <ul className="space-y-1.5">
@@ -77,11 +77,11 @@ export function KpiCard({
                   const max = Math.max(...topCustomers.map((c) => c.orders), 1);
                   return topCustomers.map((customer, index) => (
                     <li key={`${customer.name}-${index}`} className="flex items-center gap-2 text-xs">
-                      <span className="w-4 shrink-0 text-slate-400">{index + 1}</span>
-                      <span className="w-24 shrink-0 truncate text-slate-700" title={customer.name}>
+                      <span className="w-4 shrink-0 text-zinc-400">{index + 1}</span>
+                      <span className="w-24 shrink-0 truncate text-zinc-700" title={customer.name}>
                         {customer.name}
                       </span>
-                      <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-200">
+                      <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-zinc-200">
                         <span
                           className="block h-full rounded-full"
                           style={{
@@ -90,7 +90,7 @@ export function KpiCard({
                           }}
                         />
                       </span>
-                      <span className="w-6 shrink-0 text-right font-medium text-slate-600">
+                      <span className="w-6 shrink-0 text-right font-medium text-zinc-600">
                         {customer.orders}
                       </span>
                     </li>
@@ -99,30 +99,30 @@ export function KpiCard({
               </ul>
             </>
           ) : (
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-zinc-400">
               No verified customer-linking column on this schema — showing the
               active-customer count only.
             </p>
           )}
-          <div className="mt-3 rounded-lg border border-slate-100 bg-white px-3 py-2 text-xs text-slate-500 shadow-sm">
-            <span className="font-medium text-slate-700">Source: </span>
+          <div className="mt-3 rounded-lg border border-zinc-100 bg-white px-3 py-2 text-xs text-zinc-500 shadow-sm">
+            <span className="font-medium text-zinc-700">Source: </span>
             <span>{kpi.source}</span>
           </div>
         </div>
       ) : (
       <div
-        className="relative mt-4 overflow-hidden rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2"
+        className="relative mt-4 overflow-hidden rounded-lg border border-zinc-100 bg-zinc-50/80 px-3 py-2"
         onMouseLeave={() => setActivePointIndex(null)}
       >
         {activePoint ? (
           <div
-            className="pointer-events-none absolute z-10 min-w-[132px] -translate-x-1/2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-xl shadow-slate-950/10"
+            className="pointer-events-none absolute z-10 min-w-[132px] -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm shadow-sm shadow-zinc-800/10"
             style={{
               left: tooltipLeft,
               top: tooltipTop,
             }}
           >
-            <p className="font-semibold text-slate-950">{activePoint.label}</p>
+            <p className="font-semibold text-zinc-800">{activePoint.label}</p>
             <p className="mt-1 font-medium" style={{ color: kpi.accent }}>
               {activePoint.value}
             </p>
@@ -161,10 +161,10 @@ export function KpiCard({
               strokeWidth="1"
             />
           ))}
-          <text x="0" y={plot.top + 4} className="fill-slate-500 text-[10px]">
+          <text x="0" y={plot.top + 4} className="fill-zinc-500 text-[10px]">
             {kpi.axis.yMax}
           </text>
-          <text x="0" y={plot.top + plotHeight} className="fill-slate-500 text-[10px]">
+          <text x="0" y={plot.top + plotHeight} className="fill-zinc-500 text-[10px]">
             {kpi.axis.yMin}
           </text>
           <polyline
@@ -213,7 +213,7 @@ export function KpiCard({
           <text
             x={plot.left}
             y={chartHeight - 5}
-            className="fill-slate-500 text-[10px]"
+            className="fill-zinc-500 text-[10px]"
           >
             {kpi.axis.xStart}
           </text>
@@ -221,19 +221,19 @@ export function KpiCard({
             x={plot.left + plotWidth}
             y={chartHeight - 5}
             textAnchor="end"
-            className="fill-slate-500 text-[10px]"
+            className="fill-zinc-500 text-[10px]"
           >
             {kpi.axis.xEnd}
           </text>
         </svg>
-        <div className="mt-2 rounded-lg border border-slate-100 bg-white px-3 py-2 text-xs text-slate-500 shadow-sm">
-          <span className="font-medium text-slate-700">Source: </span>
+        <div className="mt-2 rounded-lg border border-zinc-100 bg-white px-3 py-2 text-xs text-zinc-500 shadow-sm">
+          <span className="font-medium text-zinc-700">Source: </span>
           <span>{kpi.source}</span>
         </div>
       </div>
 
       )}
-      <p className="mt-auto border-t border-slate-100 pt-3 text-xs text-slate-500">
+      <p className="mt-auto border-t border-zinc-100 pt-3 text-xs text-zinc-500">
         {kpi.footer}
       </p>
     </section>

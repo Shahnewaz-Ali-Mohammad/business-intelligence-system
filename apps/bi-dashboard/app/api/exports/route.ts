@@ -8,14 +8,21 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ exports: [] });
 
   const db = getAppDb();
+  const workspace = req.nextUrl.searchParams.get('workspace');
+  const source = req.nextUrl.searchParams.get('source');
+  const clauses = ['e.user_id=?'];
+  const bindings: (string | number)[] = [user.id];
+  if (!workspace || workspace === 'isp-default') clauses.push("(e.report_id IS NULL OR r.source_session_id IS NULL OR s.warehouse_id IS NULL OR s.warehouse_id='isp-default')");
+  else { clauses.push('s.warehouse_id=?'); bindings.push(workspace); }
+  if (source) { clauses.push("JSON_UNQUOTE(JSON_EXTRACT(r.data, '$.workspaceToolAnswer.sourceId'))=?"); bindings.push(source); }
   const [rows] = await db.execute(
-    'SELECT id, report_id, file_name, format, created_at FROM report_exports WHERE user_id = ? ORDER BY created_at DESC LIMIT 100',
-    [user.id],
+    `SELECT e.id,e.report_id,e.file_name,e.format,e.created_at FROM report_exports e LEFT JOIN generated_reports r ON r.id=e.report_id AND r.user_id=e.user_id LEFT JOIN chat_sessions s ON s.id=r.source_session_id AND s.user_id=e.user_id WHERE ${clauses.join(' AND ')} ORDER BY e.created_at DESC LIMIT 100`,
+    bindings,
   );
   return NextResponse.json({ exports: rows });
 }
@@ -31,6 +38,10 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getAppDb();
+    if (reportId != null) {
+      const [reports] = await db.execute('SELECT id FROM generated_reports WHERE id=? AND user_id=?', [reportId, user.id]);
+      if (!(reports as unknown[]).length) return NextResponse.json({ error: 'Report unavailable.' }, { status: 403 });
+    }
     const [result] = await db.execute(
       'INSERT INTO report_exports (user_id, report_id, file_name, format, file_content) VALUES (?, ?, ?, ?, ?)',
       [user.id, typeof reportId === 'number' ? reportId : null, fileName, format, fileContent],
