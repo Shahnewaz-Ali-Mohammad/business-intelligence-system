@@ -1,7 +1,6 @@
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-import {getSource,getSourceNotes,saveSourceNotes} from './store';
-import {profileCodeColumns,draftBusinessNotes} from './business-notes.mjs';
+import {getSource} from './store';
 import {createJob,readJob,latestJob,updateJob} from './generation-job-store.mjs';
 type SavedJob = {status:string;heartbeatAt?:number|null;[key:string]:unknown};
 
@@ -11,18 +10,7 @@ export function launchWorker(workspaceId:string,jobId:string) {
 }
 export async function startGeneration(workspaceId:string,input:{sourceId:string;selected:{id:string;columns:string[]}[];request:string}){
  const source=await getSource(workspaceId,input.sourceId);
- let notes=await getSourceNotes(input.sourceId);
- // No notes yet: draft them automatically from the schema and code values,
- // save them for the owner to review and edit, and use them for this run.
- if(!notes.trim()){
-  try{
-   const objectIds=input.selected.map((s)=>s.id);
-   const profiles=await profileCodeColumns(source.config,source.catalog,objectIds).catch(()=>[]);
-   notes=await draftBusinessNotes({catalog:source.catalog,profiles,objectIds});
-   if(notes)await saveSourceNotes(workspaceId,input.sourceId,notes);
-  }catch(error){console.error('[tool generation] notes draft skipped:',error instanceof Error?error.message:error);}
- }
- const job=await createJob(workspaceId,input.sourceId,{catalog:source.catalog,selected:input.selected,request:input.request,notes});
+ const job=await createJob(workspaceId,input.sourceId,{catalog:source.catalog,selected:input.selected,request:input.request});
  launchWorker(workspaceId,job.id);return {jobId:job.id};
 }
 export async function generationStatus(workspaceId:string,jobId?:string,sourceId?:string){

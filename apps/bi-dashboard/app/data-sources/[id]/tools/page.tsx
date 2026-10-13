@@ -38,7 +38,6 @@ type Server = {
   port: number;
 };
 type Source = {
-  notes?: string;
   id: string;
   serverId: string;
   database: string;
@@ -100,7 +99,6 @@ export default function ToolSetupPage({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState("");
-  const [request, setRequest] = useState("");
   const operationAbort = useRef<AbortController | null>(null);
   const generationJobRef = useRef<string | null>(null);
   const generationStartedAt=useRef(0);
@@ -676,25 +674,6 @@ export default function ToolSetupPage({
                     {error}
                   </div>
                 )}
-                <BusinessNotes
-                  key={`${sourceId}:${setup.sources.find((s) => s.id === sourceId)?.notes || ""}`}
-                  initial={setup.sources.find((s) => s.id === sourceId)?.notes || ""}
-                  busy={!!busy}
-                  drafting={busy === "draftNotes"}
-                  canDraft={consent}
-                  onDraft={() => action({ action: "draftNotes", sourceId, objectIds: Object.entries(selected).filter(([, cols]) => cols.length).map(([oid]) => oid), consent: true }, () => setNotice("Business notes drafted from your database. Review them and edit anything that is wrong, then generate tools."))}
-                  onSave={(notes) => action({ action: "saveNotes", sourceId, notes }, () => setNotice("Business notes saved. They are used the next time you generate tools and in this database's chat."))}
-                />
-                <label className="block space-y-1 text-sm">
-                  Tool suggestions
-                  <textarea
-                    value={request}
-                    onChange={(e) => setRequest(e.target.value)}
-                    placeholder="Ticket lists, ticket counts by type, customer lookup, LinkId filters..."
-                    maxLength={2000}
-                    className="min-h-20 w-full rounded-md border border-zinc-300 p-3 text-sm"
-                  />
-                </label>
                 <label className="flex items-start gap-2 text-sm">
                   <input
                     type="checkbox"
@@ -703,9 +682,7 @@ export default function ToolSetupPage({
                     onChange={(e) => setConsent(e.target.checked)}
                   />
                   I approve sending selected object names, columns,
-                  relationships, business notes, this request, and the most common values of
-                  code-like columns (for example status or type) to OpenAI. No other rows
-                  or credentials are included.
+                  relationships to OpenAI. No rows or credentials are included.
                 </label>
                 {!busy && resumableJob && <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-600"><span>Completed schema groups are saved.</span><button type="button" className={buttonClass} onClick={()=>action({action:'resumeGeneration',jobId:resumableJob},()=>setNotice('Generation completed; drafts saved for review.'))}>Resume generation</button></div>}
                 {busy === 'generate' && <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3 text-sm text-zinc-600">
@@ -729,7 +706,7 @@ export default function ToolSetupPage({
                           selected: Object.entries(selected)
                             .filter(([, c]) => c.length)
                             .map(([id, columns]) => ({ id, columns })),
-                          request,
+                          request: "",
                           consent,
                         },
                         (data) =>
@@ -1046,36 +1023,5 @@ export default function ToolSetupPage({
         )}
       </div>
     </WorkspacePage>
-  );
-}
-
-// Owner-written context that makes generated tools accurate: what tables
-// mean, status/type codes, money columns, and how metrics are defined.
-function BusinessNotes({ initial, busy, drafting, canDraft, onDraft, onSave }: { initial: string; busy: boolean; drafting: boolean; canDraft: boolean; onDraft: () => void; onSave: (notes: string) => void }) {
-  const [notes, setNotes] = useState(initial);
-  return (
-    <div className="space-y-1 text-sm">
-      <label className="block space-y-1">
-        <span>Business notes</span>
-        <span className="block text-xs text-zinc-500">
-          Drafted automatically from your tables, relationships and the codes found in the data. Check them and correct anything wrong -- tools and chat answers follow these notes. Lines marked &quot;(please confirm)&quot; are guesses.
-        </span>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder={drafting ? "Drafting notes from your database..." : "No notes yet. Click \"Draft notes automatically\", or they will be drafted when you generate tools."}
-          maxLength={8000}
-          className="min-h-40 w-full rounded-md border border-zinc-300 p-3 text-sm"
-        />
-      </label>
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" disabled={busy || !canDraft} onClick={onDraft} title={canDraft ? "" : "Tick the approval box below first"} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium disabled:opacity-40">
-          {drafting ? "Drafting..." : initial.trim() ? "Redraft notes automatically" : "Draft notes automatically"}
-        </button>
-        <button type="button" disabled={busy || notes.trim() === initial.trim()} onClick={() => onSave(notes)} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium disabled:opacity-40">
-          Save edits
-        </button>
-      </div>
-    </div>
   );
 }

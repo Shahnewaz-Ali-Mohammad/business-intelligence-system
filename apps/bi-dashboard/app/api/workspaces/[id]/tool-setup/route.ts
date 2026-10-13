@@ -26,7 +26,6 @@ import {
   markTested,
   changeToolApprovals,
   recordTest,
-  saveSourceNotes,
 } from "@/lib/tool-setup/store";
 
 export const runtime = "nodejs";
@@ -82,8 +81,6 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("removeTool"), toolId: id }),
   z.object({ action: z.literal("removeSource"), sourceId: id }),
   z.object({ action: z.literal("removeAllTools"), sourceId: id }),
-  z.object({ action: z.literal("saveNotes"), sourceId: id, notes: z.string().max(8000) }),
-  z.object({ action: z.literal("draftNotes"), sourceId: id, objectIds: z.array(z.string().max(300)).max(40).default([]), consent: z.literal(true) }),
 ]);
 async function access(workspaceId: string) {
   const user = await getCurrentUser();
@@ -221,23 +218,6 @@ export async function POST(
           { status: 404 },
         );
       return NextResponse.json({ removed: true });
-    }
-    if (body.action === "draftNotes") {
-      // Drafts notes from the schema and the most common values of
-      // code-like columns; the owner reviews and edits them.
-      const { profileCodeColumns, draftBusinessNotes } = await import("@/lib/tool-setup/business-notes.mjs");
-      const source = await getSource(workspaceId, body.sourceId);
-      stage = "discovery";
-      const profiles = await profileCodeColumns(source.config, source.catalog, body.objectIds).catch(() => []);
-      stage = "notes";
-      const notes = await draftBusinessNotes({ catalog: source.catalog, profiles, objectIds: body.objectIds, signal: request.signal });
-      await saveSourceNotes(workspaceId, body.sourceId, notes);
-      return NextResponse.json({ notes });
-    }
-    if (body.action === "saveNotes") {
-      stage = "storage";
-      await saveSourceNotes(workspaceId, body.sourceId, body.notes.trim());
-      return NextResponse.json({ saved: true });
     }
     if (body.action === "removeAllTools") {
       // Deletes every tool (approved or not) for one database in this

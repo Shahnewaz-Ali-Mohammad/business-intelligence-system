@@ -237,7 +237,6 @@ export async function POST(
             history,
             workspaceName: sourceName(setup, input.sourceId) || workspace!.name,
             tools: lcTools,
-            businessNotes: setup.sources.find((s) => s.id === input.sourceId)?.notes || '',
             onProgress: (text: string) => run.progress(text),
           });
         } finally {

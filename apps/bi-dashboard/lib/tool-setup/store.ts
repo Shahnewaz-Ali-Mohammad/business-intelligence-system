@@ -119,7 +119,6 @@ export async function listSetup(workspaceId: string) {
     "SELECT t.* FROM bi_generated_tools t JOIN bi_tool_sources s ON s.id=t.source_id JOIN bi_tool_servers v ON v.id=s.server_id WHERE v.workspace_id=? ORDER BY t.name",
     [workspaceId],
   );
-  const notes = await notesForSources((sources as SourceRow[]).map((s) => s.id));
   return {
     servers: safeServers,
     sources: (sources as SourceRow[]).map((s) => ({
@@ -127,7 +126,6 @@ export async function listSetup(workspaceId: string) {
       serverId: s.server_id,
       database: s.database_name,
       catalog: JSON.parse(s.catalog_json) as Catalog,
-      notes: notes.get(s.id) ?? "",
     })),
     tools: (tools as ToolRow[]).map((t) => ({
       id: t.id,
