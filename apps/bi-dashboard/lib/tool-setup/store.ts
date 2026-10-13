@@ -119,6 +119,7 @@ export async function listSetup(workspaceId: string) {
     "SELECT t.* FROM bi_generated_tools t JOIN bi_tool_sources s ON s.id=t.source_id JOIN bi_tool_servers v ON v.id=s.server_id WHERE v.workspace_id=? ORDER BY t.name",
     [workspaceId],
   );
+  const notes = await notesForSources((sources as SourceRow[]).map((s) => s.id));
   return {
     servers: safeServers,
     sources: (sources as SourceRow[]).map((s) => ({
@@ -126,6 +127,7 @@ export async function listSetup(workspaceId: string) {
       serverId: s.server_id,
       database: s.database_name,
       catalog: JSON.parse(s.catalog_json) as Catalog,
+      notes: notes.get(s.id) ?? "",
     })),
     tools: (tools as ToolRow[]).map((t) => ({
       id: t.id,
@@ -188,6 +190,29 @@ export async function saveSource(
   } finally {
     connection.release();
   }
+}
+// Business notes per database. Before the notes migration is applied the
+// table is missing; treat that as "no notes" instead of failing the page.
+async function notesForSources(ids: string[]) {
+  const result = new Map<string, string>();
+  if (!ids.length) return result;
+  try {
+    const [rows] = await getAppDb().query("SELECT source_id,notes FROM bi_tool_source_notes WHERE source_id IN (?)", [ids]);
+    for (const row of rows as { source_id: string; notes: string }[]) result.set(row.source_id, row.notes);
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ER_NO_SUCH_TABLE") throw error;
+  }
+  return result;
+}
+export async function getSourceNotes(sourceId: string) {
+  return (await notesForSources([sourceId])).get(sourceId) ?? "";
+}
+export async function saveSourceNotes(workspaceId: string, sourceId: string, notes: string) {
+  await getSource(workspaceId, sourceId); // ownership check
+  await getAppDb().execute(
+    "INSERT INTO bi_tool_source_notes(source_id,notes) VALUES(?,?) ON DUPLICATE KEY UPDATE notes=VALUES(notes)",
+    [sourceId, notes],
+  );
 }
 export async function getSource(workspaceId: string, sourceId: string) {
   const [rows] = await getAppDb().execute(

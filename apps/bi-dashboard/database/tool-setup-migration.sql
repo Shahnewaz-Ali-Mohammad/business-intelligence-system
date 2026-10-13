@@ -55,3 +55,13 @@ CREATE TABLE IF NOT EXISTS bi_tool_test_runs (
   FOREIGN KEY (tool_id) REFERENCES bi_generated_tools(id) ON DELETE CASCADE,
   INDEX tool_run_time (tool_id, created_at)
 );
+
+-- Owner-written business notes per database (table meanings, status codes,
+-- money columns, metric definitions). Used to generate better tools and to
+-- guide the workspace chat. Never contains source rows or credentials.
+CREATE TABLE IF NOT EXISTS bi_tool_source_notes (
+  source_id VARCHAR(64) PRIMARY KEY,
+  notes MEDIUMTEXT NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (source_id) REFERENCES bi_tool_sources(id) ON DELETE CASCADE
+);

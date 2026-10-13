@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-import {getSource} from './store';
+import {getSource,getSourceNotes} from './store';
 import {createJob,readJob,latestJob,updateJob} from './generation-job-store.mjs';
 type SavedJob = {status:string;heartbeatAt?:number|null;[key:string]:unknown};
 
@@ -10,7 +10,8 @@ export function launchWorker(workspaceId:string,jobId:string) {
 }
 export async function startGeneration(workspaceId:string,input:{sourceId:string;selected:{id:string;columns:string[]}[];request:string}){
  const source=await getSource(workspaceId,input.sourceId);
- const job=await createJob(workspaceId,input.sourceId,{catalog:source.catalog,selected:input.selected,request:input.request});
+ const notes=await getSourceNotes(input.sourceId);
+ const job=await createJob(workspaceId,input.sourceId,{catalog:source.catalog,selected:input.selected,request:input.request,notes});
  launchWorker(workspaceId,job.id);return {jobId:job.id};
 }
 export async function generationStatus(workspaceId:string,jobId?:string,sourceId?:string){

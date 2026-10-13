@@ -14,7 +14,7 @@ try{
   catch{controller.abort(new Error('Generation status storage failed'));}
  },10000);
  const definitions=await generateTools(job.input.catalog,job.input.selected,job.input.request,{
-  signal:controller.signal,completedBatches:job.checkpoints,
+  signal:controller.signal,completedBatches:job.checkpoints,notes:job.input.notes,
   onProgress:async(message)=>{const updated=await updateJob(workspaceId,jobId,current=>mine(current)?{...current,progress:message}:null);if(!updated)controller.abort(new Error('Generation cancelled'));},
   onBatchValidated:async(index,tools)=>{await updateJob(workspaceId,jobId,current=>mine(current)?{...current,checkpoints:{...current.checkpoints,[index]:tools}}:null);}
  });

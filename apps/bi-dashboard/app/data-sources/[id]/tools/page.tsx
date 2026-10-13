@@ -38,6 +38,7 @@ type Server = {
   port: number;
 };
 type Source = {
+  notes?: string;
   id: string;
   serverId: string;
   database: string;
@@ -675,6 +676,12 @@ export default function ToolSetupPage({
                     {error}
                   </div>
                 )}
+                <BusinessNotes
+                  key={sourceId}
+                  initial={setup.sources.find((s) => s.id === sourceId)?.notes || ""}
+                  busy={!!busy}
+                  onSave={(notes) => action({ action: "saveNotes", sourceId, notes }, () => setNotice("Business notes saved. They are used the next time you generate tools and in this database's chat."))}
+                />
                 <label className="block space-y-1 text-sm">
                   Tool suggestions
                   <textarea
@@ -693,7 +700,7 @@ export default function ToolSetupPage({
                     onChange={(e) => setConsent(e.target.checked)}
                   />
                   I approve sending selected object names, columns,
-                  relationships, and this request to OpenAI. No rows or
+                  relationships, business notes and this request to OpenAI. No rows or
                   credentials are included.
                 </label>
                 {!busy && resumableJob && <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-600"><span>Completed schema groups are saved.</span><button type="button" className={buttonClass} onClick={()=>action({action:'resumeGeneration',jobId:resumableJob},()=>setNotice('Generation completed; drafts saved for review.'))}>Resume generation</button></div>}
@@ -1035,5 +1042,31 @@ export default function ToolSetupPage({
         )}
       </div>
     </WorkspacePage>
+  );
+}
+
+// Owner-written context that makes generated tools accurate: what tables
+// mean, status/type codes, money columns, and how metrics are defined.
+function BusinessNotes({ initial, busy, onSave }: { initial: string; busy: boolean; onSave: (notes: string) => void }) {
+  const [notes, setNotes] = useState(initial);
+  return (
+    <div className="space-y-1 text-sm">
+      <label className="block space-y-1">
+        <span>Business notes</span>
+        <span className="block text-xs text-zinc-500">
+          Explain this database in plain words: what the main tables hold, what status or type codes mean, which columns are money (and the currency), and how you calculate key figures. Tools are generated from these notes, so the more precise they are, the better the tools.
+        </span>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder={"e.g. Tickets: one row per support ticket. TicketStatusID 1 = Open, 2 = Resolved.\nBillingMaster: Amount is in BDT; Debit = billed, Credit = collected.\nOutstanding = billed minus collected per customer."}
+          maxLength={8000}
+          className="min-h-28 w-full rounded-md border border-zinc-300 p-3 text-sm"
+        />
+      </label>
+      <button type="button" disabled={busy || notes.trim() === initial.trim()} onClick={() => onSave(notes)} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium disabled:opacity-40">
+        Save notes
+      </button>
+    </div>
   );
 }

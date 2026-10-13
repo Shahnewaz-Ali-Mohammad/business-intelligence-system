@@ -26,6 +26,7 @@ import {
   markTested,
   changeToolApprovals,
   recordTest,
+  saveSourceNotes,
 } from "@/lib/tool-setup/store";
 
 export const runtime = "nodejs";
@@ -81,6 +82,7 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("removeTool"), toolId: id }),
   z.object({ action: z.literal("removeSource"), sourceId: id }),
   z.object({ action: z.literal("removeAllTools"), sourceId: id }),
+  z.object({ action: z.literal("saveNotes"), sourceId: id, notes: z.string().max(8000) }),
 ]);
 async function access(workspaceId: string) {
   const user = await getCurrentUser();
@@ -218,6 +220,11 @@ export async function POST(
           { status: 404 },
         );
       return NextResponse.json({ removed: true });
+    }
+    if (body.action === "saveNotes") {
+      stage = "storage";
+      await saveSourceNotes(workspaceId, body.sourceId, body.notes.trim());
+      return NextResponse.json({ saved: true });
     }
     if (body.action === "removeAllTools") {
       // Deletes every tool (approved or not) for one database in this
