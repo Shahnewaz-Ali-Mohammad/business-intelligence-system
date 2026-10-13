@@ -267,14 +267,6 @@ export default function ToolSetupPage({
       title="Database & Tool Setup"
       subtitle="Connections, objects, and approved tools"
       scroll
-      action={
-        <Link
-          href={`/data-sources/${id}`}
-          className="text-sm text-zinc-600 hover:underline"
-        >
-          Warehouse setup
-        </Link>
-      }
     >
       <div className="mx-auto max-w-6xl space-y-8 pb-10">
         {error && (

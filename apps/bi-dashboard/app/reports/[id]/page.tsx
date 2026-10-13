@@ -14,6 +14,7 @@ import type { ChartSpec } from '@/lib/dashboard/chart-spec';
 import type { ReportGraphSpec } from '@/lib/dashboard/report-graph';
 import { reportGraphSource } from '@/lib/dashboard/report-graph';
 import { ReportGraph } from '@/components/dashboard/charts/report-graph';
+import {WorkspaceResult,type WorkspaceAnswer} from '@/components/data-sources/workspace-result';
 
 type ReportRow = {
   id: number;
@@ -112,7 +113,7 @@ export default function ReportDetailPage() {
   if (report === undefined) {
     return (
       <WorkspacePage active="Reports" title="Loading report..." subtitle="">
-        <p className="text-sm text-slate-500">Loading...</p>
+        <p className="text-sm text-zinc-500">Loading...</p>
       </WorkspacePage>
     );
   }
@@ -120,7 +121,7 @@ export default function ReportDetailPage() {
   if (report === null) {
     return (
       <WorkspacePage active="Reports" title="Report not found" subtitle="">
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-zinc-500">
           This report does not exist, or was saved by a different account. Sign in with the account that generated it.
         </p>
       </WorkspacePage>
@@ -160,6 +161,8 @@ export default function ReportDetailPage() {
     }
   }
 
+  const toolAnswer=(report.data as unknown as {workspaceToolAnswer?:WorkspaceAnswer & {workspaceId:string}}).workspaceToolAnswer;
+  if(toolAnswer) return <WorkspacePage active="Reports" title={report.title} subtitle="Saved database report" scroll><p className="mb-4 text-sm text-zinc-600">{report.narrative}</p><Link className="mb-4 inline-flex text-sm text-rose-700" href={`/data-sources/${toolAnswer.workspaceId}/chat${report.source_session_id?`?session=${report.source_session_id}`:''}`}>Continue in workspace chat</Link><WorkspaceResult id={toolAnswer.workspaceId} initial={toolAnswer} variant="report"/></WorkspacePage>;
   return (
     <WorkspacePage
       active="Reports"
@@ -180,16 +183,16 @@ export default function ReportDetailPage() {
       }
     >
       <div className="space-y-5">
-        <section className="rounded-xl border border-blue-100 bg-blue-50/70 p-5 shadow-sm">
-          <h2 className="text-base font-bold text-blue-950">Insight Summary</h2>
-          <p className="mt-2 whitespace-pre-line text-sm leading-6 text-blue-900">{report.narrative}</p>
+        <section className="rounded-lg border border-rose-100 bg-rose-50/70 p-5 shadow-sm">
+          <h2 className="text-base font-bold text-rose-950">Insight Summary</h2>
+          <p className="mt-2 whitespace-pre-line text-sm leading-6 text-rose-900">{report.narrative}</p>
           {report.tables_used && report.tables_used.length ? (
-            <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-blue-100/80 pt-3">
-              <span className="text-xs font-medium text-blue-900/60">Grounded in:</span>
+            <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-rose-100/80 pt-3">
+              <span className="text-xs font-medium text-rose-900/60">Grounded in:</span>
               {report.tables_used.map((tableName) => (
                 <span
                   key={tableName}
-                  className="rounded-md border border-blue-200 bg-white/70 px-1.5 py-0.5 text-[11px] font-medium text-blue-900"
+                  className="rounded-md border border-rose-200 bg-white/70 px-1.5 py-0.5 text-[11px] font-medium text-rose-900"
                 >
                   {tableName}
                 </span>
@@ -199,14 +202,14 @@ export default function ReportDetailPage() {
         </section>
 
         {report.source_session_id ? (
-          <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-2 text-sm text-slate-600">
-              <MessageSquare size={16} className="text-slate-400" />
+          <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200/80 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-sm text-zinc-600">
+              <MessageSquare size={16} className="text-zinc-400" />
               <span>Want to ask a follow-up or change something? Continue the real conversation this report came from.</span>
             </div>
             <Link
               href={`/chat?session=${report.source_session_id}`}
-              className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700"
+              className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-rose-700 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-rose-800"
             >
               <MessageSquare size={14} />
               Continue in chat
@@ -215,16 +218,16 @@ export default function ReportDetailPage() {
         ) : null}
 
         {siblingReports.length > 0 ? (
-          <section className="rounded-xl border border-slate-200/80 bg-white p-5 shadow-sm">
-            <h2 className="text-sm font-bold text-slate-900">Other reports from this chat</h2>
-            <p className="mt-1 text-xs text-slate-400">Other reports saved from the same conversation, newest first.</p>
+          <section className="rounded-lg border border-zinc-200/80 bg-white p-5 shadow-sm">
+            <h2 className="text-sm font-bold text-zinc-800">Other reports from this chat</h2>
+            <p className="mt-1 text-xs text-zinc-400">Other reports saved from the same conversation, newest first.</p>
             <ul className="mt-3 space-y-1.5">
               {siblingReports.map((sibling) => (
                 <li key={sibling.id} className="flex items-center justify-between gap-3 text-sm">
-                  <Link href={`/reports/${sibling.id}`} className="text-blue-600 hover:underline">
+                  <Link href={`/reports/${sibling.id}`} className="text-rose-700 hover:underline">
                     {sibling.title}
                   </Link>
-                  <span className="shrink-0 text-xs text-slate-400">{new Date(sibling.created_at).toLocaleString()}</span>
+                  <span className="shrink-0 text-xs text-zinc-400">{new Date(sibling.created_at).toLocaleString()}</span>
                 </li>
               ))}
             </ul>
@@ -237,7 +240,7 @@ export default function ReportDetailPage() {
           {graphSaveError && <p role="alert" className="mt-2 text-sm text-red-600">{graphSaveError}</p>}
         </div>
 
-          <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_12px_30px_rgb(15_23_42/7%)]">
+          <section className="overflow-hidden rounded-lg border border-zinc-200/80 bg-white shadow-sm">
             {/* FIX 2026-10-01: real gap found live, same bug class as the
                 chat panel's inline table (see chat-workspace.tsx's own
                 comment) -- this page unconditionally mapped EVERY row of
