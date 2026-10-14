@@ -1,8 +1,9 @@
+import {recordNarrative} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMcpTools } from '@langchain/mcp-adapters';
-import { createToolServer, mcpToolName } from '@/lib/tool-setup/mcp.mjs';
+import { createToolServer } from '@/lib/tool-setup/mcp.mjs';
 import { runWorkspaceAgent } from '../../../../../scripts/chat/agent.mjs';
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -210,6 +211,7 @@ export async function POST(
         // What the AI reads: database-computed statistics over the FULL
         // result, never row dumps (rows only for tiny results; aggregate
         // groups are themselves database summaries).
+        const completedExecutions: {toolId: string; query: string}[] = [];
         const server = createToolServer(tools, async (chosen: { id: string }, args: Record<string, unknown>) => {
           const latest = await approvedNow(chosen.id);
           const parameters = { query: queryFor(latest.definition, args) };
@@ -222,6 +224,7 @@ export async function POST(
           const preview = !summary || latest.definition.mode === 'aggregate' || population <= 5
             ? await executeTool(source.config, latest.definition, catalog, parameters, 50)
             : null;
+          completedExecutions.push({toolId: latest.id, query: parameters.query});
           return {
             tool: latest.definition.name,
             mode: latest.definition.mode,
@@ -242,6 +245,7 @@ export async function POST(
             history,
             workspaceName: sourceName(setup, input.sourceId) || workspace!.name,
             tools: lcTools,
+            signal,
             onProgress: (text: string) => run.progress(text),
           });
         } finally {
@@ -249,24 +253,29 @@ export async function POST(
           await server.close().catch(() => {});
         }
         const structured = agentResult.structured;
-        const narrativeText = structured?.narrative || 'Could not produce a grounded answer for this question.';
-        // The table comes from the LAST approved tool the agent called, with
-        // its exact arguments -- the same tool paging and export re-run.
-        const byMcpName = new Map(tools.map((t) => [mcpToolName(t.sourceId, t.definition.name), t]));
-        const lastCall = [...agentResult.toolCalls].reverse().find((call) => byMcpName.has(call.name));
-        if (!lastCall || structured?.intent === 'ask_clarification') {
+        let narrativeText = structured?.narrative || 'Could not produce a grounded answer for this question.';
+        // Render only a query that actually succeeded, never an attempted call
+        // reconstructed from the agent message history.
+        const completed = completedExecutions.at(-1);
+        if (!completed) {
+          if (agentResult.toolCalls.length) throw new Error('Every selected tool call failed; no verified report is available.');
           run.text(narrativeText);
           run.finish(await saveAnswer({ title: structured?.title, narrative: narrativeText, rows: [], hasMore: false }));
           return;
         }
         run.progress("Preparing the report");
-        const current = await approvedNow(byMcpName.get(lastCall.name)!.id);
-        const query = queryFor(current.definition, lastCall.args as Record<string, unknown>);
+        const current = await approvedNow(completed.toolId);
+        const query = completed.query;
         // The chat shows at most 200 rows; the saved report pages through
         // every row and Export Excel downloads all of them.
         const result = await executeTool(source.config, current.definition, catalog, { query }, 200, 0, { maxLimit: 200 });
         let summary;
         try { summary = await summarizeTool(source.config, current.definition, catalog, { query }); } catch { summary = undefined; }
+        if (current.definition.mode === 'rows') {
+          narrativeText = recordNarrative(result, summary, query);
+        } else if (!agentResult.grounded || structured?.intent === 'ask_clarification') {
+          narrativeText = 'The verified database results are shown in the table below.';
+        }
         run.text(narrativeText);
         const answer = {
           title: structured?.title || current.definition.name,
@@ -282,7 +291,8 @@ export async function POST(
           totalCount: summary ? Number(summary.population) || result.rows.length : undefined,
         };
         run.finish(await saveAnswer(answer));
-      } catch {
+      } catch (error) {
+        console.error('[workspace chat] query failed:', error instanceof Error ? error.message : error);
         run.error(
           "Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.",
         );

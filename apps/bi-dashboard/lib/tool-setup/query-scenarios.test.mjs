@@ -59,3 +59,26 @@ test('record views without declared keys retain deterministic comparable orderin
  const result=compileTool(tool,view,'sqlserver',{query:JSON.stringify({columns:['customers:ID','customers:Name'],sort:[{field:'customers:ID',direction:'desc'}]})},10,10);
  assert.match(result.sql,/ORDER BY/);assert.match(result.sql,/OFFSET 10 ROWS/);
 });
+
+for(const dialect of ['mysql','postgres','sqlserver']) {
+ test(`${dialect}: numeric-looking text IDs bind as strings for nested, flat, list and fixed filters`,()=>{
+  const textCatalog={objects:[{id:'c',schema:'dbo',name:'Customers',kind:'table',columns:[column('CustomerID','varchar',true),column('Amount','decimal')]}],relationships:[]};
+  const textTool=coverageTools(textCatalog)[0];
+  const run=plan=>compileTool(textTool,textCatalog,dialect,{query:JSON.stringify(plan)});
+  assert.deepEqual(run({where:{field:'c:CustomerID',operator:'eq',value:100001}}).values,['100001']);
+  assert.deepEqual(run({where:{field:'c:CustomerID',operator:'in',value:[100001,'CID-11560']}}).values,['100001','CID-11560']);
+  const filter={field:'c:CustomerID',operator:'eq',parameter:'customer_id',required:true};
+  assert.deepEqual(run({filters:[filter],values:{customer_id:100001}}).values,['100001']);
+  const fixed={...textTool,capabilities:undefined,filters:[filter]};
+  assert.deepEqual(compileTool(fixed,textCatalog,dialect,{customer_id:100001}).values,['100001']);
+  assert.deepEqual(run({where:{field:'c:Amount',operator:'eq',value:7}}).values,[7]);
+ });
+ test(`${dialect}: requested first 100 caps report population, pages, and export batches`,()=>{
+  const parameters={query:JSON.stringify({limit:100,columns:['customers:ID'],sort:[{field:'customers:ID',direction:'desc'}]})};
+  const first=compileTool(rows,catalog,dialect,parameters,40,0);
+  assert.equal(first.limit,40);assert.match(first.populationSql,/TOP \(100\)|LIMIT 100/);assert.match(first.populationSql,/ORDER BY/);
+  const last=compileTool(rows,catalog,dialect,parameters,40,80);assert.equal(last.limit,20);assert.match(last.sql,/FETCH NEXT 20|LIMIT 20/);
+  const beyond=compileTool(rows,catalog,dialect,parameters,40,100);assert.equal(beyond.limit,0);assert.match(beyond.sql,/WHERE 1=0/);
+  const exported=compileTool(rows,catalog,dialect,parameters,5000,0,{maxLimit:5000});assert.equal(exported.limit,100);assert.match(exported.sql,/TOP \(100\)|LIMIT 100/);
+ });
+}

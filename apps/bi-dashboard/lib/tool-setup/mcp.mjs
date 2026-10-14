@@ -1,3 +1,4 @@
+import {queryInputSchema, normalizeMcpArguments} from './mcp-query.mjs';
 import crypto from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
@@ -48,9 +49,8 @@ export function createToolServer(tools, execute, catalog = null) {
           ? {
               properties: {
                 query: {
-                  type: "string",
-                  maxLength: 20000,
-                  description: `JSON query plan. Optional keys: columns (field IDs or "*" for approved fields), where (nested {and:[...]}, {or:[...]}, {not:...}, leaves {field,operator,value} or {field,operator,parameter}), sort [{field,direction:"asc"|"desc"}], dateGroups [{field,grain:"day"|"week"|"month"|"year"}] for grouped dates, distinct (unique projected rows), joins (relationship IDs), groupBy (field IDs), metrics [{field,operation,alias}], filters [{field,operator,parameter,required}], values {parameter:value}. Allowed fields: ${JSON.stringify(t.definition.capabilities.fields)}. Allowed joins: ${JSON.stringify(t.definition.capabilities.joins)}. Omit query for default preview/count. Operators: eq,ne,gt,gte,lt,lte,contains,in,between,is_null,not_null; in/between bind arrays. Metrics: count,count_distinct,sum,avg,min,max. Omit joins to infer an unambiguous approved path; otherwise provide connected join IDs, in either direction. Relationships with kind inferred_named_primary_key are named-key inferences, not declared foreign keys; do not claim their business meaning is confirmed. Fan-out sums require a safe measure grain; independent child totals need separate calls. Relationships: ${JSON.stringify(catalog?.relationships?.filter(j=>t.definition.capabilities.joins.includes(j.id))||[])}. No SQL. Mode: ${t.definition.mode}.`,
+                  ...queryInputSchema(t.definition),
+                  description: `${queryInputSchema(t.definition).description} Base table: ${t.definition.base}. Mode: ${t.definition.mode}. Use allColumns:true for all approved details. columns must be an array of exact field IDs, not a comma-separated string. Example projection: ${JSON.stringify({query:{columns:t.definition.capabilities.fields.filter(f=>f.startsWith(t.definition.base+':')).slice(0,2),limit:100}})}. Omit joins to infer a unique approved path; otherwise specify approved relationship IDs. Never sum repeated parent measures across a one-to-many join. Relationships: ${JSON.stringify(catalog?.relationships?.filter(j=>t.definition.capabilities.joins.includes(j.id))||[])}. No SQL.`,
                 },
               },
             }
@@ -67,7 +67,7 @@ export function createToolServer(tools, execute, catalog = null) {
     try {
       const selected = names.get(call.params.name);
       if (!selected) throw new Error("Unavailable tool.");
-      const result = await execute(selected, call.params.arguments || {});
+      const result = await execute(selected, normalizeMcpArguments(selected.definition, call.params.arguments || {}));
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     } catch (error) {
       // Log the real cause on the server and give the agent the reason, so

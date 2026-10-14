@@ -232,6 +232,7 @@ export function compileTool(
         where: whereSchema.optional(),
         sort: z.array(z.object({field:Field,direction:z.enum(['asc','desc'])}).strict()).max(5).optional(),
         distinct: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100000).optional(),
         dateGroups: z.array(z.object({field:Field,grain:z.enum(['day','week','month','year'])}).strict()).max(5).optional(),
         values: z
           .record(
@@ -296,8 +297,11 @@ export function compileTool(
   const table = (o) =>
     dialect === "mysql" ? q(o.name) : `${q(o.schema)}.${q(o.name)}`;
   const values = [];
-  const bind = (value) => {
-    values.push(value);
+  const bind = (value, field) => {
+    // Text identifiers may contain both numeric-looking and prefixed values.
+    // Binding a number against varchar forces SQL Server to convert every row.
+    const type = fields.get(field)?.dataType || "";
+    values.push(/(?:char|text|clob|enum|set|uuid|uniqueidentifier)/i.test(type) ? String(value) : value);
     return dialect === "postgres"
       ? `$${values.length}`
       : dialect === "sqlserver"
@@ -319,7 +323,7 @@ export function compileTool(
     }
     if(f.operator==='in'||f.operator==='between'){
       if(!Array.isArray(value)||!value.length||value.length>100||f.operator==='between'&&value.length!==2||value.some(v=>v===null||!['string','number','boolean'].includes(typeof v)||typeof v==='number'&&!Number.isFinite(v)))throw new Error('List filters need 1-100 scalar values; between needs two.');
-      where.push(f.operator==='in'?`${rawRef(f.field)} IN (${value.map(bind).join(', ')})`:`${rawRef(f.field)} BETWEEN ${bind(value[0])} AND ${bind(value[1])}`);continue;
+      where.push(f.operator==='in'?`${rawRef(f.field)} IN (${value.map(v=>bind(v,f.field)).join(', ')})`:`${rawRef(f.field)} BETWEEN ${bind(value[0],f.field)} AND ${bind(value[1],f.field)}`);continue;
     }
     if (
       value === null ||
@@ -334,10 +338,10 @@ export function compileTool(
         .replaceAll("%", "!%")
         .replaceAll("_", "!_")
         .replaceAll("[", "![");
-      where.push(`${rawRef(f.field)} LIKE ${bind(`%${escaped}%`)} ESCAPE '!'`);
+      where.push(`${rawRef(f.field)} LIKE ${bind(`%${escaped}%`,f.field)} ESCAPE '!'`);
     } else
       where.push(
-        `${rawRef(f.field)} ${{ eq: "=", ne: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=" }[f.operator]} ${bind(value)}`,
+        `${rawRef(f.field)} ${{ eq: "=", ne: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=" }[f.operator]} ${bind(value,f.field)}`,
       );
   }
   const compileWhere=node=>{
@@ -347,10 +351,10 @@ export function compileTool(
     if(node.parameter&&node.value!==undefined)throw new Error('Use either a filter value or parameter, not both.');
     const value=node.parameter?parameters[node.parameter]:node.value;
     if(value===undefined)throw new Error('A filter value or parameter binding is required.');
-    if(['in','between'].includes(node.operator)){if(!Array.isArray(value)||!value.length||value.length>100||node.operator==='between'&&value.length!==2)throw new Error('Invalid list or range filter.');return node.operator==='in'?`${column} IN (${value.map(bind).join(', ')})`:`${column} BETWEEN ${bind(value[0])} AND ${bind(value[1])}`;}
+    if(['in','between'].includes(node.operator)){if(!Array.isArray(value)||!value.length||value.length>100||node.operator==='between'&&value.length!==2)throw new Error('Invalid list or range filter.');return node.operator==='in'?`${column} IN (${value.map(v=>bind(v,node.field)).join(', ')})`:`${column} BETWEEN ${bind(value[0],node.field)} AND ${bind(value[1],node.field)}`;}
     if(Array.isArray(value))throw new Error('This operator requires one value.');
-    if(node.operator==='contains'){if(!/(char|text|clob|enum|set)/i.test(fields.get(node.field).dataType))throw new Error('Contains filters require a text column.');return `${column} LIKE ${bind('%'+String(value).replaceAll('!','!!').replaceAll('%','!%').replaceAll('_','!_').replaceAll('[','![')+'%')} ESCAPE '!'`;}
-    return `${column} ${{eq:'=',ne:'<>',gt:'>',gte:'>=',lt:'<',lte:'<='}[node.operator]} ${bind(value)}`;
+    if(node.operator==='contains'){if(!/(char|text|clob|enum|set)/i.test(fields.get(node.field).dataType))throw new Error('Contains filters require a text column.');return `${column} LIKE ${bind('%'+String(value).replaceAll('!','!!').replaceAll('%','!%').replaceAll('_','!_').replaceAll('[','![')+'%',node.field)} ESCAPE '!'`;}
+    return `${column} ${{eq:'=',ne:'<>',gt:'>',gte:'>=',lt:'<',lte:'<='}[node.operator]} ${bind(value,node.field)}`;
   };
   if(runtime.where){whereFields(runtime.where);where.push(compileWhere(runtime.where));}
   if(runtime.distinct&&tool.mode!=='rows')throw new Error('Distinct rows apply to a record query; use count_distinct for an aggregate.');
@@ -382,13 +386,15 @@ export function compileTool(
         ];
   // Chat previews and pages default to 100 rows per query; the full
   // export raises the page size (options.maxLimit) to read in larger batches.
-  const bound = Math.min(
+  const requestedBound = Math.min(
     Math.min(Number.isInteger(options.maxLimit) ? options.maxLimit : 100, 5000),
     Math.max(1, Number.isInteger(limit) ? limit : 50),
   );
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000000)
     throw new Error("Invalid page offset.");
-  let sql = `SELECT ${runtime.distinct?'DISTINCT ':''}${dialect === "sqlserver" && !offset ? `TOP (${bound + 1}) ` : ""}${selections.join(", ")} FROM ${table(base)} AS ${q("t0")}`;
+  const bound = runtime.limit === undefined ? requestedBound : Math.min(requestedBound,Math.max(0,runtime.limit-offset));
+  const fetchCount = runtime.limit === undefined ? bound+1 : Math.min(bound+1,Math.max(0,runtime.limit-offset));
+  let sql = `SELECT ${runtime.distinct?'DISTINCT ':''}${dialect === "sqlserver" && !offset ? `TOP (${fetchCount}) ` : ""}${selections.join(", ")} FROM ${table(base)} AS ${q("t0")}`;
   for (const join of joins) {
     const target = catalog.objects.find((o) => o.id === join.to);
     sql += ` LEFT JOIN ${table(target)} AS ${q(aliases.get(join.to))} ON ${join.columns.map((c) => `${q(aliases.get(join.from))}.${q(c.from)} = ${q(aliases.get(join.to))}.${q(c.to)}`).join(" AND ")}`;
@@ -396,7 +402,7 @@ export function compileTool(
   if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
   if (tool.mode === "aggregate" && tool.groupBy.length)
     sql += ` GROUP BY ${tool.groupBy.map(ref).join(", ")}`;
-  const populationSql = sql.replace(/^SELECT (DISTINCT )?TOP \(\d+\) /, "SELECT $1");
+  let populationSql = sql.replace(/^SELECT (DISTINCT )?TOP \(\d+\) /, "SELECT $1");
   const ordering=[],orderedFields=new Set();
   for(const sort of runtime.sort||[]){
     const index=outputFields.indexOf(sort.field);
@@ -414,14 +420,19 @@ export function compileTool(
     if(offset&&!tieFields.length)throw new Error('Pagination needs comparable ordering fields or a verified key.');
     tieFields.forEach(c=>{const field=`${id}:${c.name}`;if(!orderedFields.has(field)){ordering.push(`${q(aliases.get(id))}.${q(c.name)} ASC`);orderedFields.add(field);}});
   }
-  if(ordering.length)sql+=` ORDER BY ${[...new Set(ordering)].join(', ')}`;
+  const orderClause=ordering.length?` ORDER BY ${[...new Set(ordering)].join(', ')}`:'';
+  if(runtime.limit!==undefined){
+    populationSql = dialect==='sqlserver' ? populationSql.replace(/^SELECT (DISTINCT )?/,`SELECT $1TOP (${runtime.limit}) `)+orderClause : populationSql+orderClause+` LIMIT ${runtime.limit}`;
+  }
+  sql+=orderClause;
   if (dialect !== "sqlserver")
-    sql += ` LIMIT ${bound + 1}${offset ? ` OFFSET ${offset}` : ""}`;
+    sql += ` LIMIT ${fetchCount}${offset ? ` OFFSET ${offset}` : ""}`;
   else if (offset) {
     if (!sql.includes(" ORDER BY "))
       throw new Error("Pagination needs a stable ordering key.");
-    sql += ` OFFSET ${offset} ROWS FETCH NEXT ${bound + 1} ROWS ONLY`;
+    sql += ` OFFSET ${offset} ROWS FETCH NEXT ${fetchCount} ROWS ONLY`;
   }
+  if(fetchCount===0)sql=`SELECT * FROM (${populationSql}) AS ${q('empty_result')} WHERE 1=0`;
   return { sql, populationSql, values, limit: bound, outputFields, joinIds:joins.map(j=>j.id),
     grain:joins.some(j=>j.fanout)?'Joined rows; not a count of distinct base records. Aggregates follow the explicitly requested measure.':null,
     unsafeAggregateFields:tool.mode==='rows'?tool.columns.filter(id=>!measureIsSafe(fields.get(id).object.id,base.id,joins)):[] };
