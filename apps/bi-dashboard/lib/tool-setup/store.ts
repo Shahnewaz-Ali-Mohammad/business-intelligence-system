@@ -1,3 +1,4 @@
+import {readCatalog} from './catalog.mjs';
 import crypto from "node:crypto";
 import { getAppDb } from "@/lib/db/app-db";
 import {
@@ -128,7 +129,7 @@ export async function listSetup(workspaceId: string) {
       id: s.id,
       serverId: s.server_id,
       database: s.database_name,
-      catalog: JSON.parse(s.catalog_json) as Catalog,
+      catalog: readCatalog(s.catalog_json) as Catalog,
     })),
     tools: (tools as ToolRow[]).map((t) => ({
       id: t.id,
@@ -227,7 +228,7 @@ export async function getSource(workspaceId: string, sourceId: string) {
   );
   return {
     config: { ...config, database: row.database_name },
-    catalog: JSON.parse(row.catalog_json) as Catalog,
+    catalog: readCatalog(row.catalog_json) as Catalog,
   };
 }
 export async function saveDrafts(sourceId: string, catalogFingerprint: string, definitions: ToolDefinition[]) {
