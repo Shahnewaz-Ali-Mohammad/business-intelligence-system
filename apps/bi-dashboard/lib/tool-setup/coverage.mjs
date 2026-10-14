@@ -105,7 +105,7 @@ export function coverageReport(catalog,definitions){
  const joinIds=new Set(definitions.flatMap(t=>t.capabilities?.joins||t.joins));
  const relationships=catalog.relationships.filter(j=>bases.has(j.from)&&bases.has(j.to));
  return {tables:catalog.objects.filter(o=>bases.has(o.id)).map(o=>({id:o.id,name:o.name,fields:o.columns.filter(c=>fields.has(`${o.id}:${c.name}`)).length})),totalFields:fields.size,verifiedRelationships:joinIds.size,inferredRelationships:relationships.filter(j=>j.kind==='inferred_named_primary_key'&&joinIds.has(j.id)).length,
-   scenarios:['Selected or all approved columns','Single records and ID lists','Nested AND/OR/NOT filters and ranges','Multiple sort fields and pagination','Distinct rows and distinct counts','Grouping and date buckets','Verified joins in both directions'],
+   scenarios:definitions.some(t=>t.template)?['Saved record and lookup templates','Typed value binding without AI-built joins or calculations','Stored summaries, rankings and date trends','Targeted generation for missing combinations']:['Selected or all approved columns','Single records and ID lists','Nested AND/OR/NOT filters and ranges','Multiple sort fields and pagination','Distinct rows and distinct counts','Grouping and date buckets','Verified joins in both directions'],
    gaps:relationships.filter(j=>!joinIds.has(j.id)).map(j=>({relationship:j.id,reason:j.from===j.to?'Self joins require separate aliases':!j.targetUnique?'Target uniqueness is not verified':'Select the relationship key columns to enable this path'})),
    limitations:['Independent child-table sums need separate aggregations; multiplying joins are rejected','Disconnected tables and ambiguous join paths are not guessed']};
 }

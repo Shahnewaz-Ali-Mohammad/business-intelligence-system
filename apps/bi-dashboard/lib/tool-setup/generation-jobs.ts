@@ -8,9 +8,9 @@ export function launchWorker(workspaceId:string,jobId:string) {
  const worker=spawn(process.execPath,[path.join(process.cwd(),'scripts/generate-tools-worker.mjs'),workspaceId,jobId],{cwd:process.cwd(),env:process.env,detached:true,stdio:'ignore'});
  worker.on('error',()=>{void updateJob(workspaceId,jobId,(job: SavedJob)=>job.status==='queued'?{...job,status:'failed',error:'Could not start generation worker.'}:null);});worker.unref();
 }
-export async function startGeneration(workspaceId:string,input:{sourceId:string;selected:{id:string;columns:string[]}[];request:string}){
+export async function startGeneration(workspaceId:string,input:{sourceId:string;selected:{id:string;columns:string[]}[];request:string;missingOnly?:boolean}){
  const source=await getSource(workspaceId,input.sourceId);
- const job=await createJob(workspaceId,input.sourceId,{catalog:source.catalog,selected:input.selected,request:input.request});
+ const job=await createJob(workspaceId,input.sourceId,{catalog:source.catalog,selected:input.selected,request:input.request,...(input.missingOnly?{missingOnly:true}:{})});
  launchWorker(workspaceId,job.id);return {jobId:job.id};
 }
 export async function generationStatus(workspaceId:string,jobId?:string,sourceId?:string){

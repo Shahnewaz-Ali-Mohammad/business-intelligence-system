@@ -33,7 +33,7 @@ export function createToolServer(tools, execute, catalog = null) {
       inputSchema: {
         type: "object",
         additionalProperties: false,
-        properties: Object.fromEntries(
+        properties: { ...Object.fromEntries(
           t.definition.filters
             .filter((f) => !["is_null", "not_null"].includes(f.operator))
             .map((f) => [
@@ -44,7 +44,11 @@ export function createToolServer(tools, execute, catalog = null) {
                 description: `${f.operator} filter on ${f.field}`,
               },
             ]),
-        ),
+        ), ...(t.definition.template ? {
+          ...(t.definition.template.limit?{report_limit:{type:'integer',minimum:1,maximum:100000,description:'Maximum rows or groups across all pages.'}}:{}),
+          ...(t.definition.template.projection&&t.definition.mode==='rows'?{report_columns:{type:'array',items:{type:'string',enum:t.definition.columns},minItems:1,maxItems:1000,description:'Optional subset of this saved report output. Omit for all fields.'}}:{}),
+          ...(t.definition.template.sortFields.length?{report_sort_field:{type:'string',enum:t.definition.template.sortFields},report_sort_direction:{type:'string',enum:['asc','desc']}}:{})
+        }: {}) },
         ...(t.definition.capabilities
           ? {
               properties: {

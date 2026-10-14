@@ -1,3 +1,4 @@
+import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
 import {recordNarrative} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -212,7 +213,9 @@ export async function POST(
         // result, never row dumps (rows only for tiny results; aggregate
         // groups are themselves database summaries).
         const completedExecutions: {toolId: string; query: string}[] = [];
+        let executionFailed=false;
         const server = createToolServer(tools, async (chosen: { id: string }, args: Record<string, unknown>) => {
+          try {
           const latest = await approvedNow(chosen.id);
           const parameters = { query: queryFor(latest.definition, args) };
           // Statistics are best-effort: if they cannot be computed, the agent
@@ -232,6 +235,7 @@ export async function POST(
             ...(preview ? { rows: preview.rows, rowsAreComplete: !preview.hasMore } : {}),
             note: `Grain: ${summary?.scope || 'limited preview; no full-population statistics available'}. Available figures are computed by the database over ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`,
           };
+          } catch(error) {executionFailed=true;throw error;}
         }, catalog);
         const client = new Client({ name: 'bi-workspace-chat', version: '1.0.0' });
         const [left, right] = InMemoryTransport.createLinkedPair();
@@ -239,7 +243,7 @@ export async function POST(
         await client.connect(left);
         let agentResult;
         try {
-          const lcTools = await loadMcpTools('bi-workspace-tools', client);
+          const lcTools = tools.some(t=>t.definition.template) ? savedReportTools(client,tools) : await loadMcpTools('bi-workspace-tools', client);
           agentResult = await runWorkspaceAgent({
             message: input.message,
             history,
@@ -253,12 +257,18 @@ export async function POST(
           await server.close().catch(() => {});
         }
         const structured = agentResult.structured;
+        if(structured?.intent==='missing_capability'&&structured.missingCapability&&!executionFailed){
+          const narrative='A saved report for this request is missing. Generate it below, review and approve it in Settings, then retry this question.';
+          run.text(narrative);
+          run.finish(await saveAnswer({narrative,rows:[],hasMore:false,missingScenario:{question:input.message,gap:structured.missingCapability}}));
+          return;
+        }
         let narrativeText = structured?.narrative || 'Could not produce a grounded answer for this question.';
         // Render only a query that actually succeeded, never an attempted call
         // reconstructed from the agent message history.
         const completed = completedExecutions.at(-1);
         if (!completed) {
-          if (agentResult.toolCalls.length) throw new Error('Every selected tool call failed; no verified report is available.');
+          if (executionFailed || agentResult.toolCalls.some(call=>call.name==='run_saved_report')) throw new Error('Every selected report execution failed; no verified report is available.');
           run.text(narrativeText);
           run.finish(await saveAnswer({ title: structured?.title, narrative: narrativeText, rows: [], hasMore: false }));
           return;

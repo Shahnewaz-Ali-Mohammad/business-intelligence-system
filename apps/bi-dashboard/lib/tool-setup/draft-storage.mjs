@@ -20,7 +20,7 @@ export function behaviourFingerprint(definition) {
  *
  * Returns { added, updated, unchanged, removed }.
  */
-export async function saveDraftDefinitions(connection, sourceId, catalogFingerprint, definitions) {
+export async function saveDraftDefinitions(connection, sourceId, catalogFingerprint, definitions, { additive = false } = {}) {
   const counts = { added: 0, updated: 0, unchanged: 0, removed: 0 };
   try {
     await connection.beginTransaction();
@@ -70,7 +70,7 @@ export async function saveDraftDefinitions(connection, sourceId, catalogFingerpr
     }
 
     // Remove earlier unapproved drafts this run did not produce again.
-    const stale = existing.filter((t) => t.status !== 'approved' && !kept.has(t.id));
+    const stale = additive ? [] : existing.filter((t) => t.status !== 'approved' && !kept.has(t.id));
     for (const tool of stale) {
       await connection.execute("DELETE FROM bi_generated_tools WHERE id=? AND status<>'approved'", [tool.id]);
     }

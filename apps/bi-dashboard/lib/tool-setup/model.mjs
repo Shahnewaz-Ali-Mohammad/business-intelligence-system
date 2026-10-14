@@ -29,6 +29,7 @@ export const ToolSchema = z
       .object({ fields: z.array(Field).min(1), joins: z.array(z.string()) })
       .strict()
       .optional(),
+    template: z.object({projection:z.boolean(),limit:z.boolean(),sortFields:z.array(z.string()),sort:z.array(z.object({field:Field,direction:z.enum(['asc','desc'])}).strict()).max(5),dateGroups:z.array(z.object({field:Field,grain:z.enum(['day','week','month','year'])}).strict()).max(5)}).strict().optional(),
     joins: z.array(z.string()).max(8),
     mode: z.enum(["rows", "aggregate"]),
     columns: z.array(Field).max(1000),
@@ -71,7 +72,7 @@ export const ToolSchema = z
   })
   .strict();
 // AI business definitions have fixed report fields. Generic capabilities are generated separately.
-export const BusinessDraftSchema = z.object({ tools: z.array(ToolSchema.omit({ capabilities: true })).min(1) }).strict();
+export const BusinessDraftSchema = z.object({ tools: z.array(ToolSchema.omit({ capabilities: true, template: true })).min(1) }).strict();
 export const DraftSchema = z
   .object({ tools: z.array(ToolSchema).min(1) })
   .strict();
@@ -213,7 +214,7 @@ export function compileTool(
   if (!input.capabilities && parameters.query !== undefined) {
     if (Object.keys(parameters).some((k) => k !== 'query') || typeof parameters.query !== 'string' || parameters.query.length > 20000)
       throw new Error('Invalid fixed-tool plan.');
-    const plan = z.object({ values: z.record(z.string(), queryValue).default({}) }).strict().parse(JSON.parse(parameters.query));
+    const plan = z.object({ values: z.record(z.string(), z.union([queryValue,z.array(z.string().max(400)).min(1).max(1000)])).default({}) }).strict().parse(JSON.parse(parameters.query));
     return compileTool(input, catalog, dialect, plan.values, limit, offset, options);
   }
   if (input.capabilities && parameters.query !== undefined) {
@@ -277,6 +278,18 @@ export function compileTool(
       {...options,queryPlan:plan},
     );
   }
+  let templateRuntime;
+  if(input.template){
+    const {report_columns,report_limit,report_sort_field,report_sort_direction,...bindings}=parameters;
+    const approved=input.template;
+    if(report_columns!==undefined&&(!approved.projection||input.mode!=='rows'||!Array.isArray(report_columns)||!report_columns.length||report_columns.some(f=>!input.columns.includes(f))))throw new Error('Choose output fields from this saved report.');
+    if(report_limit!==undefined&&(!approved.limit||!Number.isSafeInteger(report_limit)||report_limit<1||report_limit>100000))throw new Error('Invalid saved report row limit.');
+    if(report_sort_field!==undefined&&!approved.sortFields.includes(report_sort_field))throw new Error('Ordering field is not approved for this saved report.');
+    if(report_sort_direction!==undefined&&!['asc','desc'].includes(report_sort_direction))throw new Error('Invalid saved report ordering direction.');
+    if(report_sort_direction!==undefined&&report_sort_field===undefined)throw new Error('Choose an ordering field.');
+    templateRuntime={sort:report_sort_field?[{field:report_sort_field,direction:report_sort_direction||'asc'}]:approved.sort,dateGroups:approved.dateGroups,...(report_limit!==undefined?{limit:report_limit}:{})};
+    input={...input,...(report_columns?{columns:report_columns}:{})};parameters=bindings;
+  }
   const { tool, base, joins, fields } = validateTool(input, catalog);
   if (
     Object.keys(parameters).some(
@@ -291,8 +304,9 @@ export function compileTool(
     const f=fields.get(id);if(!f||isProtectedColumn(f.name))throw new Error(`Unavailable query field: ${id}`);
     return `${q(aliases.get(f.object.id))}.${q(f.name)}`;
   };
-  const runtime=options.queryPlan||{};
+  const runtime=templateRuntime||options.queryPlan||{};
   for(const group of runtime.dateGroups||[]){if(!tool.groupBy.includes(group.field)||!/(date|time)/i.test(fields.get(group.field)?.dataType||''))throw new Error('Date grouping needs a grouped date/time field.');}
+  for(const sort of runtime.sort||[]){if(!tool.metrics.some(m=>m.alias===sort.field))rawRef(sort.field);}
   const ref=id=>{const group=runtime.dateGroups?.find(g=>g.field===id);return group?dateExpression(rawRef(id),group.grain,dialect):rawRef(id);};
   const table = (o) =>
     dialect === "mysql" ? q(o.name) : `${q(o.schema)}.${q(o.name)}`;

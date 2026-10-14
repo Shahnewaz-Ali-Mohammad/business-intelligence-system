@@ -1,4 +1,5 @@
 'use client';
+import {MissingScenario} from '@/components/data-sources/missing-scenario';
 
 import Link from 'next/link';
 import { ReportCard } from './report-card';
@@ -664,6 +665,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                 </div>
               </div>
 
+              {message.workspaceAnswer?.missingScenario && databaseWorkspace && <div className="mx-0 sm:ml-12 sm:mr-12"><MissingScenario id={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} {...message.workspaceAnswer.missingScenario} onRetry={(question)=>{if(!loading)void submitDatabaseQuestion(question);}} /></div>}
               {message.workspaceAnswer && databaseWorkspace && message.workspaceAnswer.rows.length > 0 ? (
                 <div className="mx-0 sm:ml-12 sm:mr-12">
                   <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} />

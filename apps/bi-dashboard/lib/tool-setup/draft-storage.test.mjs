@@ -36,3 +36,9 @@ test('regenerating removes earlier drafts that were not produced again, never ap
 test('behaviour fingerprint ignores name and description', () => {
   assert.equal(behaviourFingerprint(tool('a')), behaviourFingerprint(tool('b', 'dbo.Tickets', 'Other text here.')));
 });
+
+test('missing-scenario generation adds drafts without deleting unrelated saved drafts',async()=>{
+ const connection=fakeConnection([row('old',tool('old_draft','dbo.Old')),row('approved',tool('approved_report'),'approved')]);
+ const result=await saveDraftDefinitions(connection,'s','fp',[tool('missing_report','dbo.New')],{additive:true});
+ assert.equal(result.added,1);assert.equal(result.removed,0);assert.ok(!connection.calls.some(c=>c.sql.startsWith('DELETE')));
+});

@@ -43,6 +43,7 @@ export type Catalog = {
   fingerprint: string;
 };
 export type ToolDefinition = {
+  template?: {projection:boolean;limit:boolean;sortFields:string[];sort:{field:string;direction:'asc'|'desc'}[];dateGroups:{field:string;grain:'day'|'week'|'month'|'year'}[]};
   capabilities?: { fields: string[]; joins: string[] };
   name: string;
   description: string;
