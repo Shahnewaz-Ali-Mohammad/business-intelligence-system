@@ -165,7 +165,9 @@ export function validateTool(input, catalog) {
     if (
       m.field &&
       !["count","count_distinct"].includes(m.operation) &&
-      !numericType(requireField(m.field).dataType)
+      !numericType(requireField(m.field).dataType) &&
+      // Earliest/latest dates and first/last text values are valid min/max.
+      !(["min","max"].includes(m.operation) && /date|time|char|text/i.test(requireField(m.field).dataType))
     )
       throw new Error("Choose a numeric field for this metric.");
     if (m.field) requireField(m.field);
@@ -247,7 +249,9 @@ export function compileTool(
     const candidate = {
       ...input,
       columns: plan.columns === "*" ? input.capabilities.fields : plan.columns ?? input.columns,
-      groupBy: plan.groupBy ?? input.groupBy,
+      // A date bucket is always a grouping: add its field when the plan
+      // forgot to list it in groupBy.
+      groupBy: [...new Set([...(plan.groupBy ?? input.groupBy), ...(plan.dateGroups || []).map((g) => g.field)])],
       metrics: plan.metrics ?? input.metrics,
       joins: plan.joins ?? [],
       filters: plan.filters ?? [],
