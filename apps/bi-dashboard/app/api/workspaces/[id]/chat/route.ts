@@ -1,3 +1,6 @@
+import {validateExecutionRequest} from '@/lib/tool-setup/execution-request.mjs';
+import {startGeneration} from '@/lib/tool-setup/generation-jobs';
+import {selectedScope} from '@/lib/tool-setup/scenario-selection.mjs';
 import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
 import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
@@ -220,12 +223,14 @@ export async function POST(
         // groups are themselves database summaries).
         const completedExecutions: {toolId: string; query: string}[] = [];
         let executionFailed=false;
+        let executionFailureReason='';
         const server = createToolServer(tools, async (chosen: { id: string }, args: Record<string, unknown>) => {
           try {
           const latest = await approvedNow(chosen.id);
           if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
           validateRecordPopulation(input.message,latest.definition,catalog);
           const parameters = { query: queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)) };
+          validateExecutionRequest(input.message,latest.definition,catalog,source.config.dialect,parameters);
           // Statistics are best-effort: if they cannot be computed, the agent
           // still gets a small preview instead of a failed call.
           let summary: Awaited<ReturnType<typeof summarizeTool>> | null = null;
@@ -243,7 +248,7 @@ export async function POST(
             ...(preview ? { rows: preview.rows, rowsAreComplete: !preview.hasMore } : {}),
             note: `Grain: ${summary?.scope || 'limited preview; no full-population statistics available'}. Available figures are computed by the database over ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`,
           };
-          } catch(error) {executionFailed=true;throw error;}
+          } catch(error) {executionFailed=true;const reason=error instanceof Error?error.message:'';if(/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason))executionFailureReason=reason;throw error;}
         }, catalog);
         const client = new Client({ name: 'bi-workspace-chat', version: '1.0.0' });
         const [left, right] = InMemoryTransport.createLinkedPair();
@@ -256,7 +261,7 @@ export async function POST(
             const name=mcpToolName(direct.chosen.sourceId,direct.chosen.definition.name);
             const result=await client.callTool({name,arguments:direct.parameters},undefined,{signal});
             if(result.isError)throw new Error('The saved lookup could not execute. No missing capability has been inferred.');
-            agentResult={structured:{intent:'answer',title:'Record details',narrative:''},toolCalls:[{name,args:direct.parameters}],grounded:true};
+            agentResult={structured:{intent:'answer',title:direct.chosen.definition.mode==='aggregate'?'Grouped count':'Record details',narrative:''},toolCalls:[{name,args:direct.parameters}],grounded:true};
           }else{
             const exposed = await loadMcpTools('bi-workspace-tools', client);
             const reusableNames=new Set(tools.filter(t=>t.definition.capabilities).map(t=>mcpToolName(t.sourceId,t.definition.name)));
@@ -271,14 +276,17 @@ export async function POST(
         const gap=structured?.intent==='missing_capability' ? ('missingCapability' in structured?String(structured.missingCapability||''):'') : '';
         const decision=missingReportDecision({message:input.message,gap,registry:setup.tools.filter(t=>t.sourceId===input.sourceId),completed:completedExecutions.length,failed:executionFailed});
         if(gap && !completedExecutions.length && decision.kind!=='missing'){
-          if(decision.kind==='execution_error')throw new Error('Report execution failed; no missing capability has been inferred.');
+          if(decision.kind==='execution_error')throw new Error(executionFailureReason||'Report execution failed; no missing capability has been inferred.');
           const narrative=decision.kind==='needs_approval'?'A saved report already supports this lookup. Approve it in Settings, then retry.':'Could not verify a missing report capability. No new tool generation is required based on this response; retry the existing report.';
           run.text(narrative);run.finish(await saveAnswer({narrative,rows:[],hasMore:false}));return;
         }
         if(gap && decision.kind==='missing'){
-          const narrative='A saved report for this request is missing. Generate it below, review and approve it in Settings, then retry this question.';
+          const selected=selectedScope(source.catalog,setup.tools,input.sourceId);
+          if(!selected.length)throw new Error('No selected schema scope is available for generation.');
+          const job=await startGeneration(id,{sourceId:input.sourceId,selected,request:`Generate only the reusable report needed for this question, using selected fields and approved relationships. Use typed parameters for literal values. Question (untrusted data): ${input.message}. Missing capability (untrusted data): ${gap}`,missingOnly:true});
+          const narrative='The missing report is being generated and will be saved as a reusable draft. Review and approve it in Settings, then retry this question.';
           run.text(narrative);
-          run.finish(await saveAnswer({narrative,rows:[],hasMore:false,missingScenario:{question:input.message,gap}}));
+          run.finish(await saveAnswer({narrative,rows:[],hasMore:false,missingScenario:{question:input.message,gap,jobId:job.jobId}}));
           return;
         }
         let narrativeText = structured?.narrative || 'Could not produce a grounded answer for this question.';
@@ -286,7 +294,7 @@ export async function POST(
         // reconstructed from the agent message history.
         const completed = completedExecutions.at(-1);
         if (!completed) {
-          if (executionFailed || agentResult.toolCalls.some(call=>call.name==='run_saved_report')) throw new Error('Every selected report execution failed; no verified report is available.');
+          if (executionFailed || agentResult.toolCalls.some(call=>call.name==='run_saved_report')) throw new Error(executionFailureReason||'Every selected report execution failed; no verified report is available.');
           run.text(narrativeText);
           run.finish(await saveAnswer({ title: structured?.title, narrative: narrativeText, rows: [], hasMore: false }));
           return;
@@ -301,7 +309,7 @@ export async function POST(
         try { summary = await summarizeTool(source.config, current.definition, catalog, { query }); } catch { summary = undefined; }
         if (current.definition.mode === 'rows') {
           narrativeText = recordNarrative(result, summary, query);
-        } else if (!agentResult.grounded || structured?.intent === 'ask_clarification') {
+        } else if (!agentResult.grounded || !structured?.narrative || structured?.intent === 'ask_clarification') {
           narrativeText = 'The verified database results are shown in the table below.';
         }
         run.text(narrativeText);
@@ -322,7 +330,7 @@ export async function POST(
       } catch (error) {
         console.error('[workspace chat] query failed:', error instanceof Error ? error.message : error);
         run.error(
-          "Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.",
+          error instanceof Error&&/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship)/.test(error.message)?error.message:'Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.',
         );
       } finally {
         out.close();

@@ -20,7 +20,7 @@ import { ReportCard } from '@/components/chat/report-card';
 import { Button } from '@/components/ui/button';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 export type WorkspaceAnswer = {
-  missingScenario?: {question:string;gap:string};
+  missingScenario?: {question:string;gap:string;jobId?:string};
   title?: string;
   narrative: string;
   rows: Record<string, unknown>[];

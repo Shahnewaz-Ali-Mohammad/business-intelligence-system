@@ -15,8 +15,8 @@ export function mentionedFields(message,fields){
 export const identifierField=field=>/(?:id|no|number|key|code)$/i.test(field.split(':').at(-1));
 export function requestRequirements(message,registry){
  const definitions=registry.map(t=>t.definition||t);
- const fields=[...new Set(definitions.flatMap(d=>[...d.columns,...d.groupBy,...d.filters.map(f=>f.field),...d.metrics.map(m=>m.field).filter(Boolean)]))];
- const aggregate=/\b(count|total|totals|how many|average|sum|breakdown|trend|statistics)\b/i.test(message);
+ const fields=[...new Set(definitions.flatMap(d=>[...(d.capabilities?.fields||[]),...d.columns,...d.groupBy,...d.filters.map(f=>f.field),...d.metrics.map(m=>m.field).filter(Boolean)]))];
+ const aggregate=/\b(count|number of|total|totals|how many|average|sum|breakdown|trend|statistics)\b/i.test(message);
  const groupText=message.match(/\b(?:by|per|each)\s+(.+)/i)?.[1]||'';
  const grouping=aggregate?mentionedFields(groupText,fields):[];
  const identifiers=mentionedFields(message,fields.filter(identifierField));
@@ -34,3 +34,16 @@ export function validateReportSelection(message,definition,registry){
  if(!requested.values.length&&!requested.identifiers.length&&definition.filters.some(f=>f.required&&identifierField(f.field)))throw Error('This report requires an identifier that the user did not provide. Find a report supporting the requested category or grouping.');
  return requested;
 }
+
+const singular=word=>word.endsWith('ies')?word.slice(0,-3)+'y':word.replace(/s$/,'');
+export function requestedBase(message,objects){
+ const head=message.split(/\b(?:join|where|group by|per|by|with)\b/i)[0];
+ const text=' '+splitWords(head).map(singular).join(' ')+' ';
+ const matches=objects.map(o=>{
+  const tokens=splitWords(o.name||o.id.split('.').at(-1)).filter(w=>!['dbo','tbl','tk','master','table','info','log'].includes(w)).map(singular);
+  const aliases=[tokens.join(' '),tokens.join('')].filter(Boolean);
+  return {id:o.id,score:aliases.some(alias=>text.includes(' '+alias+' '))?tokens.join('').length:0};
+ }).filter(o=>o.score).sort((a,b)=>b.score-a.score);
+ return matches.length&&(!matches[1]||matches[0].score>matches[1].score)?matches[0].id:null;
+}
+export function registryObjects(registry){return [...new Set(registry.map(t=>t.definition.base))].map(id=>({id,name:id.split('.').at(-1)}));}

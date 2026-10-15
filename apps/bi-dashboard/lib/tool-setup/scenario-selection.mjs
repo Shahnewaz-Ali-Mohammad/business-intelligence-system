@@ -1,12 +1,13 @@
-import {requestRequirements,splitWords} from './request-fields.mjs';
+import {requestRequirements,splitWords,requestedBase,registryObjects} from './request-fields.mjs';
 const words=value=>new Set(splitWords(value).map(w=>w.replace(/s$/,'')));
 export function scenarioCandidates(message,history,tools){
  if(!tools.some(t=>t.definition.template))return tools;
  let fixed=tools.filter(t=>!t.definition.capabilities);
  const requested=requestRequirements(message,fixed);
  if(requested.identifiers.length&&requested.values.length){const fields=new Set(requested.identifiers.map(f=>f.split(':').at(-1).toLowerCase()));const exact=fixed.filter(t=>t.definition.filters.some(f=>fields.has(f.field.split(':').at(-1).toLowerCase())));if(exact.length)fixed=exact;}
+ const base=requestedBase(message,registryObjects(tools));
  const terms=words(message),past=words(history.filter(h=>h.role==='user').slice(-2).map(h=>h.content).join(' '));
- const score=t=>{const d=t.definition;const text=words(d.description+' '+d.base);let n=0;
+ const score=t=>{const d=t.definition;const text=words(d.description+' '+d.base);let n=base?(d.base===base?200:-200):0;
   for(const word of terms)if(text.has(word))n+=2;for(const word of past)if(text.has(word))n+=0.1;
   n+=d.mode===(requested.aggregate?'aggregate':'rows')?30:-30;
   if(requested.grouping.length)n+=requested.grouping.every(f=>d.groupBy.includes(f))?150:-150;

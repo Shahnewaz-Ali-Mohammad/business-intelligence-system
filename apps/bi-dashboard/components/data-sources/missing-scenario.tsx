@@ -1,8 +1,8 @@
 "use client";
 import {useEffect,useState} from 'react';
 import {Button} from '@/components/ui/button';
-export function MissingScenario({id,sourceId,question,gap,onRetry}:{id:string;sourceId:string;question:string;gap:string;onRetry:(question:string)=>void}){
- const [jobId,setJobId]=useState<string|null>(null),[status,setStatus]=useState(''),[busy,setBusy]=useState(false),[done,setDone]=useState(false);
+export function MissingScenario({id,sourceId,question,gap,jobId:initialJobId,onRetry}:{id:string;sourceId:string;question:string;gap:string;jobId?:string;onRetry:(question:string)=>void}){
+ const [jobId,setJobId]=useState<string|null>(initialJobId||null),[status,setStatus]=useState(''),[busy,setBusy]=useState(Boolean(initialJobId)),[done,setDone]=useState(false);
  useEffect(()=>{
   if(!jobId)return;
   const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
