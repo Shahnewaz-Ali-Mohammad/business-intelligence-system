@@ -229,7 +229,9 @@ export function compileTool(
       .object({
         columns: z.union([ToolSchema.shape.columns,z.literal("*")]).optional(),
         groupBy: ToolSchema.shape.groupBy.optional(),
-        metrics: ToolSchema.shape.metrics.optional(),
+        metrics: z.array(z.object({field:Field.nullable(),operation:z.enum(["count","count_distinct","sum","avg","min","max"]),alias:z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),where:whereSchema.optional()}).strict()).max(12).optional(),
+        having: z.array(z.object({field:z.string(),operator:z.enum(['eq','ne','gt','gte','lt','lte']),value:z.number().finite()}).strict()).max(5).optional(),
+        derived: z.array(z.object({alias:z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),operation:z.enum(['add','subtract','multiply','divide','percent_of','percent_of_total','running_total','change','percent_change','moving_average','rank']),inputs:z.array(z.string()).min(1).max(2),window:z.number().int().min(2).max(366).optional()}).strict()).max(8).optional(),
         joins: ToolSchema.shape.joins.optional(),
         filters: ToolSchema.shape.filters.optional(),
         where: whereSchema.optional(),
@@ -252,7 +254,7 @@ export function compileTool(
       // A date bucket is always a grouping: add its field when the plan
       // forgot to list it in groupBy.
       groupBy: [...new Set([...(plan.groupBy ?? input.groupBy), ...(plan.dateGroups || []).map((g) => g.field)])],
-      metrics: plan.metrics ?? input.metrics,
+      metrics: plan.metrics ? plan.metrics.map(({where,...m})=>m) : input.metrics,
       joins: plan.joins ?? [],
       filters: plan.filters ?? [],
     };
@@ -263,8 +265,10 @@ export function compileTool(
       ...candidate.metrics.map((m) => m.field).filter(Boolean),
       ...candidate.filters.map((f) => f.field),
       ...whereFields(plan.where),
+      ...(plan.metrics||[]).flatMap(m=>m.where?whereFields(m.where):[]),
+      ...(plan.derived||[]).flatMap(d=>d.inputs).filter(i=>i.includes(':')),
       ...(plan.dateGroups||[]).map(g=>g.field),
-      ...(plan.sort||[]).filter(sort=>!candidate.metrics.some(m=>m.alias===sort.field)).map(sort=>sort.field),
+      ...(plan.sort||[]).filter(sort=>!candidate.metrics.some(m=>m.alias===sort.field)&&!(plan.derived||[]).some(d=>d.alias===sort.field)).map(sort=>sort.field),
     ];
     if(plan.joins===undefined)candidate.joins=inferJoins(candidate.base,used,catalog,input.capabilities.joins);
     if (
@@ -310,11 +314,12 @@ export function compileTool(
   };
   const runtime=templateRuntime||options.queryPlan||{};
   for(const group of runtime.dateGroups||[]){if(!tool.groupBy.includes(group.field)||!/(date|time)/i.test(fields.get(group.field)?.dataType||''))throw new Error('Date grouping needs a grouped date/time field.');}
-  for(const sort of runtime.sort||[]){if(!tool.metrics.some(m=>m.alias===sort.field))rawRef(sort.field);}
+  const derivedAliases=new Set((runtime.derived||[]).map(d=>d.alias));
+  for(const sort of runtime.sort||[]){if(!tool.metrics.some(m=>m.alias===sort.field)&&!derivedAliases.has(sort.field))rawRef(sort.field);}
   const ref=id=>{const group=runtime.dateGroups?.find(g=>g.field===id);return group?dateExpression(rawRef(id),group.grain,dialect):rawRef(id);};
   const table = (o) =>
     dialect === "mysql" ? q(o.name) : `${q(o.schema)}.${q(o.name)}`;
-  const values = [];
+  let values = [];
   const bind = (value, field) => {
     // Text identifiers may contain both numeric-looking and prefixed values.
     // Binding a number against varchar forces SQL Server to convert every row.
@@ -324,7 +329,7 @@ export function compileTool(
       ? `$${values.length}`
       : dialect === "sqlserver"
         ? `@p${values.length}`
-        : "?";
+        : `?{${values.length}}`;
   };
   const where = [];
   for (const f of tool.filters) {
@@ -378,10 +383,13 @@ export function compileTool(
   if(runtime.distinct&&tool.mode!=='rows')throw new Error('Distinct rows apply to a record query; use count_distinct for an aggregate.');
   const outputFields =
     tool.mode === "rows"
-      ? tool.columns
+      ? [...tool.columns]
       : [...tool.groupBy, ...tool.metrics.map((m) => m.alias)];
+  const metricWhere=new Map((runtime.metrics||[]).filter(m=>m.where).map(m=>[m.alias,m.where]));
   const metric = (m) => {
     let expression = m.field ? rawRef(m.field) : "*";
+    const condition=metricWhere.get(m.alias);
+    if(condition)expression=`CASE WHEN ${compileWhere(condition)} THEN ${m.field?expression:'1'} END`;
     if (
       dialect === "sqlserver" &&
       ["avg", "sum"].includes(m.operation) &&
@@ -402,6 +410,27 @@ export function compileTool(
               `${metric(m)} AS ${q(`c${tool.groupBy.length + index}`)}`,
           ),
         ];
+  const numeric=id=>/(int|dec|num|money|float|real|double)/i.test(fields.get(id)?.dataType||'');
+  const operand=name=>{
+    const m=tool.metrics.find(x=>x.alias===name);
+    if(tool.mode==='aggregate'){if(!m)throw new Error(`Calculations use returned metric aliases: ${name}`);return `CAST(${metric(m)} AS DECIMAL(38,6))`;}
+    if(!tool.columns.includes(name)||!numeric(name))throw new Error(`Calculations need returned numeric columns: ${name}`);
+    return `CAST(${rawRef(name)} AS DECIMAL(38,6))`;
+  };
+  const orderKey=()=>{const key=runtime.dateGroups?.[0]?.field||tool.groupBy[0];if(tool.mode!=='aggregate'||!key)throw new Error('Running totals, changes and moving averages need a grouping (for example a date bucket).');return ref(key);};
+  for(const d of runtime.derived||[]){
+    const [a,b]=d.inputs.map(operand);
+    const two=['add','subtract','multiply','divide','percent_of'].includes(d.operation);
+    if(two!==(d.inputs.length===2))throw new Error(`${d.operation} takes ${two?'two inputs':'one input'}.`);
+    if(['percent_of_total'].includes(d.operation)&&tool.mode!=='aggregate')throw new Error('Share of total needs an aggregate query.');
+    const expr={add:`(${a} + ${b})`,subtract:`(${a} - ${b})`,multiply:`(${a} * ${b})`,divide:`(${a} / NULLIF(${b}, 0))`,percent_of:`(100.0 * ${a} / NULLIF(${b}, 0))`,
+      percent_of_total:`(100.0 * ${a} / NULLIF(SUM(${a}) OVER (), 0))`,rank:`RANK() OVER (ORDER BY ${a} DESC)`}[d.operation]
+      ?? {running_total:()=>`SUM(${a}) OVER (ORDER BY ${orderKey()} ROWS UNBOUNDED PRECEDING)`,change:()=>`(${a} - LAG(${a}) OVER (ORDER BY ${orderKey()}))`,
+        percent_change:()=>`(100.0 * (${a} - LAG(${a}) OVER (ORDER BY ${orderKey()})) / NULLIF(LAG(${a}) OVER (ORDER BY ${orderKey()}), 0))`,
+        moving_average:()=>`AVG(${a}) OVER (ORDER BY ${orderKey()} ROWS BETWEEN ${(d.window||3)-1} PRECEDING AND CURRENT ROW)`}[d.operation]();
+    selections.push(`${expr} AS ${q(`c${outputFields.length}`)}`);outputFields.push(d.alias);
+  }
+  if(new Set(outputFields).size!==outputFields.length)throw new Error('Returned names must be unique.');
   // Chat previews and pages default to 100 rows per query; the full
   // export raises the page size (options.maxLimit) to read in larger batches.
   const requestedBound = Math.min(
@@ -420,6 +449,10 @@ export function compileTool(
   if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
   if (tool.mode === "aggregate" && tool.groupBy.length)
     sql += ` GROUP BY ${tool.groupBy.map(ref).join(", ")}`;
+  if(runtime.having?.length){
+    if(tool.mode!=='aggregate')throw new Error('Metric conditions need an aggregate query.');
+    sql+=` HAVING ${runtime.having.map(h=>{const m=tool.metrics.find(x=>x.alias===h.field);if(!m)throw new Error('Metric conditions use returned metric aliases.');values.push(h.value);const p=dialect==='postgres'?`$${values.length}`:dialect==='sqlserver'?`@p${values.length}`:`?{${values.length}}`;return `${metric(m)} ${{eq:'=',ne:'<>',gt:'>',gte:'>=',lt:'<',lte:'<='}[h.operator]} ${p}`;}).join(' AND ')}`;
+  }
   let populationSql = sql.replace(/^SELECT (DISTINCT )?TOP \(\d+\) /, "SELECT $1");
   const ordering=[],orderedFields=new Set();
   for(const sort of runtime.sort||[]){
@@ -451,6 +484,13 @@ export function compileTool(
     sql += ` OFFSET ${offset} ROWS FETCH NEXT ${fetchCount} ROWS ONLY`;
   }
   if(fetchCount===0)sql=`SELECT * FROM (${populationSql}) AS ${q('empty_result')} WHERE 1=0`;
+  // Positional placeholders: emit values in the order they appear in the SQL.
+  let ordered=values;
+  if(dialect!=='postgres'&&dialect!=='sqlserver'){
+    const order=text=>{const out=[];return [text.replace(/\?\{(\d+)\}/g,(_,n)=>{out.push(values[n-1]);return '?';}),out];};
+    [populationSql]=order(populationSql);[sql,ordered]=order(sql);
+  }
+  values=ordered;
   return { sql, populationSql, values, limit: bound, outputFields, joinIds:joins.map(j=>j.id),
     grain:joins.some(j=>j.fanout)?'Joined rows; not a count of distinct base records. Aggregates follow the explicitly requested measure.':null,
     unsafeAggregateFields:tool.mode==='rows'?tool.columns.filter(id=>!measureIsSafe(fields.get(id).object.id,base.id,joins)):[] };
