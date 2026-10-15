@@ -21,9 +21,9 @@ for(const dialect of ['mysql','postgres','sqlserver'])test(`${dialect}: saved te
  assert.throws(()=>compileTool(lookup,catalog,dialect,{filter_value:100001,report_columns:['bills:Amount']}),/output fields/);
  assert.throws(()=>compileTool(lookup,catalog,dialect,{filter_value:100001,report_sort_field:'bills:Amount'}),/Ordering field/);
 });
-test('saved report selection excludes generic query builders once templates are approved',()=>{
+test('saved report selection retains reusable coverage alongside matching templates',()=>{
  const fixed=templates.map((definition,i)=>({id:String(i),sourceId:'s',definition}));const generic={id:'generic',sourceId:'s',definition:{...templates[0],template:undefined,capabilities:{fields:['customers:CustomerID'],joins:[]}}};
- const chosen=scenarioCandidates('show customer ID 100001 details',[],[generic,...fixed]);assert.ok(chosen.length<=24);assert.ok(chosen.every(t=>!t.definition.capabilities));
+ const chosen=scenarioCandidates('show customer ID 100001 details',[],[generic,...fixed]);assert.ok(chosen.length<=24);assert.ok(chosen.some(t=>t.definition.capabilities));
  assert.ok(chosen.some(t=>t.definition.filters[0]?.field==='customers:CustomerID'));
  const scope=selectedScope(catalog,[fixed[0]],'s');assert.equal(scope.length,1);assert.equal(scope[0].id,'customers');assert.ok(!scope[0].columns.includes('Password'));
 });
@@ -41,4 +41,19 @@ test('targeted generation returns only missing fixed templates and preserves sel
 test('explicit customer ID lookups never substitute another identifier such as SNID',()=>{
  const mock=[{definition:{...templates[0],filters:[{field:'customers:SNID'}]}},{definition:{...templates[0],filters:[{field:'customers:CustomerID'}]}}];
  const found=scenarioCandidates('details for customer id 100001',[],mock);assert.equal(found.length,1);assert.equal(found[0].definition.filters[0].field,'customers:CustomerID');
+});
+
+test('full generation saves reusable coverage alongside AI reports without a live AI call',async()=>{
+ const prior=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY=prior||'test-key';
+ try{
+ const {generateTools}=await import('./generate.ts');
+ const {assertCapabilityCoverage}=await import('./coverage.mjs');
+ const selected=catalog.objects.map(o=>({id:o.id,columns:o.columns.filter(c=>c.name!=='Password').map(c=>c.name)}));
+ const selectedCatalog={...catalog,objects:catalog.objects.map(o=>({...o,columns:o.columns.filter(c=>c.name!=='Password')}))};
+ const seed={...templates[0]};delete seed.template;
+ const generated=await generateTools(catalog,selected,'',{completedBatches:{0:[seed]}});
+ assert.equal(assertCapabilityCoverage(selectedCatalog,generated).tables,selected.length);
+ assert.equal(generated.filter(t=>t.capabilities).length,selected.length*2);
+ assert.ok(generated.some(t=>t.template));
+ }finally{if(prior===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=prior;}
 });

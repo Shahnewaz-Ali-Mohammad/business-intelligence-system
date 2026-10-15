@@ -1,4 +1,5 @@
-import {resolveSavedLookup,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
+import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
+import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
 import {recordNarrative} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
@@ -193,7 +194,7 @@ export async function POST(
         // (scripts/chat/agent.mjs -> getBiGraph: draft -> critique -> retry).
         // Only the tools differ: this workspace's approved, generated MCP
         // tools. Approval, version and schema checks run before every call.
-        const requestedLookup=resolveSavedLookup(input.message,setup.tools.filter(t=>t.sourceId===input.sourceId));
+        const requestedLookup=resolveSavedRequest(input.message,setup.tools.filter(t=>t.sourceId===input.sourceId));
         if(requestedLookup&&requestedLookup.chosen.status!=='approved'){
           run.finish(await saveAnswer({narrative:'A saved report already supports this lookup. Approve it in Settings, then retry.',rows:[],hasMore:false}));return;
         }
@@ -222,6 +223,7 @@ export async function POST(
         const server = createToolServer(tools, async (chosen: { id: string }, args: Record<string, unknown>) => {
           try {
           const latest = await approvedNow(chosen.id);
+          if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
           const parameters = { query: queryFor(latest.definition, args) };
           // Statistics are best-effort: if they cannot be computed, the agent
           // still gets a small preview instead of a failed call.
@@ -248,14 +250,16 @@ export async function POST(
         await client.connect(left);
         let agentResult;
         try {
-          const direct=resolveSavedLookup(input.message,tools);
+          const direct=resolveSavedRequest(input.message,tools);
           if(direct){
             const name=mcpToolName(direct.chosen.sourceId,direct.chosen.definition.name);
             const result=await client.callTool({name,arguments:direct.parameters},undefined,{signal});
             if(result.isError)throw new Error('The saved lookup could not execute. No missing capability has been inferred.');
             agentResult={structured:{intent:'answer',title:'Record details',narrative:''},toolCalls:[{name,args:direct.parameters}],grounded:true};
           }else{
-            const lcTools = tools.some(t=>t.definition.template) ? savedReportTools(client,tools) : await loadMcpTools('bi-workspace-tools', client);
+            const exposed = await loadMcpTools('bi-workspace-tools', client);
+            const reusableNames=new Set(tools.filter(t=>t.definition.capabilities).map(t=>mcpToolName(t.sourceId,t.definition.name)));
+            const lcTools = tools.some(t=>t.definition.template) ? [...savedReportTools(client,tools),...exposed.filter(t=>reusableNames.has(t.name))] : exposed;
             agentResult = await runWorkspaceAgent({message:input.message,history,workspaceName:sourceName(setup,input.sourceId)||workspace!.name,tools:lcTools,signal,onProgress:(text:string)=>run.progress(text)});
           }
         } finally {

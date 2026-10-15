@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { coverageTools, generationBatches, coverageReport } from "./coverage.mjs";
+import { coverageTools, generationBatches, coverageReport, assertCapabilityCoverage } from "./coverage.mjs";
 import { compileTool } from "./model.mjs";
 const catalog = {
   objects: [
@@ -103,4 +103,13 @@ test('reusable scenarios cover a multi-hop path in both directions without enume
  const compiled=compileTool(tool,graph,'sqlserver',{query:JSON.stringify({groupBy:['customers:CustomerID'],metrics:[{field:'lines:Amount',operation:'sum',alias:'amount'}]})});
  assert.deepEqual(compiled.joinIds,['customer_bills','bill_lines']);
  const report=coverageReport(graph,tools);assert.equal(report.totalFields,6);assert.equal(report.verifiedRelationships,2);assert.equal(report.gaps.length,0);
+});
+
+test('generation coverage rejects missing modes and omitted selected fields',()=>{
+ const tools=coverageTools(catalog);
+ assert.equal(assertCapabilityCoverage(catalog,tools).fields,2);
+ assert.throws(()=>assertCapabilityCoverage(catalog,[tools[0]]),/aggregate/);
+ const incomplete=structuredClone(tools);incomplete[0].capabilities.fields.pop();
+ assert.throws(()=>assertCapabilityCoverage(catalog,incomplete),/rows/);
+ assert.throws(()=>assertCapabilityCoverage(catalog,tools.map(t=>({...t,capabilities:undefined}))),/coverage/);
 });

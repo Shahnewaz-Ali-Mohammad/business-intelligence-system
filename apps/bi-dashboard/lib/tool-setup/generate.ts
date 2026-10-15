@@ -3,7 +3,7 @@ import {namedKeyLinks} from './named-key-links.mjs';
 import { ChatOpenAI } from "@langchain/openai";
 import { DraftSchema, BusinessDraftSchema, validateTool, isProtectedColumn } from "./model.mjs";
 import type { Catalog, ToolDefinition } from "./store";
-import { generationBatches } from "./coverage.mjs";
+import { coverageTools, assertCapabilityCoverage, generationBatches } from "./coverage.mjs";
 import { normalizeFilterParameters } from "./normalize-draft.mjs";
 import { withOutputRecovery } from "./generation-output.mjs";
 import { generationSettings } from "./generation-settings.mjs";
@@ -48,9 +48,8 @@ export async function generateTools(
       ),
   );
   const selectedCatalog = namedKeyLinks({ ...catalog, objects, relationships });
-  const definitions = options.missingOnly ? [] as ToolDefinition[] : scenarioTemplates(selectedCatalog) as ToolDefinition[];
+  const definitions = options.missingOnly ? [] as ToolDefinition[] : [...coverageTools(selectedCatalog), ...scenarioTemplates(selectedCatalog)] as ToolDefinition[];
   const generationRequest = request.trim() || 'Generate useful business reports for the selected tables: detailed record lists, grouped summaries and totals supported by the actual columns and verified relationships. Use descriptive names. Do not infer business formulas or status meanings from ambiguous columns; describe those limitations.';
-  let aiGenerated = 0;
   if (!process.env.OPENAI_API_KEY)
     throw new Error("Configure the OpenAI key on the application server.");
   const makeModel=(budget:number)=>{const settings=generationSettings();return new ChatOpenAI({...settings,model,modelKwargs:{...settings.modelKwargs,max_completion_tokens:budget}}).withStructuredOutput(BusinessDraftSchema,{method:'jsonSchema',strict:true});};
@@ -99,8 +98,9 @@ export async function generateTools(
   signal.throwIfAborted();
   for (const group of results) for (const tool of group) {
     if (tool.name.startsWith('auto_')) throw new Error('Reserved tool name returned by model.');
-    if (!definitions.some((t) => t.name === tool.name)) { definitions.push({...tool,template:{projection:tool.mode==='rows',limit:true,sortFields:tool.mode==='rows'?tool.columns:[...tool.groupBy,...tool.metrics.map(m=>m.alias)],sort:[],dateGroups:[]}}); aiGenerated += 1; }
+    if (!definitions.some((t) => t.name === tool.name)) { definitions.push({...tool,template:{projection:tool.mode==='rows',limit:true,sortFields:tool.mode==='rows'?tool.columns:[...tool.groupBy,...tool.metrics.map(m=>m.alias)],sort:[],dateGroups:[]}}); }
   }
-  if (!aiGenerated) throw new Error('AI generation produced no business tools. Previously saved tools are unchanged.');
+  if (!results.some(group=>group.length)) throw new Error('AI generation produced no business tools. Previously saved tools are unchanged.');
+  if (!options.missingOnly) assertCapabilityCoverage(selectedCatalog, definitions);
   return definitions;
 }
