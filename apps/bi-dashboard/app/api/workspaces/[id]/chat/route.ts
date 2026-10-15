@@ -1,10 +1,11 @@
+import {resolveSavedLookup,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
 import {recordNarrative} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMcpTools } from '@langchain/mcp-adapters';
-import { createToolServer } from '@/lib/tool-setup/mcp.mjs';
+import { createToolServer, mcpToolName } from '@/lib/tool-setup/mcp.mjs';
 import { runWorkspaceAgent } from '../../../../../scripts/chat/agent.mjs';
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -192,6 +193,10 @@ export async function POST(
         // (scripts/chat/agent.mjs -> getBiGraph: draft -> critique -> retry).
         // Only the tools differ: this workspace's approved, generated MCP
         // tools. Approval, version and schema checks run before every call.
+        const requestedLookup=resolveSavedLookup(input.message,setup.tools.filter(t=>t.sourceId===input.sourceId));
+        if(requestedLookup&&requestedLookup.chosen.status!=='approved'){
+          run.finish(await saveAnswer({narrative:'A saved report already supports this lookup. Approve it in Settings, then retry.',rows:[],hasMore:false}));return;
+        }
         if (!tools.length) {
           run.finish(await saveAnswer({ narrative: 'Approve tools for this database in Settings before asking data questions.', rows: [], hasMore: false }));
           return;
@@ -243,24 +248,32 @@ export async function POST(
         await client.connect(left);
         let agentResult;
         try {
-          const lcTools = tools.some(t=>t.definition.template) ? savedReportTools(client,tools) : await loadMcpTools('bi-workspace-tools', client);
-          agentResult = await runWorkspaceAgent({
-            message: input.message,
-            history,
-            workspaceName: sourceName(setup, input.sourceId) || workspace!.name,
-            tools: lcTools,
-            signal,
-            onProgress: (text: string) => run.progress(text),
-          });
+          const direct=resolveSavedLookup(input.message,tools);
+          if(direct){
+            const name=mcpToolName(direct.chosen.sourceId,direct.chosen.definition.name);
+            const result=await client.callTool({name,arguments:direct.parameters},undefined,{signal});
+            if(result.isError)throw new Error('The saved lookup could not execute. No missing capability has been inferred.');
+            agentResult={structured:{intent:'answer',title:'Record details',narrative:''},toolCalls:[{name,args:direct.parameters}],grounded:true};
+          }else{
+            const lcTools = tools.some(t=>t.definition.template) ? savedReportTools(client,tools) : await loadMcpTools('bi-workspace-tools', client);
+            agentResult = await runWorkspaceAgent({message:input.message,history,workspaceName:sourceName(setup,input.sourceId)||workspace!.name,tools:lcTools,signal,onProgress:(text:string)=>run.progress(text)});
+          }
         } finally {
           await client.close().catch(() => {});
           await server.close().catch(() => {});
         }
         const structured = agentResult.structured;
-        if(structured?.intent==='missing_capability'&&structured.missingCapability&&!executionFailed){
+        const gap=structured?.intent==='missing_capability' ? ('missingCapability' in structured?String(structured.missingCapability||''):'') : '';
+        const decision=missingReportDecision({message:input.message,gap,registry:setup.tools.filter(t=>t.sourceId===input.sourceId),completed:completedExecutions.length,failed:executionFailed});
+        if(gap && !completedExecutions.length && decision.kind!=='missing'){
+          if(decision.kind==='execution_error')throw new Error('Report execution failed; no missing capability has been inferred.');
+          const narrative=decision.kind==='needs_approval'?'A saved report already supports this lookup. Approve it in Settings, then retry.':'Could not verify a missing report capability. No new tool generation is required based on this response; retry the existing report.';
+          run.text(narrative);run.finish(await saveAnswer({narrative,rows:[],hasMore:false}));return;
+        }
+        if(gap && decision.kind==='missing'){
           const narrative='A saved report for this request is missing. Generate it below, review and approve it in Settings, then retry this question.';
           run.text(narrative);
-          run.finish(await saveAnswer({narrative,rows:[],hasMore:false,missingScenario:{question:input.message,gap:structured.missingCapability}}));
+          run.finish(await saveAnswer({narrative,rows:[],hasMore:false,missingScenario:{question:input.message,gap}}));
           return;
         }
         let narrativeText = structured?.narrative || 'Could not produce a grounded answer for this question.';

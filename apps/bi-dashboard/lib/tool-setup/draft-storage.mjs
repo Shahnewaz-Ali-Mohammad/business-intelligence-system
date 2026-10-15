@@ -1,12 +1,10 @@
+import {reportFingerprint,reportCovers} from './report-identity.mjs';
 import crypto from 'node:crypto';
 import {fingerprint} from './model.mjs';
 
 // What a tool actually does, ignoring its name and wording. Two tools with
 // the same behaviour fingerprint return the same data.
-export function behaviourFingerprint(definition) {
-  const { name: _name, description: _description, ...behaviour } = definition;
-  return fingerprint(behaviour);
-}
+export const behaviourFingerprint = reportFingerprint;
 
 /**
  * Saves one generation run's tools for a database.
@@ -35,18 +33,17 @@ export async function saveDraftDefinitions(connection, sourceId, catalogFingerpr
       "SELECT id,name,status,definition_json,catalog_fingerprint FROM bi_generated_tools WHERE source_id=? FOR UPDATE",
       [sourceId],
     );
-    const existing = existingRows.map((row) => ({ ...row, behaviour: behaviourFingerprint(JSON.parse(row.definition_json)) }));
+    const existing = existingRows.map(row=>({...row,definition:JSON.parse(row.definition_json)}));
     const kept = new Set();
-    const seenThisRun = new Set();
+    const seenThisRun = [];
 
     for (let definition of definitions) {
-      const behaviour = behaviourFingerprint(definition);
       // Duplicates inside the same run.
-      if (seenThisRun.has(behaviour)) { counts.unchanged += 1; continue; }
-      seenThisRun.add(behaviour);
+      if (seenThisRun.some(t=>reportCovers(t,definition))) { counts.unchanged += 1; continue; }
+      seenThisRun.push(definition);
 
       // Same behaviour already saved for this schema: keep the existing tool.
-      const sameBehaviour = existing.find((t) => t.behaviour === behaviour && t.catalog_fingerprint === catalogFingerprint);
+      const sameBehaviour = existing.find((t) => t.catalog_fingerprint === catalogFingerprint && reportCovers(t.definition,definition));
       if (sameBehaviour) { kept.add(sameBehaviour.id); counts.unchanged += 1; continue; }
 
       // A new suggestion never silently replaces an approved tool of the same name.

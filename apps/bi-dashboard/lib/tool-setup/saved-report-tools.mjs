@@ -1,10 +1,11 @@
+import {uniqueReports} from './report-identity.mjs';
 import {tool} from '@langchain/core/tools';
 import {z} from 'zod';
 import {mcpToolName} from './mcp.mjs';
 import {scenarioCandidates} from './scenario-selection.mjs';
 const scalar=z.union([z.string().max(20000),z.number().finite(),z.boolean()]);
 export function savedReportTools(client,registry){
- const reports=registry.filter(t=>t.status==='approved'&&!t.definition.capabilities);
+ const reports=uniqueReports(registry.filter(t=>t.status==='approved'&&!t.definition.capabilities));
  const byName=new Map(reports.map(t=>[mcpToolName(t.sourceId,t.definition.name),t]));
  return [tool(async({request})=>{
   const terms=(request.match(/[a-z]+/gi)||[]).map(w=>w.toLowerCase());

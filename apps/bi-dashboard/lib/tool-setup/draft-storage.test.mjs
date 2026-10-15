@@ -42,3 +42,10 @@ test('missing-scenario generation adds drafts without deleting unrelated saved d
  const result=await saveDraftDefinitions(connection,'s','fp',[tool('missing_report','dbo.New')],{additive:true});
  assert.equal(result.added,1);assert.equal(result.removed,0);assert.ok(!connection.calls.some(c=>c.sql.startsWith('DELETE')));
 });
+
+test('chat generation reuses a saved lookup when only the parameter name changes',async()=>{
+ const original={...tool('customer_lookup'),filters:[{field:'dbo.Tickets:Id',operator:'eq',parameter:'filter_value',required:true}]};
+ const duplicate={...original,name:'another_lookup',filters:[{...original.filters[0],parameter:'customer_idostring'}]};
+ const connection=fakeConnection([row('saved',original,'approved')]);
+ const result=await saveDraftDefinitions(connection,'s','fp',[duplicate],{additive:true});assert.equal(result.added,0);assert.equal(result.unchanged,1);assert.ok(!connection.calls.some(c=>c.sql.startsWith('INSERT INTO bi_generated_tools')));
+});
