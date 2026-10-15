@@ -335,7 +335,7 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
         const plan=typeof parameters.query==='string'?JSON.parse(parameters.query):{};
         let rowParameters;
         if(tool.capabilities){
-          const scope={...plan};for(const name of ['limit','sort','groupBy','metrics','dateGroups','columns','distinct'])delete scope[name];
+          const scope={...plan};for(const name of ['limit','sort','groupBy','metrics','dateGroups','columns','distinct','derived','having'])delete scope[name];
           rowParameters={query:JSON.stringify({...scope,columns:[field]})};
         }else{
           delete rowDefinition.template;

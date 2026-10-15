@@ -52,6 +52,8 @@ export function createToolServer(tools, execute, catalog = null) {
         ...(t.definition.capabilities
           ? {
               properties: {
+                // Query options are also accepted beside query; they are folded in.
+                ...Object.fromEntries(Object.entries(queryInputSchema(t.definition).properties).map(([k,v])=>[k,{...v,description:`Same as query.${k}.`}])),
                 query: {
                   ...queryInputSchema(t.definition),
                   description: `${queryInputSchema(t.definition).description} Base table: ${t.definition.base}. Mode: ${t.definition.mode}. Use allColumns:true for all approved details. columns must be an array of exact field IDs, not a comma-separated string. Example projection: ${JSON.stringify({query:{columns:t.definition.capabilities.fields.filter(f=>f.startsWith(t.definition.base+':')).slice(0,2),limit:100}})}. Omit joins to infer a unique approved path; otherwise specify approved relationship IDs. Never sum repeated parent measures across a one-to-many join. Relationships: ${JSON.stringify(catalog?.relationships?.filter(j=>t.definition.capabilities.joins.includes(j.id))||[])}. No SQL.`,

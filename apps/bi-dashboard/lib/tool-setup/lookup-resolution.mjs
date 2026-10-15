@@ -37,7 +37,10 @@ export function resolveSavedCount(message,registry){
  const chosen=candidates.sort((a,b)=>b.definition.capabilities.joins.length-a.definition.capabilities.joins.length)[0];
  return chosen?{chosen,parameters:{query:{groupBy:[field],metrics:[{field:null,operation:'count',alias:'record_count'}]}}}:null;
 }
-export const resolveSavedRequest=(message,registry)=>resolveSavedLookup(message,registry)||resolveSavedCount(message,registry)||resolveSavedGrouping(message,registry);
+// Shortcuts only answer plain lookups and counts. Anything asking for a
+// calculation, comparison, trend or extra figure goes to the full planner.
+const needsPlanner=message=>/percent|%|share|ratio|proportion|growth|change|compare|comparison|versus|\bvs\b|trend|running|cumulative|moving|average|\bavg\b|mean|rank|sum|total|minus|difference|plus|divided|per\b|more than|less than|at least|at most|greater|fewer|between|earliest|latest|oldest|newest|first|last|month|year|week|daily|monthly|yearly|where|filter|only|and\b/i.test(String(message));
+export const resolveSavedRequest=(message,registry)=>needsPlanner(message)?null:resolveSavedLookup(message,registry)||resolveSavedCount(message,registry)||resolveSavedGrouping(message,registry);
 export function missingReportDecision({message,gap,registry,completed=0,failed=false}){
  if(completed)return {kind:'executed'};
  if(failed)return {kind:'execution_error'};

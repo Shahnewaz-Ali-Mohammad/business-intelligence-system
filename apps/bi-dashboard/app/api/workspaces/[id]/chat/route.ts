@@ -4,6 +4,7 @@ import { workspaceEntry } from '../../../../../scripts/chat/workspace-entry.mjs'
 import { writeAnalyticalInsight } from '../../../../../scripts/lib/analytical-insight.mjs';
 import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
 import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
+import {addRequestedCalculations} from '@/lib/tool-setup/analysis-intent.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
 import {recordNarrative,requestedRecordArguments,validateRecordPopulation} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
@@ -52,11 +53,13 @@ const turns = new Map<number, number[]>();
 function groupedFallback(rows: Record<string, unknown>[], mode: string) {
   if (mode !== 'aggregate' || !rows.length) return '';
   const keys = Object.keys(rows[0]);
-  const metric = keys.find((k) => rows.every((r) => r[k] == null || Number.isFinite(Number(r[k]))) && /count|sum|total|avg|min|max|_/i.test(k)) || keys.at(-1)!;
-  const labels = keys.filter((k) => k !== metric);
+  const numericKey = (k: string) => !k.includes(':') && rows.every((r) => r[k] == null || Number.isFinite(Number(r[k])));
+  const metric = keys.find(numericKey) || keys.at(-1)!;
+  const labels = keys.filter((k) => k.includes(':'));
   const total = rows.reduce((n, r) => n + (Number(r[metric]) || 0), 0);
   const top = [...rows].sort((a, b) => (Number(b[metric]) || 0) - (Number(a[metric]) || 0)).slice(0, 3);
-  const name = (r: Record<string, unknown>) => labels.map((k) => (r[k] == null ? 'Missing' : String(r[k]))).join(' / ') || 'All';
+  const text = (v: unknown) => v == null ? 'Missing' : v instanceof Date ? v.toISOString().slice(0, 10) : String(v).replace(/T00:00:00(?:\.000)?Z$/, '');
+  const name = (r: Record<string, unknown>) => labels.map((k) => text(r[k])).join(' / ') || 'All';
   const share = (r: Record<string, unknown>) => (total ? ` (${(((Number(r[metric]) || 0) / total) * 100).toFixed(1)}%)` : '');
   return `${rows.length.toLocaleString()} groups. Largest: ${top.map((r) => `${name(r)} ${Number(r[metric]).toLocaleString()}${share(r)}`).join(', ')}.`;
 }
@@ -260,7 +263,7 @@ export async function POST(
           const latest = await approvedNow(chosen.id);
           if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
           validateRecordPopulation(input.message,latest.definition,catalog);
-          const parameters = { query: queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)) };
+          const parameters = { query: addRequestedCalculations(input.message,latest.definition,queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)),catalog) };
           validateExecutionRequest(input.message,latest.definition,catalog,source.config.dialect,parameters);
           // Statistics are best-effort: if they cannot be computed, the agent
           // still gets a small preview instead of a failed call.
@@ -279,7 +282,7 @@ export async function POST(
             ...(preview ? { rows: preview.rows, rowsAreComplete: !preview.hasMore } : {}),
             note: `Grain: ${summary?.scope || 'limited preview; no full-population statistics available'}. Available figures are computed by the database over ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`,
           };
-          } catch(error) {executionFailed=true;const reason=error instanceof Error?error.message:'';if(/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason))executionFailureReason=reason;throw error;}
+          executionFailed=true;const reason=error instanceof Error?error.message:'';if(/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason))executionFailureReason=reason;throw error;}
         }, catalog);
         const client = new Client({ name: 'bi-workspace-chat', version: '1.0.0' });
         const [left, right] = InMemoryTransport.createLinkedPair();

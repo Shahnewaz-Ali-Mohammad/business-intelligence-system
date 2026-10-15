@@ -32,10 +32,27 @@ export function queryInputSchema(definition) {
   } };
 }
 export function normalizeMcpArguments(definition, args) {
+  if (definition.capabilities) {
+    // Tolerate query options placed beside query instead of inside it.
+    const keys=Object.keys(queryInputSchema(definition).properties);
+    const outer=Object.entries(args).filter(([k])=>k!=='query'&&keys.includes(k));
+    if(outer.length){
+      const inner=typeof args.query==='string'?JSON.parse(args.query):{...(args.query||{})};
+      for(const [k,v] of outer)if(inner[k]===undefined&&!(k==='allColumns'&&(v!==true||inner.columns!==undefined)))inner[k]=v;
+      args={query:inner};
+    }
+  }
+  if (definition.capabilities && definition.mode==='aggregate' && args.query && typeof args.query==='object' && Array.isArray(args.query.columns)) {
+    // Columns on a summary tool mean "group by these" (date buckets are grouped already).
+    const {columns,...rest}=args.query;const grouped=new Set([...(rest.groupBy||[]),...(rest.dateGroups||[]).map(g=>g.field)]);
+    const metricFields=new Set((rest.metrics||[]).map(m=>m.field));
+    const extra=columns.filter(f=>!grouped.has(f)&&!metricFields.has(f));
+    args={...args,query:{...rest,...(extra.length||rest.groupBy?{groupBy:[...(rest.groupBy||[]),...extra].slice(0,5)}:{})}};
+  }
   if (!definition.capabilities || args.query === undefined || typeof args.query === 'string') return args;
   if (!args.query || typeof args.query !== 'object' || Array.isArray(args.query)) throw new Error('Query must be an object.');
   const {allColumns,...query}=args.query;
   if(allColumns===true&&query.columns!==undefined)throw new Error('Use allColumns or columns, not both.');
   if(allColumns!==undefined&&typeof allColumns!=='boolean')throw new Error('allColumns must be boolean.');
-  return { ...args, query: JSON.stringify({...query,...(allColumns?{columns:'*'}:{})}) };
+  return { ...args, query: JSON.stringify({...query,...(allColumns&&definition.mode==='rows'?{columns:'*'}:{})}) };
 }
