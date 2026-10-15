@@ -4,10 +4,10 @@ import {z} from 'zod';
 import {mcpToolName} from './mcp.mjs';
 import {scenarioCandidates} from './scenario-selection.mjs';
 const scalar=z.union([z.string().max(20000),z.number().finite(),z.boolean()]);
-export function savedReportTools(client,registry){
+export function savedReportTools(client,registry,options={}){
  const reports=uniqueReports(registry.filter(t=>t.status==='approved'&&!t.definition.capabilities));
  const byName=new Map(reports.map(t=>[mcpToolName(t.sourceId,t.definition.name),t]));
- return [tool(async({request})=>{
+ const exposed=[tool(async({request})=>{
   const terms=(request.match(/[a-z]+/gi)||[]).map(w=>w.toLowerCase());
   const chosen=scenarioCandidates(request,[],reports).slice(0,6);
   return JSON.stringify({reports:chosen.map(t=>{
@@ -27,4 +27,6 @@ export function savedReportTools(client,registry){
   if(result.isError)throw Error(result.content.filter(b=>b.type==='text').map(b=>b.text).join(' '));
   return result.content.filter(b=>b.type==='text').map(b=>b.text).join('\n');
  },{name:'run_saved_report',description:'Execute an already-built approved report by its exact report_name, supplying only the parameter values and supported report display controls returned by find_saved_reports. Never supply SQL, joins, metrics or a query plan. The application renders the returned report table.',schema:z.object({report_name:z.string().min(1),parameters:z.record(z.string(),z.union([scalar,z.array(scalar).max(1000)]))})})];
+ if(options.findValues&&options.valueFields?.length)exposed.push(tool(async({field,search})=>JSON.stringify(await options.findValues(field,search)),{name:'find_database_values',description:'Look up actual stored labels before filtering by a status, type, category, priority, subject or name. Use this when the employee uses ordinary language and the exact stored label is unknown. Omit search to inspect the first 50 values; provide a short search term to narrow them. These are reference values, not the final requested report. Never invent numeric codes from a label.',schema:z.object({field:z.enum(options.valueFields),search:z.string().max(200).optional()})}));
+ return exposed;
 }

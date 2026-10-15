@@ -318,6 +318,29 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
       summaryQuery(compiled, config.dialect),
       compiled.values,
     );
+    let matchedRecords;
+    if(tool.mode==='aggregate'){
+      const base=catalog.objects.find(o=>o.id===tool.base);
+      const key=base.columns.find(c=>c.isPrimaryKey&&!isProtectedColumn(c.name))||base.columns.find(c=>!isProtectedColumn(c.name));
+      if(key){
+        const field=tool.base+':'+key.name;
+        const rowDefinition={...tool,mode:'rows',columns:[field],groupBy:[],metrics:[]};
+        const plan=typeof parameters.query==='string'?JSON.parse(parameters.query):{};
+        let rowParameters;
+        if(tool.capabilities){
+          const scope={...plan};for(const name of ['limit','sort','groupBy','metrics','dateGroups','columns','distinct'])delete scope[name];
+          rowParameters={query:JSON.stringify({...scope,columns:[field]})};
+        }else{
+          delete rowDefinition.template;
+          const values={...(plan.values||parameters)};delete values.query;
+          for(const name of ['report_limit','report_columns','report_sort_field','report_sort_direction'])delete values[name];
+          rowParameters={query:JSON.stringify({values})};
+        }
+        const rows=compileTool(rowDefinition,catalog,config.dialect,rowParameters);
+        const [matched]=await query(summaryQuery(rows,config.dialect),rows.values);
+        matchedRecords=Number(matched.population);
+      }
+    }
     const numeric = [];
     for (const [index, field] of compiled.outputFields.entries()) {
       if(compiled.unsafeAggregateFields?.includes(field))continue;
@@ -344,6 +367,7 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
     }
     return {
       population: count.population,
+      ...(matchedRecords!==undefined?{matchedRecords}:{}),
       scope: compiled.grain || (
         tool.mode === "aggregate"
           ? "Full matching result groups"

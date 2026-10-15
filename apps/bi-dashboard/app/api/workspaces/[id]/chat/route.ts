@@ -265,7 +265,18 @@ export async function POST(
           }else{
             const exposed = await loadMcpTools('bi-workspace-tools', client);
             const reusableNames=new Set(tools.filter(t=>t.definition.capabilities).map(t=>mcpToolName(t.sourceId,t.definition.name)));
-            const lcTools = tools.some(t=>t.definition.template) ? [...savedReportTools(client,tools),...exposed.filter(t=>reusableNames.has(t.name))] : exposed;
+            const approvedFields=new Set(tools.flatMap(t=>t.definition.capabilities?.fields||[]));
+            const valueFields=catalog.objects.flatMap((o:{id:string;columns:{name:string;dataType:string}[]})=>o.columns.filter(c=>/char|text/i.test(c.dataType)&&approvedFields.has(o.id+':'+c.name)).map(c=>o.id+':'+c.name));
+            const findValues=async(field:string,search?:string)=>{
+              const candidates=tools.filter(t=>t.definition.mode==='aggregate'&&t.definition.capabilities?.fields.includes(field));
+              const chosen=candidates.find(t=>field.startsWith(t.definition.base+':'))||candidates[0];
+              if(!chosen)throw new Error('No approved capability supports this reference field.');
+              const latest=await approvedNow(chosen.id);
+              const query=JSON.stringify({groupBy:[field],metrics:[{field:null,operation:'count',alias:'occurrences'}],...(search?{where:{field,operator:'contains',value:search}}:{}),limit:50});
+              const result=await executeTool(source.config,latest.definition,catalog,{query},50);
+              return {field,values:result.rows,hasMore:result.hasMore,note:'Use exact stored labels. This lookup does not fulfill the employee report request.'};
+            };
+            const lcTools = tools.some(t=>t.definition.template) ? [...savedReportTools(client,tools,{findValues,valueFields}),...exposed.filter(t=>reusableNames.has(t.name))] : exposed;
             agentResult = await runWorkspaceAgent({message:input.message,history,workspaceName:sourceName(setup,input.sourceId)||workspace!.name,tools:lcTools,signal,onProgress:(text:string)=>run.progress(text)});
           }
         } finally {
@@ -309,6 +320,10 @@ export async function POST(
         try { summary = await summarizeTool(source.config, current.definition, catalog, { query }); } catch { summary = undefined; }
         if (current.definition.mode === 'rows') {
           narrativeText = recordNarrative(result, summary, query);
+        } else if (summary?.matchedRecords===0) {
+          narrativeText='No records match the requested filters.';
+        } else if (summary?.matchedRecords && summary.numeric.length && summary.numeric.every((n:{statistics:{present:unknown}})=>Number(n.statistics.present)===0)) {
+          narrativeText=`${summary.matchedRecords.toLocaleString()} matching records were found, but the requested amount values are missing. A total cannot be calculated from those values.`;
         } else if (!agentResult.grounded || !structured?.narrative || structured?.intent === 'ask_clarification') {
           narrativeText = 'The verified database results are shown in the table below.';
         }
