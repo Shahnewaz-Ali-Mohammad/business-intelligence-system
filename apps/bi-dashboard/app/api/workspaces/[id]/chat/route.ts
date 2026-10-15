@@ -1,7 +1,7 @@
 import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
 import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
-import {recordNarrative} from '@/lib/tool-setup/record-presentation.mjs';
+import {recordNarrative,requestedRecordArguments,validateRecordPopulation} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -224,7 +224,8 @@ export async function POST(
           try {
           const latest = await approvedNow(chosen.id);
           if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
-          const parameters = { query: queryFor(latest.definition, args) };
+          validateRecordPopulation(input.message,latest.definition,catalog);
+          const parameters = { query: queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)) };
           // Statistics are best-effort: if they cannot be computed, the agent
           // still gets a small preview instead of a failed call.
           let summary: Awaited<ReturnType<typeof summarizeTool>> | null = null;
