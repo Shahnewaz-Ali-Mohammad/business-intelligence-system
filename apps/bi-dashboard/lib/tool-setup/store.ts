@@ -1,4 +1,4 @@
-import {readCatalog} from './catalog.mjs';
+import {readCatalog,writeCatalog} from './catalog.mjs';
 import crypto from "node:crypto";
 import { getAppDb } from "@/lib/db/app-db";
 import {
@@ -178,7 +178,7 @@ export async function saveSource(
     const id = (existing as { id: string }[])[0]?.id || crypto.randomUUID();
     await connection.execute(
       "INSERT INTO bi_tool_sources(id,server_id,database_name,catalog_json,catalog_fingerprint) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE catalog_json=VALUES(catalog_json),catalog_fingerprint=VALUES(catalog_fingerprint),discovered_at=NOW()",
-      [id, serverId, database, JSON.stringify(catalog), catalog.fingerprint],
+      [id, serverId, database, writeCatalog(catalog), catalog.fingerprint],
     );
     await connection.execute(
       "UPDATE bi_generated_tools SET status='draft',tested_hash=NULL,tested_at=NULL,approved_at=NULL WHERE source_id=? AND catalog_fingerprint<>?",
