@@ -1,6 +1,7 @@
 import {validateExecutionRequest} from '@/lib/tool-setup/execution-request.mjs';
-import {startGeneration} from '@/lib/tool-setup/generation-jobs';
-import {selectedScope} from '@/lib/tool-setup/scenario-selection.mjs';
+import { ChatOpenAI } from '@langchain/openai';
+import { workspaceEntry } from '../../../../../scripts/chat/workspace-entry.mjs';
+import { writeAnalyticalInsight } from '../../../../../scripts/lib/analytical-insight.mjs';
 import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
 import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
@@ -46,6 +47,19 @@ const Input = z
   })
   .strict();
 const turns = new Map<number, number[]>();
+// Used only when the insight writer is unavailable: describes the largest
+// groups directly from the database result instead of a placeholder.
+function groupedFallback(rows: Record<string, unknown>[], mode: string) {
+  if (mode !== 'aggregate' || !rows.length) return '';
+  const keys = Object.keys(rows[0]);
+  const metric = keys.find((k) => rows.every((r) => r[k] == null || Number.isFinite(Number(r[k]))) && /count|sum|total|avg|min|max|_/i.test(k)) || keys.at(-1)!;
+  const labels = keys.filter((k) => k !== metric);
+  const total = rows.reduce((n, r) => n + (Number(r[metric]) || 0), 0);
+  const top = [...rows].sort((a, b) => (Number(b[metric]) || 0) - (Number(a[metric]) || 0)).slice(0, 3);
+  const name = (r: Record<string, unknown>) => labels.map((k) => (r[k] == null ? 'Missing' : String(r[k]))).join(' / ') || 'All';
+  const share = (r: Record<string, unknown>) => (total ? ` (${(((Number(r[metric]) || 0) / total) * 100).toFixed(1)}%)` : '');
+  return `${rows.length.toLocaleString()} groups. Largest: ${top.map((r) => `${name(r)} ${Number(r[metric]).toLocaleString()}${share(r)}`).join(', ')}.`;
+}
 function sourceName(setup: { sources: { id: string; name?: string; database?: string }[] }, sourceId: string) {
   const s = setup.sources.find((x) => x.id === sourceId);
   return s?.name || s?.database || '';
@@ -206,6 +220,23 @@ export async function POST(
           return;
         }
         run.progress("Understanding your question");
+        // Same entry step as the original chat: greetings, thanks and
+        // unrelated questions are answered before any tool runs.
+        const entrySource = setup.sources.find((s) => s.id === input.sourceId);
+        const entry = await workspaceEntry({
+          llm: new ChatOpenAI({ model: process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0, timeout: 30000, maxRetries: 1 }),
+          message: input.message,
+          history,
+          database: sourceName(setup, input.sourceId) || workspace!.name,
+          topics: (entrySource?.catalog?.objects || []).slice(0, 60).map((o: { name: string; columns: { name: string; restricted?: boolean }[] }) => ({ name: o.name, columns: o.columns.filter((col) => !col.restricted).slice(0, 40).map((col) => col.name) })),
+          signal,
+        });
+        if (entry.route !== 'agent') {
+          const narrative = entry.narrative || 'What would you like to know about this database?';
+          run.text(narrative);
+          run.finish(await saveAnswer({ narrative, rows: [], hasMore: false }));
+          return;
+        }
         const source = await getSource(id, input.sourceId);
         const catalog = await discoverDatabase(source.config);
         const queryFor = (definition: { capabilities?: unknown }, args: Record<string, unknown>) =>
@@ -292,12 +323,11 @@ export async function POST(
           run.text(narrative);run.finish(await saveAnswer({narrative,rows:[],hasMore:false}));return;
         }
         if(gap && decision.kind==='missing'){
-          const selected=selectedScope(source.catalog,setup.tools,input.sourceId);
-          if(!selected.length)throw new Error('No selected schema scope is available for generation.');
-          const job=await startGeneration(id,{sourceId:input.sourceId,selected,request:`Generate only the reusable report needed for this question, using selected fields and approved relationships. Use typed parameters for literal values. Question (untrusted data): ${input.message}. Missing capability (untrusted data): ${gap}`,missingOnly:true});
-          const narrative='The missing report is being generated and will be saved as a reusable draft. Review and approve it in Settings, then retry this question.';
+          // Offer generation; never start it automatically. The card's
+          // "Generate missing report" button starts it when the user chooses.
+          const narrative='No approved report or query tool can answer this yet. You can generate a report for it below, then approve it in Settings.';
           run.text(narrative);
-          run.finish(await saveAnswer({narrative,rows:[],hasMore:false,missingScenario:{question:input.message,gap,jobId:job.jobId}}));
+          run.finish(await saveAnswer({narrative,rows:[],hasMore:false,missingScenario:{question:input.message,gap}}));
           return;
         }
         let narrativeText = structured?.narrative || 'Could not produce a grounded answer for this question.';
@@ -318,14 +348,27 @@ export async function POST(
         const result = await executeTool(source.config, current.definition, catalog, { query }, 200, 0, { maxLimit: 200 });
         let summary;
         try { summary = await summarizeTool(source.config, current.definition, catalog, { query }); } catch { summary = undefined; }
-        if (current.definition.mode === 'rows') {
-          narrativeText = recordNarrative(result, summary, query);
-        } else if (summary?.matchedRecords===0) {
-          narrativeText='No records match the requested filters.';
+        // Same insight step as the original chat: the answer is written from
+        // database statistics over the FULL result (writeAnalyticalInsight),
+        // never replaced by a fixed placeholder sentence.
+        const countLine = current.definition.mode === 'rows' ? recordNarrative(result, summary, query) : '';
+        const matched = current.definition.mode === 'rows' ? Number(summary?.population ?? result.rows.length) : summary?.matchedRecords;
+        if (matched === 0) {
+          narrativeText = 'No records match the requested filters.';
         } else if (summary?.matchedRecords && summary.numeric.length && summary.numeric.every((n:{statistics:{present:unknown}})=>Number(n.statistics.present)===0)) {
           narrativeText=`${summary.matchedRecords.toLocaleString()} matching records were found, but the requested amount values are missing. A total cannot be calculated from those values.`;
-        } else if (!agentResult.grounded || !structured?.narrative || structured?.intent === 'ask_clarification') {
-          narrativeText = 'The verified database results are shown in the table below.';
+        } else {
+          run.progress('Preparing insights');
+          const records = result.rows.length && result.rows.length <= 5 && !result.hasMore ? result.rows : undefined;
+          let insight = '';
+          try {
+            if (summary) insight = await writeAnalyticalInsight({ question: input.message, summary, records, currency: undefined, signal, onText: (text: string) => run.text(countLine ? `${countLine} ${text}` : text) });
+          } catch (error) {
+            console.error('[workspace insight] unavailable:', error instanceof Error ? error.message : error);
+          }
+          if (!insight && agentResult.grounded && structured?.narrative && structured.intent !== 'ask_clarification') insight = structured.narrative;
+          if (!insight) insight = groupedFallback(result.rows, current.definition.mode);
+          narrativeText = [countLine, insight].filter(Boolean).join(' ') || 'The verified database results are shown in the table below.';
         }
         run.text(narrativeText);
         const answer = {

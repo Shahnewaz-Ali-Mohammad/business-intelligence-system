@@ -11,6 +11,13 @@ import {
 } from "./model.mjs";
 import { summaryQuery } from "./result-summary.mjs";
 
+// Credential-like columns are never returned in results or exports, even
+// when an approved tool selects them (e.g. router passwords such as MKPass).
+export function sensitiveOutput(field) {
+  const name = String(field).split(":").pop();
+  return isProtectedColumn(name) || /pass(?!port)|pwd/i.test(name);
+}
+
 export function validateConnection(input) {
   const config = ConnectionSchema.parse(input);
   const approved = (
@@ -269,7 +276,7 @@ export async function executeTool(
       .slice(0, compiled.limit)
       .map((row) =>
         Object.fromEntries(
-          compiled.outputFields.map((name, i) => [name, row[`c${i}`]]),
+          compiled.outputFields.map((name, i) => [name, row[`c${i}`]]).filter(([name]) => !sensitiveOutput(name)),
         ),
       ),
     hasMore: result.length > compiled.limit,
@@ -297,8 +304,8 @@ export async function streamToolRows(config, tool, catalog, parameters, onBatch,
       const result = await query(compiled.sql, compiled.values);
       const rows = result
         .slice(0, compiled.limit)
-        .map((row) => Object.fromEntries(compiled.outputFields.map((name, i) => [name, row[`c${i}`]])));
-      if (rows.length) await onBatch(rows, compiled.outputFields);
+        .map((row) => Object.fromEntries(compiled.outputFields.map((name, i) => [name, row[`c${i}`]]).filter(([name]) => !sensitiveOutput(name))));
+      if (rows.length) await onBatch(rows, compiled.outputFields.filter((name) => !sensitiveOutput(name)));
       total += rows.length;
       if (result.length <= compiled.limit) return { total, fields: compiled.outputFields };
       offset += compiled.limit;
