@@ -17,10 +17,13 @@ import {
   executeTool,
 } from "@/lib/tool-setup/connectors.mjs";
 import { generationModel } from "@/lib/tool-setup/generate";
+import { isSameOriginRequest } from "@/lib/tool-setup/request-origin.mjs";
 import {
   listSetup,
   saveServer,
   getServer,
+  listReusableServers,
+  reuseServer,
   saveSource,
   getSource,
   saveDrafts,
@@ -84,6 +87,7 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("removeTool"), toolId: id }),
   z.object({ action: z.literal("removeSource"), sourceId: id }),
   z.object({ action: z.literal("removeAllTools"), sourceId: id }),
+  z.object({ action: z.literal("reuseConnection"), serverId: id }),
 ]);
 async function access(workspaceId: string) {
   const user = await getCurrentUser();
@@ -128,6 +132,7 @@ export async function GET(
     if(jobId||sourceId)return NextResponse.json({job:await generationStatus(workspaceId,jobId||undefined,sourceId||undefined)});
     return NextResponse.json({
       ...(await listSetup(workspaceId)),
+      reusableServers: await listReusableServers(String((await getCurrentUser())!.id), workspaceId),
       generationModel: generationModel(),
     });
   } catch (error) {
@@ -138,8 +143,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const origin = request.headers.get("origin");
-  if (origin && origin !== request.nextUrl.origin)
+  if (!isSameOriginRequest(request))
     return NextResponse.json(
       { error: "Cross-origin request blocked." },
       { status: 403 },
@@ -180,6 +184,12 @@ export async function POST(
     if(body.action==='generate')return NextResponse.json(await startGeneration(workspaceId,body),{status:202});
     if(body.action==='resumeGeneration')return NextResponse.json(await resumeGeneration(workspaceId,body.jobId),{status:202});
     if(body.action==='cancelGeneration')return NextResponse.json(await cancelGeneration(workspaceId,body.jobId));
+    if (body.action === "reuseConnection") {
+      stage = "connection";
+      const serverId = await reuseServer(String((await getCurrentUser())!.id), workspaceId, body.serverId);
+      await withDatabase(await getServer(workspaceId, serverId), (query: (sql: string) => Promise<unknown>) => query("SELECT 1 AS connected"));
+      return NextResponse.json({ serverId });
+    }
     if (body.action === "connect") {
       stage = "connection";
       await withDatabase(

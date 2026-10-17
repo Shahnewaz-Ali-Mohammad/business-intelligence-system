@@ -1,7 +1,9 @@
 import {requestRequirements} from './request-fields.mjs';
 import {compileTool} from './model.mjs';
+import {requiresDetailedReport} from './chat-planning.mjs';
 const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 export function validateExecutionRequest(message,definition,catalog,dialect,parameters){
+ if(requiresDetailedReport(message)&&definition.mode!=='rows')throw new Error('This request needs a record list, not an aggregate report.');
  if(requestRequirements(message,[definition]).aggregate&&definition.mode!=='aggregate')throw new Error('This request needs an aggregate report, not a record list.');
  const compiled=compileTool(definition,catalog,dialect,parameters,1);
  if(/\bjoin\b/i.test(message)){

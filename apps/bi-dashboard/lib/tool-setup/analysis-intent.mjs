@@ -25,16 +25,31 @@ export function addRequestedCalculations(message,definition,query,catalog){
       if(field){plan.groupBy=[field];plan.dateGroups=[{field,grain}];}
     }
   }
+  // "in 2025" means the whole calendar year: add the missing end bound.
+  const year=(String(message).match(/\b(?:in|for|during|of|year)\s+(20\d\d|19\d\d)\b/i)||[])[1];
+  const dateField=plan.dateGroups?.[0]?.field||(plan.groupBy||[]).find(f=>isDate(catalog,f));
+  if(year&&dateField){
+    const conds=[];const walk=n=>{if(!n||typeof n!=='object')return;if(n.field)conds.push(n);(n.and||n.or||[]).forEach(walk);if(n.not)walk(n.not);};walk(plan.where);
+    const onDate=conds.filter(n=>isDate(catalog,n.field));
+    const hasEnd=onDate.some(n=>['lt','lte','between'].includes(n.operator));
+    if(!hasEnd){
+      const kept=plan.where&&!(conds.length===onDate.length&&onDate.every(n=>['gte','gt'].includes(n.operator)))?[plan.where]:[];
+      plan.where={and:[...kept,{field:dateField,operator:'gte',value:`${year}-01-01`},{field:dateField,operator:'lt',value:`${Number(year)+1}-01-01`}]};
+    }
+  }
   // Drop repeated metrics (same field and operation) and their dependents.
   const seen=new Map(),rename=new Map();
-  plan.metrics=(plan.metrics||[]).filter(m=>{const key=`${m.field}|${m.operation}|${JSON.stringify(m.where||null)}`;if(seen.has(key)){rename.set(m.alias,seen.get(key));return false;}seen.set(key,m.alias);return true;});
+  plan.metrics=(plan.metrics||[]).filter(m=>{const key=`${m.operation==='count'?'*':m.field}|${m.operation}|${JSON.stringify(m.where||null)}`;if(seen.has(key)){rename.set(m.alias,seen.get(key));return false;}seen.set(key,m.alias);return true;});
   plan.sort=plan.sort?.map(s=>({...s,field:rename.get(s.field)||s.field}));
   plan.having=plan.having?.map(h=>({...h,field:rename.get(h.field)||h.field}));
   // A per-group percent of the same metric is always 100; a share request means percent of total.
-  plan.derived=(plan.derived||[]).map(d=>({...d,inputs:d.inputs.map(i=>rename.get(i)||i)})).filter(d=>!(d.operation==='percent_of'&&d.inputs[0]===d.inputs[1]));
+  plan.derived=(plan.derived||[]).map(d=>({...d,inputs:d.inputs.map(i=>rename.get(i)||i)})).filter(d=>!(d.operation==='percent_of'&&d.inputs[0]===d.inputs[1])&&!(d.operation==='percent_of'&&/percent|share|proportion|of total/i.test(message)&&d.inputs.every(i=>plan.metrics.some(m=>m.alias===i&&['count','count_distinct'].includes(m.operation)&&!m.where))));
   if(!plan.derived.length)delete plan.derived;
   const metric=plan.metrics?.[0]?.alias;if(!metric)return query;
-  const derived=[...(plan.derived||[])];const have=new Set(derived.map(d=>d.operation));
+  const derived=[...(plan.derived||[])];
+  // "A minus B" / "difference" between two requested figures.
+  if(/\bminus\b|\bdifference\b|\bnet of\b|\bless\b/i.test(message)&&plan.metrics.length>=2&&!derived.some(d=>d.operation==='subtract'))
+    derived.push({alias:'difference',operation:'subtract',inputs:[plan.metrics[0].alias,plan.metrics[1].alias]});const have=new Set(derived.map(d=>d.operation));
   const grouped=(plan.groupBy?.length||plan.dateGroups?.length);
   for(const [pattern,operation,alias] of rules){
     if(have.has(operation)||!pattern.test(message))continue;

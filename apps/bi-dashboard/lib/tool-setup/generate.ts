@@ -1,4 +1,3 @@
-import {scenarioTemplates} from './scenario-templates.mjs';
 import {namedKeyLinks} from './named-key-links.mjs';
 import { ChatOpenAI } from "@langchain/openai";
 import { DraftSchema, BusinessDraftSchema, validateTool, isProtectedColumn } from "./model.mjs";
@@ -48,7 +47,10 @@ export async function generateTools(
       ),
   );
   const selectedCatalog = namedKeyLinks({ ...catalog, objects, relationships });
-  const definitions = options.missingOnly ? [] as ToolDefinition[] : [...coverageTools(selectedCatalog), ...scenarioTemplates(selectedCatalog)] as ToolDefinition[];
+  // Two reusable query tools per table (records + summaries) cover filters,
+  // grouping, metrics and calculations; per-column templates only duplicated
+  // them and crowded the chat's tool choice.
+  const definitions = options.missingOnly ? [] as ToolDefinition[] : [...coverageTools(selectedCatalog)] as ToolDefinition[];
   const generationRequest = request.trim() || 'Generate useful business reports for the selected tables: detailed record lists, grouped summaries and totals supported by the actual columns and verified relationships. Use descriptive names. Do not infer business formulas or status meanings from ambiguous columns; describe those limitations.';
   if (!process.env.OPENAI_API_KEY)
     throw new Error("Configure the OpenAI key on the application server.");

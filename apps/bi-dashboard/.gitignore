@@ -41,3 +41,4 @@ chat-errors.log
 # Saved local generation jobs contain private schema metadata.
 /apps/bi-dashboard/.data/
 .data/
+workspace-chat.log

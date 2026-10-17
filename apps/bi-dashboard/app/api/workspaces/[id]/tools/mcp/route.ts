@@ -7,6 +7,7 @@ import { listSetup, getTool, getSource } from "@/lib/tool-setup/store";
 import { discoverDatabase, executeTool } from "@/lib/tool-setup/connectors.mjs";
 import { createToolServer } from "@/lib/tool-setup/mcp.mjs";
 import type { ToolDefinition } from "@/lib/tool-setup/store";
+import { isSameOriginRequest } from "@/lib/tool-setup/request-origin.mjs";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -14,8 +15,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const origin = request.headers.get("origin");
-  if (origin && origin !== request.nextUrl.origin)
+  if (!isSameOriginRequest(request))
     return NextResponse.json(
       { error: "Cross-origin request blocked." },
       { status: 403 },

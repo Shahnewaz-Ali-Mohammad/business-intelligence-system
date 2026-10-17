@@ -53,6 +53,7 @@ type Tool = {
 };
 type Setup = {
   servers: Server[];
+  reusableServers?: { id: string; name: string; workspace: string; dialect: string; host: string; port: number }[];
   sources: Source[];
   tools: Tool[];
   generationModel: string | null;
@@ -194,6 +195,7 @@ export default function ToolSetupPage({
     // Resume the selected database's saved job after navigation or refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[id,sourceId]);
+  const [reuseId, setReuseId] = useState("");
   async function action(
     body: Record<string, unknown>,
     work: (data: Record<string, unknown>) => void = () => {},
@@ -315,7 +317,7 @@ export default function ToolSetupPage({
         )}
         <section className="border-b border-zinc-200 pb-7">
           <Link
-            href={`/data-sources/${id}/chat`}
+            href={`/data-sources/${id}/chat${sourceId ? `?source=${encodeURIComponent(sourceId)}` : ''}`}
             className="mb-4 inline-flex text-sm font-medium text-rose-700 hover:underline"
           >
             Open workspace chat
@@ -324,6 +326,28 @@ export default function ToolSetupPage({
             <Plug size={18} />
             Server Connection
           </h2>
+          {!!setup.reusableServers?.length && (
+            <div className="mb-5 flex flex-wrap items-end gap-3">
+              <label className="flex min-w-64 flex-1 flex-col gap-1 text-sm">
+                <span>Use a saved connection from another workspace</span>
+                <select className={inputClass} value={reuseId} onChange={(e) => setReuseId(e.target.value)}>
+                  <option value="">Select saved connection</option>
+                  {setup.reusableServers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} · {s.dialect} · {s.host}:{s.port} ({s.workspace})</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={!reuseId || !!busy || !available}
+                className={primaryClass}
+                onClick={() => action({ action: "reuseConnection", serverId: reuseId }, (data) => { setServerId(String(data.serverId)); setReuseId(""); setNotice("Connection verified and saved."); })}
+              >
+                <Plug size={16} />
+                {busy === "reuseConnection" ? "Connecting..." : "Use connection"}
+              </button>
+            </div>
+          )}
           <form
             onSubmit={(e) => {
               e.preventDefault();

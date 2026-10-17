@@ -13,10 +13,14 @@ export function mentionedFields(message,fields){
  return [...new Set(fields)].filter(field=>mentionsField(message,field)&&!fieldAliases(field).some(alias=>new RegExp('\\bnot\\s+(?:the\\s+)?'+escape(alias).replace(/ /g,'\\s*')+'\\b','i').test(message)));
 }
 export const identifierField=field=>/(?:id|no|number|key|code)$/i.test(field.split(':').at(-1));
+export function isAggregateRequest(message) {
+ const intent = message.replace(/\b(?:do not|don't)\s+limit\b[^.!?]*/gi, '');
+ return /\b(count|number of|total|totals|how many|average|sum|summary|summari[sz]e|breakdown|trend|statistics)\b/i.test(intent);
+}
 export function requestRequirements(message,registry){
  const definitions=registry.map(t=>t.definition||t);
  const fields=[...new Set(definitions.flatMap(d=>[...(d.capabilities?.fields||[]),...d.columns,...d.groupBy,...d.filters.map(f=>f.field),...d.metrics.map(m=>m.field).filter(Boolean)]))];
- const aggregate=/\b(count|number of|total|totals|how many|average|sum|breakdown|trend|statistics)\b/i.test(message);
+ const aggregate=isAggregateRequest(message);
  const groupText=message.match(/\b(?:by|per|each)\s+(.+)/i)?.[1]||'';
  const grouping=aggregate?mentionedFields(groupText,fields):[];
  const identifiers=mentionedFields(message,fields.filter(identifierField));

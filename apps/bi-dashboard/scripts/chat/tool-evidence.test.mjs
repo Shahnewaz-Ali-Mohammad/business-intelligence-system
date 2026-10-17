@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {extractWinningToolOutputs} from './agent.mjs';
+import {extractWinningToolOutputs, hasVerifiedWorkspaceResult} from './agent.mjs';
+test('workspace record and aggregate evidence proceeds to the dedicated insight writer without a second narrative critique', () => {
+  const state = { toolset: {}, structured: { intent: 'answer' }, toolOutputs: [] };
+  for (const result of [{ mode: 'rows', rows: [] }, { mode: 'aggregate', summary: { population: 10 } }]) {
+    assert.equal(hasVerifiedWorkspaceResult({ ...state, toolOutputs: [JSON.stringify(result)] }), true);
+  }
+  for (const result of [{ mode: 'aggregate' }, { field: 'Status', values: ['Open'] }, { error: 'Query failed' }]) {
+    assert.equal(hasVerifiedWorkspaceResult({ ...state, toolOutputs: [JSON.stringify(result)] }), false);
+  }
+  assert.equal(hasVerifiedWorkspaceResult({ ...state, toolset: null, toolOutputs: [JSON.stringify({ mode: 'rows', rows: [] })] }), false);
+  assert.equal(hasVerifiedWorkspaceResult({ ...state, structured: { intent: 'ask_clarification' }, toolOutputs: [JSON.stringify({ mode: 'rows', rows: [] })] }), false);
+});
 test('different workspace queries retain both results while identical retries replace stale evidence',()=>{
  const name='customer_summary_db_123';
  const calls=[{id:'a',name,args:{query:'first period'}},{id:'b',name,args:{query:'second period'}},{id:'c',name,args:{query:'first period'}}];

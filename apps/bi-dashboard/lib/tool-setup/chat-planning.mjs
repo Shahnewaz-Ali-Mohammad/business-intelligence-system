@@ -1,4 +1,5 @@
 import { compileTool } from './model.mjs';
+import { isAggregateRequest } from './request-fields.mjs';
 
 export function toolContext(tool, catalog) {
   const definition = tool.definition;
@@ -9,7 +10,8 @@ export function toolContext(tool, catalog) {
     relationships: catalog.relationships.filter((j) => (definition.capabilities?.joins || definition.joins).includes(j.id)) };
 }
 export function requiresDetailedReport(message) {
-  return /\b(report|details|list|records|directory)\b/i.test(message) && !/\b(count|how many|total|summary|summari[sz]e|average|sum|breakdown|by|trend|statistics|top|lowest|highest)\b/i.test(message);
+  return /\b(details|list|records|directory)\b/i.test(message) && !isAggregateRequest(message)
+    || /\breport\b/i.test(message) && !isAggregateRequest(message) && !/\b(by|per|trend)\b/i.test(message);
 }
 /**
  * @template {{definition: any}} T
@@ -18,8 +20,12 @@ export function requiresDetailedReport(message) {
  * @returns {T[]}
  */
 export function candidateTools(message, tools) {
+  // Per-column template tools are redundant where a reusable query tool
+  // covers the same table; hiding them keeps the planner's choice focused.
+  const covered = new Set(tools.filter((t) => t.definition.capabilities).map((t) => t.definition.base));
+  tools = tools.filter((t) => !(t.definition.name?.startsWith('scenario_') && covered.has(t.definition.base)));
   if (requiresDetailedReport(message)) return tools.filter((t) => t.definition.mode === 'rows');
-  if (/\b(how many|count|total|average|sum|summary|summari[sz]e|breakdown|statistics)\b/i.test(message)) {
+  if (isAggregateRequest(message)) {
     const global = !/\b(by|per|each|breakdown)\b/i.test(message);
     return tools.filter((t) => t.definition.mode === 'aggregate' && (!global || t.definition.capabilities || !t.definition.groupBy.length));
   }

@@ -1,3 +1,4 @@
+import { devLog } from '../dev-log.mjs';
 import {queryInputSchema, normalizeMcpArguments} from './mcp-query.mjs';
 import crypto from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -13,6 +14,17 @@ export function mcpToolName(sourceId, name) {
     .digest("hex")
     .slice(0, 16);
   return `${name.slice(0, 43)}_db_${suffix}`;
+}
+// Keeps what the planner reads small: wide tables can otherwise produce
+// tool results larger than the model's context window.
+function compactResult(result) {
+  let text = JSON.stringify(result);
+  if (text.length <= 12000 || !result || typeof result !== "object") return text;
+  const slim = { ...result };
+  if (Array.isArray(slim.rows)) slim.rows = slim.rows.slice(0, 3);
+  if (slim.summary?.numeric?.length > 12) slim.summary = { ...slim.summary, numeric: slim.summary.numeric.slice(0, 12), note: "Statistics shown for the first 12 numeric fields." };
+  text = JSON.stringify(slim);
+  return text.length <= 12000 ? text : text.slice(0, 12000) + '..."(truncated)"';
 }
 /** @param {any[]} tools @param {Function} execute @param {{relationships?: any[]}|null} [catalog] */
 export function createToolServer(tools, execute, catalog = null) {
@@ -51,9 +63,9 @@ export function createToolServer(tools, execute, catalog = null) {
         }: {}) },
         ...(t.definition.capabilities
           ? {
+              // Options placed beside query are accepted and folded in server-side.
+              additionalProperties: true,
               properties: {
-                // Query options are also accepted beside query; they are folded in.
-                ...Object.fromEntries(Object.entries(queryInputSchema(t.definition).properties).map(([k,v])=>[k,{...v,description:`Same as query.${k}.`}])),
                 query: {
                   ...queryInputSchema(t.definition),
                   description: `${queryInputSchema(t.definition).description} Base table: ${t.definition.base}. Mode: ${t.definition.mode}. Use allColumns:true for all approved details. columns must be an array of exact field IDs, not a comma-separated string. Example projection: ${JSON.stringify({query:{columns:t.definition.capabilities.fields.filter(f=>f.startsWith(t.definition.base+':')).slice(0,2),limit:100}})}. Omit joins to infer a unique approved path; otherwise specify approved relationship IDs. Never sum repeated parent measures across a one-to-many join. Relationships: ${JSON.stringify(catalog?.relationships?.filter(j=>t.definition.capabilities.joins.includes(j.id))||[])}. No SQL.`,
@@ -74,12 +86,13 @@ export function createToolServer(tools, execute, catalog = null) {
       const selected = names.get(call.params.name);
       if (!selected) throw new Error("Unavailable tool.");
       const result = await execute(selected, normalizeMcpArguments(selected.definition, call.params.arguments || {}));
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return { content: [{ type: "text", text: compactResult(result) }] };
     } catch (error) {
       // Log the real cause on the server and give the agent the reason, so
       // it can correct its arguments instead of giving up.
       const raw = error instanceof Error ? error.message : String(error);
       console.error(`[workspace tool] ${call.params.name} failed:`, raw);
+      devLog("mcp-error", {tool: call.params.name, args: call.params.arguments, error: raw});
       // Only plan/argument validation messages go back to the agent; database
       // errors may contain SQL, credentials or data and are never returned.
       const unsafe = (error && typeof error === "object" && "code" in error) ||

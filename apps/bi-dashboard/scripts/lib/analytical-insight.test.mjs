@@ -41,6 +41,12 @@ test('equal mean and median do not prove symmetry or skew', () => {
   assert.equal(groundedNarrative('The average and median are 1001, indicating a symmetrical distribution. The minimum is 1.', summary), 'The average and median are 1001. The minimum is 1.');
   assert.throws(() => groundedNarrative('Since there is only one record, the average is 1001.', { scope: 'matching result groups' }), /group/);
 });
+test('category completeness cannot be inferred from non-missing measures', () => {
+  const sentence = 'There are no missing category values in this dataset.';
+  assert.throws(() => groundedNarrative(sentence, summary), /grouping coverage/);
+  assert.throws(() => groundedNarrative(sentence, { ...summary, grouping: [{ title: 'OfficeCat', missingGroups: 1, emptyGroups: 0 }] }), /grouping coverage/);
+  assert.equal(groundedNarrative(sentence, { ...summary, grouping: [{ title: 'OfficeCat', missingGroups: 0, emptyGroups: 0 }] }), sentence);
+});
 test('single aggregate answers do not mistake one result for one source row', async () => {
   const text = await writeAnalyticalInsight({ question: 'How many tickets?', summary: { scope: 'matching result groups', population: '1', numeric: [{ title: 'Tickets record count', statistics: { minimum: '2001' } }] } }, async () => { throw new Error('Should not require an AI call'); });
   assert.equal(text, 'Tickets record count: 2,001.');

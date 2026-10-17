@@ -1,4 +1,14 @@
-import { quote } from "./model.mjs";
+import { quote, numericType } from "./model.mjs";
+export function isSummaryMeasure(field, column, mode) {
+  if (!column) return true;
+  return mode !== 'aggregate' && numericType(column.dataType) && !column.isPrimaryKey && !/(?:^id$|id$|_sk$|code$)/i.test(column.name);
+}
+export function groupingCoverageQuery(compiled, dialect, index, text = false) {
+  const q = (name) => quote(name, dialect);
+  const value = q(`c${index}`);
+  const bigint = dialect === 'sqlserver' ? 'BIGINT' : 'DECIMAL(38,0)';
+  return `SELECT SUM(CAST(CASE WHEN ${value} IS NULL THEN 1 ELSE 0 END AS ${bigint})) AS missing_groups, ${text ? `SUM(CAST(CASE WHEN ${value} = '' THEN 1 ELSE 0 END AS ${bigint}))` : '0'} AS empty_groups FROM (${compiled.populationSql}) AS ${q('population')}`;
+}
 export function summaryQuery(compiled, dialect, index) {
   const source = compiled.populationSql;
   const q = (name) => quote(name, dialect);

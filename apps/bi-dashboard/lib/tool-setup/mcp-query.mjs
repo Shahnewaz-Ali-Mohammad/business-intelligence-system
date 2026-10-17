@@ -14,9 +14,11 @@ function condition(depth = 2) {
 }
 export function queryInputSchema(definition) {
   const fields = definition.capabilities.fields;
-  const field = { type: 'string', enum: fields };
+  // Field IDs are listed once in the description (not as an enum repeated in
+  // every property), which keeps wide tables within the model's context.
+  const field = { type: 'string', description: 'Exact field ID from the approved field list.' };
   const array = (items, maxItems) => ({ type: 'array', items, maxItems });
-  return { type: 'object', additionalProperties: false, description: 'Structured approved query. Put actual filter values in value, not parameter names. Text identifiers should be strings. Results appear in the application table, with pagination and export.', properties: {
+  return { type: 'object', additionalProperties: false, description: `Structured approved query. Put actual filter values in value, not parameter names. Text identifiers should be strings. Results appear in the application table, with pagination and export. Approved field IDs: ${fields.join(', ')}.`, properties: {
     columns: array(field, 1000),
     allColumns: {type:'boolean',description:'True selects every approved column. Otherwise supply columns as an array of exact field IDs.'},
     where: condition(),
@@ -25,11 +27,24 @@ export function queryInputSchema(definition) {
     distinct: { type: 'boolean' },
     joins: array({type:'string', ...(definition.capabilities.joins.length?{enum:definition.capabilities.joins}:{})},8),
     groupBy: array(field,5),
-    metrics: array({type:'object',additionalProperties:false,properties:{field:{anyOf:[field,{type:'null'}]},operation:{type:'string',enum:['count','count_distinct','sum','avg','min','max']},alias:{type:'string',pattern:'^[a-z][a-z0-9_]{0,62}$'},where:{...condition(1),description:'Optional condition for this metric only (conditional count/sum), e.g. active customers next to all customers.'}},required:['field','operation','alias']},12),
+    metrics: array({type:'object',additionalProperties:false,properties:{field:{anyOf:[field,{type:'null'}]},operation:{type:'string',enum:['count','count_distinct','sum','avg','min','max']},alias:{type:'string',description:'Short lower_snake_case name.'},where:{...condition(1),description:'Optional condition for this metric only (conditional count/sum), e.g. active customers next to all customers.'}},required:['field','operation','alias']},12),
     having: array({type:'object',additionalProperties:false,description:'Keep only groups whose metric meets the condition (e.g. customers with more than 5 tickets).',properties:{field:{type:'string',description:'Metric alias.'},operator:{type:'string',enum:['eq','ne','gt','gte','lt','lte']},value:{type:'number'}},required:['field','operator','value']},5),
-    derived: array({type:'object',additionalProperties:false,description:'Calculated outputs. Aggregate queries use metric aliases as inputs; record queries use numeric field IDs. add/subtract/multiply/divide/percent_of take two inputs; percent_of_total (share %), running_total, change and percent_change vs previous period, moving_average (window) and rank take one. Period comparisons and growth: group by a dateGroups bucket and use change/percent_change.',properties:{alias:{type:'string',pattern:'^[a-z][a-z0-9_]{0,62}$'},operation:{type:'string',enum:['add','subtract','multiply','divide','percent_of','percent_of_total','running_total','change','percent_change','moving_average','rank']},inputs:{type:'array',items:{type:'string'},minItems:1,maxItems:2},window:{type:'integer',minimum:2,maximum:366}},required:['alias','operation','inputs']},8),
+    derived: array({type:'object',additionalProperties:false,description:'Calculated outputs. Aggregate queries use metric aliases as inputs; record queries use numeric field IDs. add/subtract/multiply/divide/percent_of take two inputs; percent_of_total (share %), running_total, change and percent_change vs previous period, moving_average (window) and rank take one. Period comparisons and growth: group by a dateGroups bucket and use change/percent_change.',properties:{alias:{type:'string',description:'Short lower_snake_case name.'},operation:{type:'string',enum:['add','subtract','multiply','divide','percent_of','percent_of_total','running_total','change','percent_change','moving_average','rank']},inputs:{type:'array',items:{type:'string'},minItems:1,maxItems:2},window:{type:'integer',minimum:2,maximum:366}},required:['alias','operation','inputs']},8),
     dateGroups: array({type:'object',additionalProperties:false,properties:{field,grain:{type:'string',enum:['day','week','month','year']}},required:['field','grain']},5),
   } };
+}
+const aliasName = (value) => { const name = String(value).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 63); return /^[a-z]/.test(name) ? name : `m_${name}`.slice(0, 63); };
+/** Rewrites metric/calculation names to the accepted form and updates references to them. */
+function normalizeAliases(query) {
+  const renamed = new Map();
+  const rename = (alias) => { if (typeof alias !== 'string') return alias; const next = aliasName(alias); renamed.set(alias, next); return next; };
+  const metrics = Array.isArray(query.metrics) ? query.metrics.map((m) => (m && typeof m === 'object' ? { ...m, alias: rename(m.alias) } : m)) : query.metrics;
+  const derived = Array.isArray(query.derived) ? query.derived.map((d) => (d && typeof d === 'object' ? { ...d, alias: rename(d.alias) } : d)) : query.derived;
+  const ref = (name) => renamed.get(name) ?? name;
+  return { ...query, ...(metrics ? { metrics } : {}),
+    ...(derived ? { derived: derived.map((d) => (d && Array.isArray(d.inputs) ? { ...d, inputs: d.inputs.map(ref) } : d)) } : {}),
+    ...(Array.isArray(query.sort) ? { sort: query.sort.map((s) => (s && typeof s === 'object' ? { ...s, field: ref(s.field) } : s)) } : {}),
+    ...(Array.isArray(query.having) ? { having: query.having.map((h) => (h && typeof h === 'object' ? { ...h, field: ref(h.field) } : h)) } : {}) };
 }
 export function normalizeMcpArguments(definition, args) {
   if (definition.capabilities) {
@@ -54,5 +69,5 @@ export function normalizeMcpArguments(definition, args) {
   const {allColumns,...query}=args.query;
   if(allColumns===true&&query.columns!==undefined)throw new Error('Use allColumns or columns, not both.');
   if(allColumns!==undefined&&typeof allColumns!=='boolean')throw new Error('allColumns must be boolean.');
-  return { ...args, query: JSON.stringify({...query,...(allColumns&&definition.mode==='rows'?{columns:'*'}:{})}) };
+  return { ...args, query: JSON.stringify(normalizeAliases({...query,...(allColumns&&definition.mode==='rows'?{columns:'*'}:{})})) };
 }

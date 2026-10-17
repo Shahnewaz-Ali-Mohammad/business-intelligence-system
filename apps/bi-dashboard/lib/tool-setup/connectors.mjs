@@ -7,9 +7,8 @@ import {
   compileTool,
   fingerprint,
   isProtectedColumn,
-  numericType,
 } from "./model.mjs";
-import { summaryQuery } from "./result-summary.mjs";
+import { summaryQuery, isSummaryMeasure, groupingCoverageQuery } from "./result-summary.mjs";
 
 // Credential-like columns are never returned in results or exports, even
 // when an approved tool selects them (e.g. router passwords such as MKPass).
@@ -45,7 +44,7 @@ export async function withDatabase(input, fn) {
       database: c.database,
       ssl: c.tls ? { rejectUnauthorized: true } : false,
       connectionTimeoutMillis: 10000,
-      statement_timeout: 15000,
+      statement_timeout: 30000,
       options: "-c default_transaction_read_only=on",
     });
     try {
@@ -82,7 +81,7 @@ export async function withDatabase(input, fn) {
       await client.query("START TRANSACTION READ ONLY");
       return await fn(
         async (sql, values = []) =>
-          (await client.execute({ sql, timeout: 15000 }, values))[0],
+          (await client.execute({ sql, timeout: 30000 }, values))[0],
       );
     } finally {
       await client.rollback().catch(() => {});
@@ -101,7 +100,7 @@ export async function withDatabase(input, fn) {
       appName: "BI tool setup",
     },
     connectionTimeout: 10000,
-    requestTimeout: 15000,
+    requestTimeout: 30000,
     pool: { max: 1, min: 0 },
   });
   try {
@@ -249,6 +248,21 @@ export async function discoverDatabase(config) {
     return namedKeyLinks({ ...catalog, fingerprint: fingerprint(catalog) });
   });
 }
+// Grouped results are fetched once (up to 5,000 groups) and reused for the
+// preview, the chat table and the statistics, so one question runs the
+// expensive GROUP BY scan once instead of several times.
+const groupCache = new Map();
+async function allGroups(config, tool, catalog, parameters) {
+  const compiled = compileTool(tool, catalog, config.dialect, parameters, 5000, 0, { maxLimit: 5000 });
+  const key = JSON.stringify([config.host, config.database, compiled.sql, compiled.values]);
+  const hit = groupCache.get(key);
+  if (hit && Date.now() - hit.at < 120000) return hit.value;
+  const result = await withDatabase(config, (query) => query(compiled.sql, compiled.values));
+  const value = { compiled, rows: result.slice(0, compiled.limit), complete: result.length <= compiled.limit };
+  groupCache.set(key, { at: Date.now(), value });
+  if (groupCache.size > 50) groupCache.delete(groupCache.keys().next().value);
+  return value;
+}
 export async function executeTool(
   config,
   tool,
@@ -268,6 +282,16 @@ export async function executeTool(
     options,
   );
   const started = Date.now();
+  if (tool.mode === "aggregate" && !offset) {
+    const groups = await allGroups(config, tool, catalog, parameters);
+    return {
+      rows: groups.rows.slice(0, compiled.limit).map((row) => Object.fromEntries(compiled.outputFields.map((name, i) => [name, row[`c${i}`]]).filter(([name]) => !sensitiveOutput(name)))),
+      hasMore: groups.rows.length > compiled.limit || !groups.complete,
+      limit: compiled.limit,
+      elapsedMs: Date.now() - started,
+      scope: compiled.grain || "Database aggregation; returned groups may be capped.",
+    };
+  }
   const result = await withDatabase(config, (query) =>
     query(compiled.sql, compiled.values),
   );
@@ -320,8 +344,9 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
       o.columns.map((c) => [`${o.id}:${c.name}`, c]),
     ),
   );
+  const groups = tool.mode === "aggregate" ? await allGroups(config, tool, catalog, parameters) : null;
   return withDatabase(config, async (query) => {
-    const [count] = await query(
+    const [count] = groups?.complete ? [{ population: groups.rows.length }] : await query(
       summaryQuery(compiled, config.dialect),
       compiled.values,
     );
@@ -349,17 +374,31 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
       }
     }
     const numeric = [];
+    const grouping = [];
+    if (groups?.complete) {
+      // Statistics from the fetched groups; no further database scans.
+      for (const [index, field] of compiled.outputFields.entries()) {
+        if (compiled.unsafeAggregateFields?.includes(field)) continue;
+        const values = groups.rows.map((row) => row[`c${index}`]);
+        const column = columns.get(field);
+        if (column) {
+          grouping.push({ title: field, missingGroups: values.filter((v) => v == null).length, emptyGroups: /char|text/i.test(column.dataType) ? values.filter((v) => v === "").length : 0 });
+          continue;
+        }
+        const present = values.filter((v) => v != null && Number.isFinite(Number(v))).map(Number).sort((a, b) => a - b);
+        const n = present.length, total = present.reduce((s, v) => s + v, 0);
+        numeric.push({ title: field, statistics: { present: n, minimum: n ? present[0] : null, maximum: n ? present[n - 1] : null, average: n ? total / n : null, total, median: n ? (present[Math.floor((n - 1) / 2)] + present[Math.floor(n / 2)]) / 2 : null, missing: values.length - n } });
+      }
+      return { population: groups.rows.length, ...(matchedRecords !== undefined ? { matchedRecords } : {}), scope: compiled.grain || "Full matching result groups", numeric, ...(grouping.length ? { grouping } : {}) };
+    }
     for (const [index, field] of compiled.outputFields.entries()) {
       if(compiled.unsafeAggregateFields?.includes(field))continue;
       const column = columns.get(field);
-      const metric = !column;
-      if (
-        !metric &&
-        (!numericType(column.dataType) ||
-          column.isPrimaryKey ||
-          /(?:^id$|id$|_sk$|code$)/i.test(column.name))
-      )
-        continue;
+      if (tool.mode === 'aggregate' && column) {
+        const [coverage] = await query(groupingCoverageQuery(compiled, config.dialect, index, /char|text/i.test(column.dataType)), compiled.values);
+        grouping.push({ title: field, missingGroups: Number(coverage.missing_groups) || 0, emptyGroups: Number(coverage.empty_groups) || 0 });
+      }
+      if (!isSummaryMeasure(field, column, tool.mode)) continue;
       const [statistics] = await query(
         summaryQuery(compiled, config.dialect, index),
         compiled.values,
@@ -380,6 +419,7 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
           ? "Full matching result groups"
           : "Full matching records"),
       numeric,
+      ...(grouping.length ? { grouping } : {}),
     };
   });
 }

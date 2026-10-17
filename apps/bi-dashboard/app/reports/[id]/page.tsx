@@ -162,7 +162,7 @@ export default function ReportDetailPage() {
   }
 
   const toolAnswer=(report.data as unknown as {workspaceToolAnswer?:WorkspaceAnswer & {workspaceId:string}}).workspaceToolAnswer;
-  if(toolAnswer) return <WorkspacePage active="Reports" title={report.title} subtitle="Saved database report" scroll><p className="mb-4 text-sm text-zinc-600">{report.narrative}</p><Link className="mb-4 inline-flex text-sm text-rose-700" href={`/data-sources/${toolAnswer.workspaceId}/chat${report.source_session_id?`?session=${report.source_session_id}`:''}`}>Continue in workspace chat</Link><WorkspaceResult id={toolAnswer.workspaceId} initial={toolAnswer} variant="report"/></WorkspacePage>;
+  if(toolAnswer) return <WorkspacePage active="Reports" title={report.title} subtitle="Saved database report" scroll><p className="mb-4 text-sm text-zinc-600">{report.narrative}</p><Link className="mb-4 inline-flex text-sm text-rose-700" href={`/data-sources/${toolAnswer.workspaceId}/chat${report.source_session_id?`?session=${report.source_session_id}`:''}`}>Continue in workspace chat</Link><WorkspaceResult id={toolAnswer.workspaceId} initial={toolAnswer} variant="report" reportId={Number(report.id)}/></WorkspacePage>;
   return (
     <WorkspacePage
       active="Reports"

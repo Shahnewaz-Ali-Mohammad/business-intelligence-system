@@ -152,6 +152,32 @@ export async function saveServer(
   );
   return id;
 }
+/** Saved connections in the owner's other workspaces (no secrets returned). */
+export async function listReusableServers(ownerUserId: string, workspaceId: string) {
+  const [rows] = await getAppDb().execute(
+    "SELECT v.id,v.name,v.encrypted_config,w.name AS workspace_name FROM bi_tool_servers v JOIN workspaces w ON w.id=v.workspace_id WHERE w.owner_user_id=? AND v.workspace_id<>? ORDER BY w.name,v.name",
+    [ownerUserId, workspaceId],
+  );
+  return (rows as (ServerRow & { workspace_name: string })[]).map((row) => {
+    const config: SourceConfig = JSON.parse(decryptConnectionString(row.encrypted_config));
+    return { id: row.id, name: row.name, workspace: row.workspace_name, dialect: config.dialect, host: config.host, port: config.port };
+  });
+}
+/** Copies a saved connection from another workspace of the same owner; the stored secret never leaves the server. */
+export async function reuseServer(ownerUserId: string, workspaceId: string, serverId: string) {
+  const [rows] = await getAppDb().execute(
+    "SELECT v.name,v.encrypted_config FROM bi_tool_servers v JOIN workspaces w ON w.id=v.workspace_id WHERE v.id=? AND w.owner_user_id=?",
+    [serverId, ownerUserId],
+  );
+  const row = (rows as ServerRow[])[0];
+  if (!row) throw new Error("Saved connection not found.");
+  const id = crypto.randomUUID();
+  await getAppDb().execute(
+    "INSERT INTO bi_tool_servers(id,workspace_id,name,encrypted_config) VALUES(?,?,?,?)",
+    [id, workspaceId, row.name, row.encrypted_config],
+  );
+  return id;
+}
 export async function getServer(workspaceId: string, serverId: string) {
   const [rows] = await getAppDb().execute(
     "SELECT id,name,encrypted_config FROM bi_tool_servers WHERE id=? AND workspace_id=?",

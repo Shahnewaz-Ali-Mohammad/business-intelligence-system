@@ -1,0 +1,234 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+Error: Access denied for user 'bi_app_user'@'localhost' to database 'bi_app'
+    at file:///Users/thorbinodin/Desktop/Business%20Intelligence%20System/apps/bi-dashboard/scripts/run-workspace-migration.mjs:21:20
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  code: 'ER_DBACCESS_DENIED_ERROR',
+  errno: 1044,
+  sqlState: '42000',
+  sqlMessage: "Access denied for user 'bi_app_user'@'localhost' to database 'bi_app'",
+  sql: '-- ============================================================================\n' +
+    "-- bi_app: a NEW, SEPARATE database for this application's own data.\n" +
+    '-- This is completely independent from `ecommerce` (the read-only business\n' +
+    '-- database). Nothing here touches `ecommerce`, and the new `bi_app_user`\n' +
+    '-- below is granted access ONLY to `bi_app` -- never to `ecommerce`.\n' +
+    '-- Run this once with a MySQL account that can create databases/users\n' +
+    "-- (e.g. root in phpMyAdmin's SQL tab, or `mysql -u root -p < bi_app_schema.sql`).\n" +
+    '-- ============================================================================\n' +
+    '\n' +
+    'CREATE DATABASE IF NOT EXISTS bi_app\n' +
+    '  CHARACTER SET utf8mb4\n' +
+    '  COLLATE utf8mb4_unicode_ci;\n' +
+    '\n' +
+    '-- Dedicated read-write user, scoped ONLY to bi_app. Change this password\n' +
+    '-- before running in anything but local dev, then update .env.local to match.\n' +
+    "CREATE USER IF NOT EXISTS 'bi_app_user'@'localhost' IDENTIFIED BY 'bi_app_password';\n" +
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON bi_app.* TO 'bi_app_user'@'localhost';\n" +
+    'FLUSH PRIVILEGES;\n' +
+    '\n' +
+    'USE bi_app;\n' +
+    '\n' +
+    'CREATE TABLE IF NOT EXISTS users (\n' +
+    '  id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,\n' +
+    '  email         VARCHAR(255) NOT NULL UNIQUE,\n' +
+    '  password_hash VARCHAR(255) NOT NULL,\n' +
+    '  display_name  VARCHAR(120) NULL,\n' +
+    '  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n' +
+    ') ENGINE=InnoDB;\n' +
+    '\n' +
+    'CREATE TABLE IF NOT EXISTS sessions (\n' +
+    '  token       CHAR(64) PRIMARY KEY,\n' +
+    '  user_id     INT UNSIGNED NOT NULL,\n' +
+    '  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n' +
+    '  expires_at  DATETIME NOT NULL,\n' +
+    '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE\n' +
+    ') ENGINE=InnoDB;\n' +
+    '\n' +
+    'CREATE TABLE IF NOT EXISTS chat_messages (\n' +
+    '  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,\n' +
+    '  user_id     INT UNSIGNED NOT NULL,\n' +
+    "  role        ENUM('user', 'assistant') NOT NULL,\n" +
+    '  content     TEXT NOT NULL,\n' +
+    '  tables_used JSON NULL,\n' +
+    '  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n' +
+    '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n' +
+    '  INDEX idx_user_created (user_id, created_at)\n' +
+    ') ENGINE=InnoDB;\n' +
+    '\n' +
+    'CREATE TABLE IF NOT EXISTS generated_reports (\n' +
+    '  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,\n' +
+    '  user_id     INT UNSIGNED NOT NULL,\n' +
+    '  title       VARCHAR(255) NOT NULL,\n' +
+    '  narrative   TEXT NOT NULL,\n' +
+    '  filters     JSON NULL,\n' +
+    '  tables_used JSON NULL,\n' +
+    '  data        JSON NOT NULL,\n' +
+    '  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n' +
+    '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n' +
+    '  INDEX idx_user_created (user_id, created_at)\n' +
+    ') ENGINE=InnoDB;\n' +
+    '\n' +
+    '-- ============================================================================\n' +
+    '-- Migration: group chat_messages into real conversations (chat_sessions).\n' +
+    '-- Safe to re-run: uses IF NOT EXISTS everywhere.\n' +
+    '-- ============================================================================\n' +
+    'USE bi_app;\n' +
+    '\n' +
+    'CREATE TABLE IF NOT EXISTS chat_sessions (\n' +
+    '  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,\n' +
+    '  user_id     INT UNSIGNED NOT NULL,\n' +
+    "  title       VARCHAR(255) NOT NULL DEFAULT 'New conversation',\n" +
+    '  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n' +
+    '  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,\n' +
+    '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n' +
+    '  INDEX idx_user_updated (user_id, updated_at)\n' +
+    ') ENGINE=InnoDB;\n' +
+    '\n' +
+    '-- Backfill: every existing message that predates chat_sessions gets grouped\n' +
+    '-- into one legacy session per user, so nothing is lost.\n' +
+    'SET @has_session_col = (\n' +
+    '  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS\n' +
+    "  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_messages' AND COLUMN_NAME = 'session_id'\n" +
+    ');\n' +
+    '\n' +
+    'SET @sql_add_col = IF(@has_session_col = 0,\n' +
+    "  'ALTER TABLE chat_messages ADD COLUMN session_id INT UNSIGNED NULL AFTER user_id',\n" +
+    "  'SELECT 1');\n" +
+    'PREPARE stmt FROM @sql_add_col;\n' +
+    'EXECUTE stmt;\n' +
+    'DEALLOCATE PREPARE stmt;\n' +
+    '\n' +
+    'INSERT INTO chat_sessions (user_id, title, created_at, updated_at)\n' +
+    "SELECT DISTINCT user_id, 'Earlier conversation', MIN(created_at) OVER (PARTITION BY user_id), MAX(created_at) OVER (PARTITION BY user_id)\n" +
+    'FROM chat_messages\n' +
+    'WHERE session_id IS NULL\n' +
+    "  AND user_id NOT IN (SELECT DISTINCT user_id FROM chat_sessions WHERE title = 'Earlier conversation');\n" +
+    '\n' +
+    'UPDATE chat_messages m\n' +
+    "JOIN chat_sessions s ON s.user_id = m.user_id AND s.title = 'Earlier conversation'\n" +
+    'SET m.session_id = s.id\n' +
+    'WHERE m.session_id IS NULL;\n' +
+    '\n' +
+    'SET @has_fk = (\n' +
+    '  SELECT COUNT(*) FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE\n' +
+    "  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_messages' AND COLUMN_NAME = 'session_id' AND REFERENCED_TABLE_NAME = 'chat_sessions'\n" +
+    ');\n' +
+    'SET @sql_add_fk = IF(@has_fk = 0,\n' +
+    "  'ALTER TABLE chat_messages ADD CONSTRAINT fk_chat_messages_session FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE, ADD INDEX idx_session (session_id)',\n" +
+    "  'SELECT 1');\n" +
+    'PREPARE stmt FROM @sql_add_fk;\n' +
+    'EXECUTE stmt;\n' +
+    'DEALLOCATE PREPARE stmt;\n' +
+    '\n' +
+    '-- ============================================================================\n' +
+    '-- Migration: remember which topic/chart format a saved report was generated\n' +
+    '-- as, so re-opening a saved report renders the SAME chart it showed when it\n' +
+    '-- was generated (customers/products/status/pie/line/etc), instead of the\n' +
+    '-- report detail page always falling back to a fixed Revenue by Region +\n' +
+    '-- Revenue Over Time pair. Safe to re-run: uses IF NOT EXISTS everywhere.\n' +
+    '-- ============================================================================\n' +
+    'USE bi_app;\n' +
+    '\n' +
+    'SET @has_topic_col = (\n' +
+    '  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS\n' +
+    "  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'topic'\n" +
+    ');\n' +
+    'SET @sql_add_topic = IF(@has_topic_col = 0,\n' +
+    "  'ALTER TABLE generated_reports ADD COLUMN topic VARCHAR(40) NULL AFTER narrative',\n" +
+    "  'SELECT 1');\n" +
+    'PREPARE stmt FROM @sql_add_topic;\n' +
+    'EXECUTE stmt;\n' +
+    'DEALLOCATE PREPARE stmt;\n' +
+    '\n' +
+    'SET @has_chart_type_col = (\n' +
+    '  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS\n' +
+    "  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'chart_type'\n" +
+    ');\n' +
+    'SET @sql_add_chart_type = IF(@has_chart_type_col = 0,\n' +
+    "  'ALTER TABLE generated_reports ADD COLUMN chart_type VARCHAR(20) NULL AFTER topic',\n" +
+    "  'SELECT 1');\n" +
+    'PREPARE stmt FROM @sql_add_chart_type;\n' +
+    'EXECUTE stmt;\n' +
+    'DEALLOCATE PREPARE stmt;\n' +
+    '\n' +
+    '\n' +
+    '-- ============================================================================\n' +
+    '-- Migration: track real report exports (downloads) instead of showing a\n' +
+    '-- fixed, fake list on the Exports page. Every time a user actually clicks\n' +
+    '-- "Export CSV"/"Export Excel" on a report, one row is logged here; the\n' +
+    '-- Exports page reads this table and shows nothing until a real export\n' +
+    '-- has happened. Safe to re-run: uses IF NOT EXISTS everywhere.\n' +
+    '-- ============================================================================\n' +
+    'USE bi_app;\n' +
+    '\n' +
+    'CREATE TABLE IF NOT EXISTS report_exports (\n' +
+    '  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,\n' +
+    '  user_id     INT UNSIGNED NOT NULL,\n' +
+    '  report_id   INT UNSIGNED NULL,\n' +
+    '  file_name   VARCHAR(255) NOT NULL,\n' +
+    '  format      VARCHAR(10) NOT NULL,\n' +
+    '  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n' +
+    '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n' +
+    '  FOREIGN KEY (report_id) REFERENCES generated_reports(id) ON DELETE SET NULL,\n' +
+    '  INDEX idx_user_created (user_id, created_at)\n' +
+    ') ENGINE=InnoDB;\n' +
+    '\n' +
+    '-- ============================================================================\n' +
+    "-- Migration: store the exported file's own content alongside the log entry,\n" +
+    '-- so a re-download from the Exports page always reproduces the exact file\n' +
+    '-- that was originally exported -- even if the source report is later\n' +
+    '-- edited or deleted. Safe to re-run: uses IF NOT EXISTS everywhere.\n' +
+    '-- ============================================================================\n' +
+    'USE bi_app;\n' +
+    '\n' +
+    'SET @has_file_content_col = (\n' +
+    '  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS\n' +
+    "  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'report_exports' AND COLUMN_NAME = 'file_content'\n" +
+    ');\n' +
+    'SET @sql_add_file_content = IF(@has_file_content_col = 0,\n' +
+    "  'ALTER TABLE report_exports ADD COLUMN file_content LONGTEXT NULL AFTER format',\n" +
+    "  'SELECT 1');\n" +
+    'PREPARE stmt FROM @sql_add_file_content;\n' +
+    'EXECUTE stmt;\n' +
+    'DEALLOCATE PREPARE stmt;\n' +
+    '\n' +
+    '-- ============================================================================\n' +
+    '-- Migration: persist the chart alongside a saved report, not just the\n' +
+    '-- table. Stores the EDITED chart spec (chart type, which measure columns\n' +
+    '-- are visible, how many rows) as JSON -- never a rendered image -- so\n' +
+    '-- reopening a saved report brings back the exact chart it was left in,\n' +
+    '-- still further editable. A report saved before this column existed (or\n' +
+    '-- never edited since) has chart_spec = NULL; the app falls back to\n' +
+    "-- re-deriving a default chart on the fly from that report's own `data`\n" +
+    `-- (getChartSpec), the same "don't require a backfill, just degrade\n` +
+    `-- gracefully off what's already stored" pattern topic/chart_type used\n` +
+    '-- above. Safe to re-run: uses IF NOT EXISTS everywhere.\n' +
+    '-- ============================================================================\n' +
+    'USE bi_app;\n' +
+    '\n' +
+    'SET @has_chart_spec_col = (\n' +
+    '  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS\n' +
+    "  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'generated_reports' AND COLUMN_NAME = 'chart_spec'\n" +
+    ');\n' +
+    'SET @sql_add_chart_spec = IF(@has_chart_spec_col = 0,\n' +
+    "  'ALTER TABLE generated_reports ADD COLUMN chart_spec JSON NULL AFTER data',\n" +
+    "  'SELECT 1');\n" +
+    'PREPARE stmt FROM @sql_add_chart_spec;\n' +
+    'EXECUTE stmt;\n' +
+    'DEALLOCATE PREPARE stmt;\n' +
+    '\n' +
+    '\n' +
+    '-- ============================================================================\n' +
+    '-- Migration: persist the report (table + chart) generated for a chat\n' +
+    '-- message, not just its text. Previously chat_messages only stored the\n' +
+    '-- narrative -- reopening a saved conversation (Recent Chats / Sessions)\n' +
+    '-- showed the old text but never the table/chart that went with it, even\n' +
+    '-- though it clearly existed when the message was first sent. Stores the\n' +
+    '-- SAME shape the chat UI already builds an inline report from (title,\n' +
+    '-- narrative, topic, chartType, data, days, region, tablesUsed) as one JSON\n' +
+    '-- blob '... 3827 more characters
+}
+
+Node.js v24.18.0

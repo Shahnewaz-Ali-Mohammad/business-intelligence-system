@@ -32,6 +32,8 @@ export type WorkspaceAnswer = {
   mode?: string;
   sessionId?: number;
   graphVisible?: boolean;
+  graphMetric?: string;
+  graphCategory?: string;
   sourceId?: string;
   graphResult?: { rows: Record<string, unknown>[]; category: string; metric: string; hasMore: boolean; scope: string };
   totalCount?: number;
@@ -40,14 +42,20 @@ export type WorkspaceAnswer = {
 // Chat shows at most this many rows; the saved report pages through all.
 const CHAT_ROW_CAP = 200;
 const REPORT_PAGE_SIZE = 100;
+const axisLabel = (value: unknown) => {
+  const label = String(value ?? 'Missing');
+  return label.length > 12 ? `${label.slice(0, 9)}...` : label;
+};
 export function WorkspaceResult({
   id,
   initial,
   variant = "chat",
+  reportId,
 }: {
   id: string;
   initial: WorkspaceAnswer;
   variant?: "chat" | "report";
+  reportId?: number;
 }) {
   const isReport = variant === "report";
   const [answer, setAnswer] = useState<WorkspaceAnswer>(() => {
@@ -66,8 +74,8 @@ export function WorkspaceResult({
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<number>();
   const [graph, setGraph] = useState(initial.graphVisible || false);
-  const [metricChoice, setMetricChoice] = useState("");
-  const [categoryChoice, setCategoryChoice] = useState("");
+  const [metricChoice, setMetricChoice] = useState(initial.graphMetric || "");
+  const [categoryChoice, setCategoryChoice] = useState(initial.graphCategory || "");
   const [graphResult, setGraphResult] = useState(initial.graphResult);
   const keys = Object.keys(answer.rows[0] || {});
   const numericKeys = keys.filter(
@@ -108,7 +116,9 @@ export function WorkspaceResult({
     // Full export: every matching row, re-queried with the same approved
     // tool and plan as this answer.
     if (answer.toolId && answer.query !== undefined) {
-      window.location.href = `/api/workspaces/${id}/chat/export?toolId=${encodeURIComponent(answer.toolId)}&query=${encodeURIComponent(answer.query)}`;
+      const savedReportId = reportId || saved || await save();
+      if (!savedReportId) return;
+      window.location.href = `/api/workspaces/${id}/chat/export?toolId=${encodeURIComponent(answer.toolId)}&query=${encodeURIComponent(answer.query)}&reportId=${savedReportId}`;
       return;
     }
     await exportPage();
@@ -174,9 +184,11 @@ export function WorkspaceResult({
             },
             workspaceToolAnswer: {
               ...answer,
-              page: 1,
+              page: answer.page || 1,
               workspaceId: id,
               graphVisible: graph,
+              graphMetric: metric,
+              graphCategory: category,
               graphResult,
             },
             graphVisible: graph,
@@ -250,7 +262,7 @@ export function WorkspaceResult({
       {graph && answer.mode === 'rows' && graphResult && <div className="space-y-3">
         <label className="text-sm">Group by<select value={graphResult.category} disabled={busy} onChange={(e) => generateGraph(e.target.value)} className="ml-2 max-w-full rounded-md border p-2">{keys.map((k) => <option key={k}>{k}</option>)}</select></label>
         <p className="text-xs text-zinc-500">{graphResult.scope}{graphResult.hasMore ? ' Additional groups are not shown.' : ''}</p>
-        <div className="overflow-x-auto"><div style={{ minWidth: Math.max(600, graphResult.rows.length * 90), height: 320 }}><ResponsiveContainer width="100%" height="100%"><BarChart data={graphResult.rows}><CartesianGrid vertical={false} /><XAxis dataKey={graphResult.category} interval={0} tick={{ fontSize: 11 }} /><YAxis /><Tooltip /><Bar dataKey={graphResult.metric} fill="#be123c" /></BarChart></ResponsiveContainer></div></div>
+        <div className="overflow-x-auto"><div style={{ minWidth: Math.max(600, graphResult.rows.length * 90), height: 320 }}><ResponsiveContainer width="100%" height="100%"><BarChart data={graphResult.rows}><CartesianGrid vertical={false} /><XAxis dataKey={graphResult.category} interval={0} tick={{ fontSize: 11 }} tickFormatter={axisLabel} /><YAxis /><Tooltip /><Bar dataKey={graphResult.metric} fill="#be123c" /></BarChart></ResponsiveContainer></div></div>
       </div>}
       {graph && answer.mode === 'aggregate' && metric && category && (
         <div className="min-w-0 space-y-3">
@@ -297,6 +309,7 @@ export function WorkspaceResult({
                     dataKey={category}
                     interval={0}
                     tick={{ fontSize: 11 }}
+                    tickFormatter={axisLabel}
                   />
                   <YAxis />
                   <Tooltip />

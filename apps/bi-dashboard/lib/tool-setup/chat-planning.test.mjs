@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { coverageTools } from './coverage.mjs';
 import { requiresDetailedReport, checkReportPlan, toolContext, candidateTools } from './chat-planning.mjs';
 import { callWorkspaceMcp } from './chat-mcp.mjs';
+import { validateExecutionRequest } from './execution-request.mjs';
 const catalog = { objects: [{ id: 'customers', name: 'CustomerMaster', schema: 'dbo', kind: 'table', columns: [{name: 'CustomerID', dataType: 'int', isPrimaryKey: true}, {name: 'Name', dataType: 'varchar'}] }], relationships: [] };
 const definitions = coverageTools(catalog);
 const tools = definitions.map((definition, i) => ({ id: String(i), sourceId: 'customer-db', status: 'approved', definition }));
@@ -10,6 +11,14 @@ test('customer report is detail; explicit counts and summaries remain aggregates
   assert.equal(requiresDetailedReport('give me customer report'), true);
   assert.equal(requiresDetailedReport('customer count report'), false);
   assert.equal(requiresDetailedReport('billing totals by customer'), false);
+});
+test('an unlimited detail follow-up cannot become grouped counts because it mentions the total report', () => {
+ const message = 'Now list all customers. Return only CustomerID and Name, with no other columns. Do not limit the total report.';
+ assert.equal(requiresDetailedReport(message), true);
+ assert.ok(candidateTools(message, tools).every(t => t.definition.mode === 'rows'));
+ assert.throws(() => validateExecutionRequest(message, definitions[1], catalog, 'sqlserver', {query:'{}'}), /record list/);
+ validateExecutionRequest(message, definitions[0], catalog, 'sqlserver', {query:'{"columns":["customers:CustomerID","customers:Name"]}'});
+ assert.equal(requiresDetailedReport('Show total customers grouped by Name'), false);
 });
 test('a count alone cannot be published as a detailed customer report', () => {
   assert.throws(() => checkReportPlan({ message: 'give me customer report', definition: definitions[1], catalog, dialect: 'sqlserver', query: '{}' }), /count alone/);

@@ -1,10 +1,13 @@
 import {validateExecutionRequest} from '@/lib/tool-setup/execution-request.mjs';
+import {candidateTools} from '@/lib/tool-setup/chat-planning.mjs';
 import { ChatOpenAI } from '@langchain/openai';
 import { workspaceEntry } from '../../../../../scripts/chat/workspace-entry.mjs';
 import { writeAnalyticalInsight } from '../../../../../scripts/lib/analytical-insight.mjs';
 import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
 import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {addRequestedCalculations} from '@/lib/tool-setup/analysis-intent.mjs';
+import {devLog} from '@/lib/dev-log.mjs';
+import {compileTool} from '@/lib/tool-setup/model.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
 import {recordNarrative,requestedRecordArguments,validateRecordPopulation} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
@@ -149,11 +152,13 @@ export async function POST(
       { error: "Database is not part of this workspace." },
       { status: 403 },
     );
-  const tools = setup.tools.filter(
+  const approvedTools = setup.tools.filter(
     (t) =>
       t.sourceId === input.sourceId &&
       t.status === "approved",
   );
+  const tools = candidateTools(input.message, approvedTools);
+  let lastFailureReason = '';
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(150000)]);
   async function saveAnswer(answer: {
     narrative: string;
@@ -219,7 +224,7 @@ export async function POST(
           run.finish(await saveAnswer({narrative:'A saved report already supports this lookup. Approve it in Settings, then retry.',rows:[],hasMore:false}));return;
         }
         if (!tools.length) {
-          run.finish(await saveAnswer({ narrative: 'Approve tools for this database in Settings before asking data questions.', rows: [], hasMore: false }));
+          run.finish(await saveAnswer({ narrative: approvedTools.length ? 'No approved tool supports the requested report type. A record list cannot be substituted with an aggregate, or vice versa.' : 'Approve tools for this database in Settings before asking data questions.', rows: [], hasMore: false }));
           return;
         }
         run.progress("Understanding your question");
@@ -260,11 +265,43 @@ export async function POST(
         let executionFailureReason='';
         const server = createToolServer(tools, async (chosen: { id: string }, args: Record<string, unknown>) => {
           try {
-          const latest = await approvedNow(chosen.id);
+          let latest = await approvedNow(chosen.id);
           if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
-          validateRecordPopulation(input.message,latest.definition,catalog);
-          const parameters = { query: addRequestedCalculations(input.message,latest.definition,queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)),catalog) };
+          let parameters = { query: addRequestedCalculations(input.message,latest.definition,queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)),catalog) };
+          // If the chosen query tool cannot run this plan (for example the
+          // fields are only reachable from another table's tool), run the same
+          // plan on the approved query tool that can.
+          if (latest.definition.capabilities) {
+            try { compileTool(latest.definition, catalog, source.config.dialect, parameters); }
+            catch (error) {
+              const plan = JSON.parse(parameters.query);
+              const used = [...(plan.columns && plan.columns !== '*' ? plan.columns : []), ...(plan.groupBy || []), ...(plan.metrics || []).map((m: {field: string | null}) => m.field).filter(Boolean)];
+              const alternatives = tools.filter((t) => t.id !== latest.id && t.definition.capabilities && t.definition.mode === latest.definition.mode)
+                .sort((a, b) => Number(used.some((f) => f.startsWith(b.definition.base + ':'))) - Number(used.some((f) => f.startsWith(a.definition.base + ':'))));
+              let rerouted = false;
+              for (const alternative of alternatives) {
+                try { compileTool(alternative.definition, catalog, source.config.dialect, parameters); latest = await approvedNow(alternative.id); rerouted = true; devLog('rerouted', {from: chosen.id, to: alternative.definition.name}); break; } catch {}
+              }
+              if (!rerouted) throw error;
+            }
+          }
+          // Only tables with approved tools count as "the table the user named".
+          const approvedCatalog={...catalog,objects:catalog.objects.filter((o:{id:string})=>tools.some((t)=>t.definition.base===o.id))};
+          try { validateRecordPopulation(input.message,latest.definition,approvedCatalog); }
+          catch (error) {
+            // The question names another table: answer it with that table's query tool.
+            const wanted = error instanceof Error ? error.message.match(/^Use the requested table (\S+);/)?.[1] : undefined;
+            const target = wanted && tools.find((t) => t.definition.base === wanted && t.definition.capabilities && t.definition.mode === latest.definition.mode);
+            if (!target) throw error;
+            const plan = latest.definition.capabilities ? JSON.parse(parameters.query) : {};
+            const own = (f: string) => f.startsWith(wanted + ':');
+            const keepWhere = !plan.where || JSON.stringify(plan.where).match(/"field":"([^"]+)"/g)?.every((m: string) => own(m.slice(9, -1)));
+            latest = await approvedNow(target.id);
+            parameters = { query: addRequestedCalculations(input.message, latest.definition, JSON.stringify(latest.definition.mode === 'rows' ? { columns: '*', ...(keepWhere && plan.where ? { where: plan.where } : {}) } : { ...plan }), catalog) };
+            devLog('rerouted', { reason: 'named table', to: target.definition.name });
+          }
           validateExecutionRequest(input.message,latest.definition,catalog,source.config.dialect,parameters);
+          devLog('tool-call', {tool: latest.definition.name, parameters});
           // Statistics are best-effort: if they cannot be computed, the agent
           // still gets a small preview instead of a failed call.
           let summary: Awaited<ReturnType<typeof summarizeTool>> | null = null;
@@ -280,9 +317,17 @@ export async function POST(
             mode: latest.definition.mode,
             summary,
             ...(preview ? { rows: preview.rows, rowsAreComplete: !preview.hasMore } : {}),
-            note: `Grain: ${summary?.scope || 'limited preview; no full-population statistics available'}. Available figures are computed by the database over ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`,
+            note: summary
+              ? `Grain: ${summary.scope}. Available figures are computed by the database over ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`
+              : 'Full-population statistics are unavailable. Only a bounded preview is available; do not infer a total, average, median, extrema, or absence of records for the full dataset from this preview. The user sees the rows in the table; do not list them.',
           };
-          executionFailed=true;const reason=error instanceof Error?error.message:'';if(/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason))executionFailureReason=reason;throw error;}
+          } catch (error) {
+            devLog('tool-error', {args, error: error instanceof Error ? error.message : String(error)});
+            executionFailed = true;
+            const reason = error instanceof Error ? error.message : '';
+            if (/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason)) { executionFailureReason = reason; lastFailureReason = reason; }
+            throw error;
+          }
         }, catalog);
         const client = new Client({ name: 'bi-workspace-chat', version: '1.0.0' });
         const [left, right] = InMemoryTransport.createLinkedPair();
@@ -298,6 +343,7 @@ export async function POST(
             agentResult={structured:{intent:'answer',title:direct.chosen.definition.mode==='aggregate'?'Grouped count':'Record details',narrative:''},toolCalls:[{name,args:direct.parameters}],grounded:true};
           }else{
             const exposed = await loadMcpTools('bi-workspace-tools', client);
+            for (const t of exposed as {name:string;schema:unknown;verboseParsingErrors?:boolean}[]) { t.verboseParsingErrors = true; if (t.name.includes('aggregate')) devLog('schema '+t.name, JSON.stringify(t.schema).slice(0,30000)); }
             const reusableNames=new Set(tools.filter(t=>t.definition.capabilities).map(t=>mcpToolName(t.sourceId,t.definition.name)));
             const approvedFields=new Set(tools.flatMap(t=>t.definition.capabilities?.fields||[]));
             const valueFields=catalog.objects.flatMap((o:{id:string;columns:{name:string;dataType:string}[]})=>o.columns.filter(c=>/char|text/i.test(c.dataType)&&approvedFields.has(o.id+':'+c.name)).map(c=>o.id+':'+c.name));
@@ -373,9 +419,12 @@ export async function POST(
           if (!insight) insight = groupedFallback(result.rows, current.definition.mode);
           narrativeText = [countLine, insight].filter(Boolean).join(' ') || 'The verified database results are shown in the table below.';
         }
+        if (!summary) narrativeText += ' Full-dataset summary statistics are unavailable; the displayed results are a preview and must not be treated as full-dataset statistics.';
         run.text(narrativeText);
         const answer = {
-          title: structured?.title || current.definition.name,
+          title: structured?.intent === 'answer' && structured.title
+            ? structured.title
+            : `${catalog.objects.find((object: { id: string }) => object.id === current.definition.base)?.name || 'Database'} ${current.definition.mode === 'aggregate' ? 'Summary' : 'Report'}`,
           narrative: narrativeText,
           ...result,
           summary,
@@ -390,8 +439,9 @@ export async function POST(
         run.finish(await saveAnswer(answer));
       } catch (error) {
         console.error('[workspace chat] query failed:', error instanceof Error ? error.message : error);
+        devLog('failed', error instanceof Error ? error.stack || error.message : String(error));
         run.error(
-          error instanceof Error&&/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship)/.test(error.message)?error.message:'Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.',
+          error instanceof Error&&/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship)/.test(error.message)?error.message:lastFailureReason?`I could not build a valid query for this with the approved tools. ${lastFailureReason} Try rephrasing with the table or column you mean.`:'Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.',
         );
       } finally {
         out.close();
