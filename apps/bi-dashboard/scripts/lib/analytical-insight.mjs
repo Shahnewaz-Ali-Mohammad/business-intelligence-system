@@ -6,7 +6,7 @@ export const INSIGHT_PROMPT = `Write a useful business insight from the verified
 export function fallbackInsight(summary) {
   const number = (v) => v == null || !Number.isFinite(Number(v)) ? 'unavailable' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
   const label = (v) => v == null ? 'Missing (NULL)' : v === '' ? 'Empty string' : String(v);
-  const lines = (summary.numeric || []).slice(0, 3).map(({ title, statistics: s }) => `${title}: average ${number(s.average)}, median ${number(s.median)}, lowest ${number(s.minimum)}, highest ${number(s.maximum)}${s.missing != null ? `; ${number(s.missing)} missing values` : ''}.`);
+  const lines = (summary.numeric || []).slice(0, 3).map(({ title, statistics: s }) => `${title}: average ${number(s.average)}, ${s.median == null ? "" : `median ${number(s.median)}, `}lowest ${number(s.minimum)}, highest ${number(s.maximum)}${s.missing != null ? `; ${number(s.missing)} missing values` : ''}.`);
   for (const metric of (summary.numeric || []).slice(0, 2)) {
     const high = metric.highestGroups?.[0], low = metric.lowestGroups?.[0];
     if (high) lines.push(`${Object.values(high.labels).map(label).join(', ')} has the highest ${metric.title}, ${number(high.value)}${high.percentageOfMetricTotal != null ? ` (${high.percentageOfMetricTotal}% of the metric total)` : ''}; ${Object.values(low?.labels || {}).map(label).join(', ')} has the lowest, ${number(low?.value)}.`);

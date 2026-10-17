@@ -7,6 +7,7 @@ import {
   compileTool,
   fingerprint,
   isProtectedColumn,
+  quote,
 } from "./model.mjs";
 import { summaryQuery, isSummaryMeasure, groupingCoverageQuery } from "./result-summary.mjs";
 
@@ -344,6 +345,39 @@ export async function streamToolRows(config, tool, catalog, parameters, onBatch,
   });
 }
 
+/**
+ * Record statistics in ONE pass over the full result: count, and present /
+ * min / max / average / total for each numeric measure. A per-column median
+ * needs a full sort per column, which times out on large tables, so it is
+ * left out here.
+ */
+async function summarizeRecords(config, compiled, columns) {
+  const q = (name) => quote(name, config.dialect);
+  const count = config.dialect === "sqlserver" ? "COUNT_BIG" : "COUNT";
+  const measures = compiled.outputFields
+    .map((field, index) => ({ field, index }))
+    .filter(({ field }) => !compiled.unsafeAggregateFields?.includes(field) && !sensitiveOutput(field) && isSummaryMeasure(field, columns.get(field), "rows"))
+    .slice(0, 20);
+  const parts = [`${count}(*) AS ${q("population")}`];
+  measures.forEach(({ index }, i) => {
+    const v = `CAST(${q(`c${index}`)} AS DECIMAL(38,6))`;
+    parts.push(`${count}(${q(`c${index}`)}) AS ${q(`p${i}`)}`, `MIN(${v}) AS ${q(`mn${i}`)}`, `MAX(${v}) AS ${q(`mx${i}`)}`, `AVG(${v}) AS ${q(`av${i}`)}`, `SUM(${v}) AS ${q(`tt${i}`)}`);
+  });
+  const [row] = await withDatabase(config, (query) => query(`SELECT ${parts.join(", ")} FROM (${compiled.populationSql}) AS ${q("population")}`, compiled.values));
+  const population = Number(row.population);
+  // Medians for the first few measures, in parallel; one that is too slow
+  // only loses its median, never the rest of the summary.
+  const medians = await Promise.allSettled(measures.slice(0, 4).map(({ index }) =>
+    withDatabase(config, (query) => query(summaryQuery(compiled, config.dialect, index), compiled.values)).then(([s]) => s?.median)));
+  return {
+    population,
+    scope: compiled.grain || "Full matching records",
+    numeric: measures.map(({ field }, i) => ({
+      title: field,
+      statistics: { present: Number(row[`p${i}`]), minimum: row[`mn${i}`], maximum: row[`mx${i}`], average: row[`av${i}`], total: row[`tt${i}`], median: medians[i]?.status === "fulfilled" ? medians[i].value ?? null : null, missing: population - Number(row[`p${i}`]) },
+    })),
+  };
+}
 export async function summarizeTool(config, tool, catalog, parameters = {}) {
   const compiled = compileTool(tool, catalog, config.dialect, parameters);
   const columns = new Map(
@@ -352,6 +386,7 @@ export async function summarizeTool(config, tool, catalog, parameters = {}) {
     ),
   );
   const groups = tool.mode === "aggregate" ? await allGroups(config, tool, catalog, parameters) : null;
+  if (tool.mode === "rows") return summarizeRecords(config, compiled, columns);
   return withDatabase(config, async (query) => {
     const [count] = groups?.complete ? [{ population: groups.rows.length }] : await query(
       summaryQuery(compiled, config.dialect),
