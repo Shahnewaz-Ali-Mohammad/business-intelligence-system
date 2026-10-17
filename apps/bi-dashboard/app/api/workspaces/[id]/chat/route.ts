@@ -382,7 +382,11 @@ export async function POST(
         let narrativeText = structured?.narrative || 'Could not produce a grounded answer for this question.';
         // Render only a query that actually succeeded, never an attempted call
         // reconstructed from the agent message history.
-        const completed = completedExecutions.at(-1);
+        // When several queries ran, show the one matching the question's shape:
+        // a summary for counts/totals/earliest/latest, otherwise the record list.
+        const wantsSummary = /\b(how many|count|total|sum|average|avg|earliest|latest|oldest|newest|minimum|maximum|per|by|share|percent|growth|trend)\b/i.test(input.message);
+        const modeOf = (e: {toolId: string}) => tools.find((t) => t.id === e.toolId)?.definition.mode;
+        const completed = [...completedExecutions].reverse().find((e) => (modeOf(e) === 'aggregate') === wantsSummary) || completedExecutions.at(-1);
         if (!completed) {
           if (executionFailed || agentResult.toolCalls.some(call=>call.name==='run_saved_report')) throw new Error(executionFailureReason||'Every selected report execution failed; no verified report is available.');
           run.text(narrativeText);

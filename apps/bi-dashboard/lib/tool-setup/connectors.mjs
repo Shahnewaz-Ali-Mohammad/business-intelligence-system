@@ -12,6 +12,13 @@ import { summaryQuery, isSummaryMeasure, groupingCoverageQuery } from "./result-
 
 // Credential-like columns are never returned in results or exports, even
 // when an approved tool selects them (e.g. router passwords such as MKPass).
+/** Binary values are not shown in chat or saved answers; their size is shown instead. */
+export function displayValue(value) {
+  if (value && typeof value === "object" && (Buffer.isBuffer(value) || value instanceof Uint8Array)) return `[binary ${value.length} bytes]`;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().replace(/T00:00:00\.000Z$/, "");
+  if (typeof value === "string" && value.length > 2000) return value.slice(0, 2000) + "…";
+  return value;
+}
 export function sensitiveOutput(field) {
   const name = String(field).split(":").pop();
   return isProtectedColumn(name) || /pass(?!port)|pwd/i.test(name);
@@ -285,7 +292,7 @@ export async function executeTool(
   if (tool.mode === "aggregate" && !offset) {
     const groups = await allGroups(config, tool, catalog, parameters);
     return {
-      rows: groups.rows.slice(0, compiled.limit).map((row) => Object.fromEntries(compiled.outputFields.map((name, i) => [name, row[`c${i}`]]).filter(([name]) => !sensitiveOutput(name)))),
+      rows: groups.rows.slice(0, compiled.limit).map((row) => Object.fromEntries(compiled.outputFields.map((name, i) => [name, displayValue(row[`c${i}`])]).filter(([name]) => !sensitiveOutput(name)))),
       hasMore: groups.rows.length > compiled.limit || !groups.complete,
       limit: compiled.limit,
       elapsedMs: Date.now() - started,
@@ -300,7 +307,7 @@ export async function executeTool(
       .slice(0, compiled.limit)
       .map((row) =>
         Object.fromEntries(
-          compiled.outputFields.map((name, i) => [name, row[`c${i}`]]).filter(([name]) => !sensitiveOutput(name)),
+          compiled.outputFields.map((name, i) => [name, displayValue(row[`c${i}`])]).filter(([name]) => !sensitiveOutput(name)),
         ),
       ),
     hasMore: result.length > compiled.limit,
@@ -328,7 +335,7 @@ export async function streamToolRows(config, tool, catalog, parameters, onBatch,
       const result = await query(compiled.sql, compiled.values);
       const rows = result
         .slice(0, compiled.limit)
-        .map((row) => Object.fromEntries(compiled.outputFields.map((name, i) => [name, row[`c${i}`]]).filter(([name]) => !sensitiveOutput(name))));
+        .map((row) => Object.fromEntries(compiled.outputFields.map((name, i) => [name, displayValue(row[`c${i}`])]).filter(([name]) => !sensitiveOutput(name))));
       if (rows.length) await onBatch(rows, compiled.outputFields.filter((name) => !sensitiveOutput(name)));
       total += rows.length;
       if (result.length <= compiled.limit) return { total, fields: compiled.outputFields };

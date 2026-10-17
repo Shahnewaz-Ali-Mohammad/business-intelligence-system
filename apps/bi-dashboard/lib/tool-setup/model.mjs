@@ -250,7 +250,8 @@ export function compileTool(
       .parse(JSON.parse(parameters.query));
     const candidate = {
       ...input,
-      columns: plan.columns === "*" ? input.capabilities.fields : plan.columns ?? input.columns,
+      // "All columns" means the base table's own fields; joined fields are added only when named.
+      columns: plan.columns === "*" ? input.capabilities.fields.filter((f) => f.startsWith(input.base + ":")) : plan.columns ?? input.columns,
       // A date bucket is always a grouping: add its field when the plan
       // forgot to list it in groupBy.
       groupBy: [...new Set([...(plan.groupBy ?? input.groupBy), ...(plan.dateGroups || []).map((g) => g.field)])],
