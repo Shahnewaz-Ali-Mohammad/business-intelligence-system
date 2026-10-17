@@ -5,7 +5,7 @@ import { workspaceEntry } from '../../../../../scripts/chat/workspace-entry.mjs'
 import { writeAnalyticalInsight } from '../../../../../scripts/lib/analytical-insight.mjs';
 import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
 import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
-import {addRequestedCalculations} from '@/lib/tool-setup/analysis-intent.mjs';
+import {addRequestedCalculations,assertNamedColumns} from '@/lib/tool-setup/analysis-intent.mjs';
 import {devLog} from '@/lib/dev-log.mjs';
 import {compileTool} from '@/lib/tool-setup/model.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
@@ -300,6 +300,7 @@ export async function POST(
             parameters = { query: addRequestedCalculations(input.message, latest.definition, JSON.stringify(latest.definition.mode === 'rows' ? { columns: '*', ...(keepWhere && plan.where ? { where: plan.where } : {}) } : { ...plan }), catalog) };
             devLog('rerouted', { reason: 'named table', to: target.definition.name });
           }
+          assertNamedColumns(input.message,latest.definition,parameters.query);
           validateExecutionRequest(input.message,latest.definition,catalog,source.config.dialect,parameters);
           devLog('tool-call', {tool: latest.definition.name, parameters});
           // Statistics are best-effort: if they cannot be computed, the agent

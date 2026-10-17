@@ -62,3 +62,14 @@ export function addRequestedCalculations(message,definition,query,catalog){
   if(key&&derived.some(d=>ordered.has(d.operation))&&!(plan.sort||[]).some(s=>s.field===key))plan.sort=[{field:key,direction:'asc'}];
   return JSON.stringify(derived.length?{...plan,derived}:plan);
 }
+
+/** Columns the question names exactly (case-sensitive, e.g. BID, NetMRC) must appear in the plan. */
+export function assertNamedColumns(message,definition,query){
+  if(!definition?.capabilities||typeof query!=='string')return;
+  let plan;try{plan=JSON.parse(query);}catch{return;}
+  const text=JSON.stringify([plan.columns,plan.groupBy,plan.metrics,plan.where,plan.dateGroups,plan.sort]);
+  if(plan.columns==='*')return;
+  const named=definition.capabilities.fields.filter(f=>{const name=f.split(':').pop();return name.length>=3&&/[A-Z]/.test(name)&&new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}([^A-Za-z0-9_]|$)`).test(message);});
+  const missing=named.filter(f=>!text.includes(`"${f}"`));
+  if(named.length&&missing.length===named.length)throw new Error(`The question names ${missing.map(f=>f.split(':').pop()).join(', ')}; use ${missing.length>1?'those fields':'that field'} (${missing.join(', ')}) in the query.`);
+}

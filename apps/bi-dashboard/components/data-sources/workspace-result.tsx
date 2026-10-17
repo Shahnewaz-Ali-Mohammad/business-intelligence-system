@@ -335,8 +335,8 @@ export function WorkspaceResult({
           <thead className="sticky top-0 bg-zinc-50 text-xs uppercase tracking-wider text-zinc-500">
             <tr>
               {keys.map((k) => (
-                <th key={k} className="whitespace-nowrap p-3">
-                  {k}
+                <th key={k} title={k} className="whitespace-nowrap p-3">
+                  {columnLabel(k)}
                 </th>
               ))}
             </tr>
@@ -356,4 +356,11 @@ export function WorkspaceResult({
       </div>
     </ReportCard>
   );
+}
+
+/** "dbo.CustomerMaster:NetMRC" → "Net MRC"; "total_net_mrc" → "Total net mrc". */
+function columnLabel(key: string) {
+  const name = key.includes(':') ? key.slice(key.lastIndexOf(':') + 1) : key;
+  const spaced = name.replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
