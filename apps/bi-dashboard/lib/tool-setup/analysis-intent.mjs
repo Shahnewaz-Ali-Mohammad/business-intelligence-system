@@ -70,6 +70,14 @@ export function assertNamedColumns(message,definition,query){
   const text=JSON.stringify([plan.columns,plan.groupBy,plan.metrics,plan.where,plan.dateGroups,plan.sort]);
   if(plan.columns==='*')return;
   const named=definition.capabilities.fields.filter(f=>{const name=f.split(':').pop();return name.length>=3&&/[A-Z]/.test(name)&&new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}([^A-Za-z0-9_]|$)`).test(message);});
-  const missing=named.filter(f=>!text.includes(`"${f}"`));
-  if(named.length&&missing.length===named.length)throw new Error(`The question names ${missing.map(f=>f.split(':').pop()).join(', ')}; use ${missing.length>1?'those fields':'that field'} (${missing.join(', ')}) in the query.`);
+  // Only consider named columns on tables the plan already uses, so the
+  // correction points at one exact field (e.g. CustomerMaster.BID, not BID on every table).
+  const tables=new Set([...text.matchAll(/"([^":]+):[^"]+"/g)].map(m=>m[1]));
+  const relevant=named.filter(f=>tables.has(f.slice(0,f.lastIndexOf(':'))));
+  const candidates=relevant.length?relevant:named;
+  const missing=candidates.filter(f=>!text.includes(`"${f}"`));
+  if(candidates.length&&missing.length===candidates.length){
+    const replaced=(plan.groupBy||[]).filter(g=>!candidates.includes(g));
+    throw new Error(`The question names ${[...new Set(missing.map(f=>f.split(':').pop()))].join(', ')}. Use ${missing.join(' or ')} in the query${plan.groupBy?.length&&replaced.length?` (group by it instead of ${replaced.join(', ')})`:''}.`);
+  }
 }

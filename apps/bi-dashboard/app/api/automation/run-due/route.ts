@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { runDueReports } from '@/lib/schedules/run-scheduled';
+import { devLog } from '@/lib/dev-log.mjs';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -18,6 +19,7 @@ function authorized(req: NextRequest) {
  * whose scheduled time has arrived and returns what happened.
  */
 export async function POST(req: NextRequest) {
+  devLog('automation-call', { from: req.headers.get('user-agent') || 'unknown', keyPresent: !!req.headers.get('x-automation-key'), authorized: authorized(req) });
   if (!authorized(req)) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   try { return NextResponse.json(await runDueReports()); }
   catch (error) {

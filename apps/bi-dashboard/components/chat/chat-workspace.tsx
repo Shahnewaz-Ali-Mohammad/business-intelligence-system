@@ -185,6 +185,9 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   // "/schedule" with no question: pick a procedure, then schedule its result.
   const [pickerSchedule, setPickerSchedule] = useState<ScheduleDraft | null>(null);
   const [schedulesPanel, setSchedulesPanel] = useState(false);
+  // A "/schedule" draft survives the reload of the conversation that follows
+  // a new answer: it is attached to the newest answer when messages load.
+  const pendingScheduleRef = useRef<ScheduleDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [streamProgress, setStreamProgress] = useState('Understanding your question');
@@ -247,8 +250,11 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         setSessionTitle(body.session.title);
         setSessionWarehouseId(body.session.warehouse_id || null);
         if (body.messages.length || sessionId !== body.session.id) {
+          const draft = pendingScheduleRef.current; pendingScheduleRef.current = null;
+          const lastAnswer = draft ? body.messages.map((m) => !!m.report_data?.workspaceToolAnswer).lastIndexOf(true) : -1;
           setMessages(
-            body.messages.length ? body.messages.map((m) => ({
+            body.messages.length ? body.messages.map((m, index) => ({
+              ...(index === lastAnswer && draft ? { scheduleDraft: draft } : {}),
               id: m.id,
               role: m.role,
               text: m.content,
@@ -319,6 +325,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   }
 
   async function submitDatabaseQuestion(message: string, scheduleDraft?: ScheduleDraft) {
+    pendingScheduleRef.current = scheduleDraft || null;
     if (!databaseWorkspace || !user) return;
     setInput(''); setLoading(true); setStreamText(''); setStreamProgress('Understanding your question');
     setSlowRequest(false);
@@ -345,6 +352,8 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
       if (!finished || !answer) throw new Error('The answer did not finish. Please try again.');
       const completed = answer;
       setMessages((prev) => [...prev, { role: 'assistant', text: completed.narrative, workspaceAnswer: completed, ...(scheduleDraft ? { scheduleDraft } : {}), createdAt: new Date().toISOString() }]);
+      // Only the reload right after this answer may use the draft.
+      if (scheduleDraft) setTimeout(() => { if (pendingScheduleRef.current === scheduleDraft) pendingScheduleRef.current = null; }, 15000);
       if (completed.sessionId) {
         setSessionId(completed.sessionId); if (!sessionId) setSessionTitle(message.slice(0, 80));
         router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${completed.sessionId}`, { scroll: false });
@@ -724,6 +733,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
 
       {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={pickerSchedule ? '' : input.replace(/^\s*\/run\b\s*/i, '/')} sessionId={sessionId} onClose={() => { setProcedurePicker(false); setPickerSchedule(null); setInput(''); }} onResult={answer => {
         setMessages(current => [...current, { role: 'user', text: `/${answer.procedure?.name || answer.title}`, createdAt: new Date().toISOString() }, { role: 'assistant', text: answer.narrative, workspaceAnswer: answer, ...(pickerSchedule ? { scheduleDraft: pickerSchedule } : {}), createdAt: new Date().toISOString() }]);
+        pendingScheduleRef.current = pickerSchedule;
         setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setPickerSchedule(null); setInput('');
         router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${answer.sessionId}`);
         window.dispatchEvent(new Event('bi:chat-session-created'));
