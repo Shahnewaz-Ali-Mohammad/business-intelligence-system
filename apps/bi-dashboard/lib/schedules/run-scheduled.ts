@@ -10,6 +10,32 @@ import { launchProcedureRun } from '@/lib/tool-setup/procedure-runs';
 import { writeAnalyticalInsight } from '../../scripts/lib/analytical-insight.mjs';
 import { nextRunAt } from './schedule-time.mjs';
 import { addNotification } from './notifications.mjs';
+import { presetRange, applyRangeToQuery, applyRangeToProcedure } from './schedule-intent.mjs';
+
+/**
+ * Each workspace database has one "Scheduled reports" conversation; every
+ * scheduled run posts its answer there, so results are in the chat too.
+ */
+async function postToScheduledChat(userId: number, workspaceId: string, sourceId: string, title: string, narrative: string, answer: Record<string, unknown>) {
+  const db = await getAppDb().getConnection();
+  try {
+    await db.beginTransaction();
+    const [sessions] = await db.execute(
+      "SELECT s.id FROM chat_sessions s WHERE s.user_id=? AND s.warehouse_id=? AND s.title='Scheduled reports' AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id=s.id AND JSON_UNQUOTE(JSON_EXTRACT(m.report_data, '$.workspaceToolAnswer.sourceId'))<>?) ORDER BY s.id LIMIT 1",
+      [userId, workspaceId, sourceId],
+    );
+    let sessionId = (sessions as { id: number }[])[0]?.id;
+    if (!sessionId) {
+      const [created] = await db.execute("INSERT INTO chat_sessions(user_id,title,warehouse_id) VALUES(?, 'Scheduled reports', ?)", [userId, workspaceId]);
+      sessionId = (created as { insertId: number }).insertId;
+    }
+    await db.execute('INSERT INTO chat_messages(user_id,session_id,role,content,report_data) VALUES(?,?,?,?,?)', [userId, sessionId, 'user', `Scheduled run: ${title}`, null]);
+    const [message] = await db.execute('INSERT INTO chat_messages(user_id,session_id,role,content,report_data) VALUES(?,?,?,?,?)', [userId, sessionId, 'assistant', narrative, JSON.stringify({ workspaceToolAnswer: { ...answer, sessionId } })]);
+    await db.execute('UPDATE chat_sessions SET updated_at=NOW() WHERE id=?', [sessionId]);
+    await db.commit();
+    return { sessionId, messageId: (message as { insertId: number }).insertId };
+  } catch (error) { await db.rollback(); throw error; } finally { db.release(); }
+}
 
 type Schedule = { enabled: boolean; frequency: string; time: string; timezone: string; dayOfWeek?: number; dayOfMonth?: number; nextRunAt?: number; lastRunAt?: number; lastStatus?: string; lastError?: string; lastReportId?: number };
 type ReportRow = { id: number; user_id: number; title: string; topic: string | null; chart_type: string | null; chart_spec: unknown; source_session_id: number | null; data: string | Record<string, unknown> };
@@ -18,10 +44,10 @@ type ToolAnswer = Record<string, unknown> & { workspaceId?: string; sourceId?: s
 const parse = (value: unknown) => (typeof value === 'string' ? JSON.parse(value) : value) as Record<string, unknown>;
 
 /** Saves a new dated report (a copy of the scheduled one with fresh results). */
-async function insertReport(source: ReportRow, data: Record<string, unknown>, narrative: string, title: string) {
+async function insertReport(source: ReportRow, data: Record<string, unknown>, narrative: string, title: string, sessionId: number | null = source.source_session_id) {
   const [result] = await getAppDb().execute(
     'INSERT INTO generated_reports (user_id, title, narrative, topic, chart_type, data, chart_spec, source_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [source.user_id, title.slice(0, 255), narrative, source.topic, source.chart_type, JSON.stringify(data), source.chart_spec == null ? null : typeof source.chart_spec === 'string' ? source.chart_spec : JSON.stringify(source.chart_spec), source.source_session_id],
+    [source.user_id, title.slice(0, 255), narrative, source.topic, source.chart_type, JSON.stringify(data), source.chart_spec == null ? null : typeof source.chart_spec === 'string' ? source.chart_spec : JSON.stringify(source.chart_spec), sessionId],
   );
   return (result as { insertId: number }).insertId;
 }
@@ -39,7 +65,9 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
   const stamp = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
   const baseTitle = report.title.replace(/ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '');
   const title = `${baseTitle} · ${stamp}`;
-  const copy: Record<string, unknown> = { ...data, scheduledFrom: report.id, generatedAt: runAt };
+  // Rolling dates ("last month", "yesterday"...) are worked out for this run.
+  const range = presetRange((data.schedule as { dateRange?: string } | undefined)?.dateRange, timezone, runAt);
+  const copy: Record<string, unknown> = { ...data, scheduledFrom: report.id, generatedAt: runAt, ...(range ? { dateRange: range } : {}) };
   delete copy.schedule;
   const source = await getSource(answer.workspaceId, answer.sourceId);
 
@@ -50,10 +78,13 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
     if (!procedure) throw new Error('The stored procedure no longer exists.');
     const approvals = await readApprovals(answer.sourceId);
     authorizeProcedureRun(procedure, approvals[String(procedure.id)], { hash: procedure.hash, allowBusinessWrites: false });
-    const run = await createRun(answer.workspaceId, { sourceId: answer.sourceId, userId: report.user_id, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters, hash: procedure.hash }, values: answer.procedure.values, omitted: answer.procedure.omitted || [], allowBusinessWrites: false, reportTitle: baseTitle, scheduledFrom: report.id });
+    const values = applyRangeToProcedure(answer.procedure.values, procedure.parameters, range);
+    const run = await createRun(answer.workspaceId, { sourceId: answer.sourceId, userId: report.user_id, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters, hash: procedure.hash }, values, omitted: answer.procedure.omitted || [], allowBusinessWrites: false, reportTitle: baseTitle, scheduledFrom: report.id });
     const narrative = `Running ${procedure.schema}.${procedure.name}…`;
-    const reportId = await insertReport(report, { ...copy, semanticQueryTable: { headers: [], rows: [] }, workspaceToolAnswer: { ...answer, title, narrative, rows: [], procedure: { ...answer.procedure, runId: run.id } } }, narrative, title);
-    await writeRun(answer.workspaceId, { ...(await readRun(answer.workspaceId, run.id)), reportId });
+    const runAnswer = { ...answer, title, narrative, rows: [], procedure: { ...answer.procedure, values, runId: run.id } };
+    const chat = await postToScheduledChat(report.user_id, answer.workspaceId, answer.sourceId, title, narrative, runAnswer);
+    const reportId = await insertReport(report, { ...copy, semanticQueryTable: { headers: [], rows: [] }, workspaceToolAnswer: { ...runAnswer, sessionId: chat.sessionId } }, narrative, title, chat.sessionId);
+    await writeRun(answer.workspaceId, { ...(await readRun(answer.workspaceId, run.id)), reportId, messageId: chat.messageId });
     // Recorded before the worker starts, so a fast procedure's "completed" is never overwritten.
     await getAppDb().execute("UPDATE generated_reports SET data = JSON_SET(data, '$.schedule.lastStatus', 'running', '$.schedule.lastReportId', ?, '$.schedule.lastError', NULL) WHERE id = ?", [reportId, report.id]);
     launchProcedureRun(answer.workspaceId, run.id);
@@ -65,7 +96,8 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
   if (tool.status !== 'approved') throw new Error('The report’s tool is no longer approved.');
   const catalog = await discoverDatabase(source.config);
   if (catalog.fingerprint !== tool.catalog_fingerprint) throw new Error('The database structure changed. Review the tool, then re-approve it.');
-  const query = answer.query;
+  const dateFields = new Set(catalog.objects.flatMap((o: { id: string; columns: { name: string; dataType: string }[] }) => o.columns.filter((c) => /date|time/i.test(c.dataType)).map((c) => `${o.id}:${c.name}`)));
+  const query = applyRangeToQuery(answer.query, range, (field: string) => dateFields.has(field));
   const result = await executeTool(source.config, tool.definition, catalog, { query }, 200, 0, { maxLimit: 200 });
   let summary;
   try { summary = await summarizeTool(source.config, tool.definition, catalog, { query }); } catch { summary = undefined; }
@@ -74,11 +106,13 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
   try { if (summary) insight = await (writeAnalyticalInsight as unknown as (input: Record<string, unknown>) => Promise<string>)({ question: baseTitle, summary, records: result.rows.length <= 5 && !result.hasMore ? result.rows : undefined, currency: undefined, signal: AbortSignal.timeout(30000) }); } catch { insight = ''; }
   const narrative = [countLine, insight].filter(Boolean).join(' ') || 'The verified database results are shown in the table below.';
   const headers = Object.keys(result.rows[0] || {});
+  const runAnswer = { ...answer, title, narrative, ...result, query, summary, page: 1, totalCount: summary ? Number(summary.population) || result.rows.length : undefined };
+  const chat = await postToScheduledChat(report.user_id, answer.workspaceId, answer.sourceId, title, narrative, runAnswer);
   const reportId = await insertReport(report, {
     ...copy,
     semanticQueryTable: { headers, rows: result.rows.map((row: Record<string, unknown>) => headers.map((k) => (row[k] == null ? '' : String(row[k])))) },
-    workspaceToolAnswer: { ...answer, title, narrative, ...result, summary, page: 1, totalCount: summary ? Number(summary.population) || result.rows.length : undefined },
-  }, narrative, title);
+    workspaceToolAnswer: { ...runAnswer, sessionId: chat.sessionId },
+  }, narrative, title, chat.sessionId);
   await addNotification(report.user_id, { title: `Scheduled report ready: ${baseTitle}`, message: countLine || narrative.slice(0, 160), reportId, status: 'success' });
   return { reportId, status: 'completed' as const };
 }

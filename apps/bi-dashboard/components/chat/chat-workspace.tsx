@@ -1,6 +1,9 @@
 'use client';
 import {MissingScenario} from '@/components/data-sources/missing-scenario';
 import { ProcedurePicker } from '@/components/data-sources/procedure-picker';
+import { SchedulesPanel } from '@/components/data-sources/schedules-panel';
+import type { ScheduleDraft } from '@/components/data-sources/schedule-form';
+import { parseScheduleText } from '@/lib/schedules/schedule-intent.mjs';
 
 import Link from 'next/link';
 import { ReportCard } from './report-card';
@@ -31,6 +34,8 @@ type Message = {
   // the old single global `artifact` state further down for why.
   artifact?: Artifact;
   workspaceAnswer?: WorkspaceAnswer;
+  // Set by "/schedule …": the answer card opens its schedule form prefilled.
+  scheduleDraft?: ScheduleDraft;
   reportSaveState?: 'idle' | 'saving' | 'saved' | 'error';
   savedReportId?: number;
   tableExpanded?: boolean;
@@ -177,6 +182,9 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
 
   const [input, setInput] = useState('');
   const [procedurePicker, setProcedurePicker] = useState(false);
+  // "/schedule" with no question: pick a procedure, then schedule its result.
+  const [pickerSchedule, setPickerSchedule] = useState<ScheduleDraft | null>(null);
+  const [schedulesPanel, setSchedulesPanel] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [streamProgress, setStreamProgress] = useState('Understanding your question');
@@ -310,7 +318,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
     router.push(databaseWorkspace ? `/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}` : '/chat');
   }
 
-  async function submitDatabaseQuestion(message: string) {
+  async function submitDatabaseQuestion(message: string, scheduleDraft?: ScheduleDraft) {
     if (!databaseWorkspace || !user) return;
     setInput(''); setLoading(true); setStreamText(''); setStreamProgress('Understanding your question');
     setSlowRequest(false);
@@ -336,7 +344,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
       });
       if (!finished || !answer) throw new Error('The answer did not finish. Please try again.');
       const completed = answer;
-      setMessages((prev) => [...prev, { role: 'assistant', text: completed.narrative, workspaceAnswer: completed, createdAt: new Date().toISOString() }]);
+      setMessages((prev) => [...prev, { role: 'assistant', text: completed.narrative, workspaceAnswer: completed, ...(scheduleDraft ? { scheduleDraft } : {}), createdAt: new Date().toISOString() }]);
       if (completed.sessionId) {
         setSessionId(completed.sessionId); if (!sessionId) setSessionTitle(message.slice(0, 80));
         router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${completed.sessionId}`, { scroll: false });
@@ -673,7 +681,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
               {message.workspaceAnswer?.missingScenario && databaseWorkspace && <div className="mx-0 sm:ml-12 sm:mr-12"><MissingScenario id={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} {...message.workspaceAnswer.missingScenario} onRetry={(question)=>{if(!loading)void submitDatabaseQuestion(question);}} /></div>}
               {message.workspaceAnswer && databaseWorkspace && (message.workspaceAnswer.rows.length > 0 || !!message.workspaceAnswer.procedure) ? (
                 <div className="mx-0 sm:ml-12 sm:mr-12">
-                  <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} onNarrative={(text) => { if (message.text !== text) updateMessage(index, { text }); }} />
+                  <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} scheduleDraft={message.scheduleDraft} onNarrative={(text) => { if (message.text !== text) updateMessage(index, { text }); }} />
                 </div>
               ) : null}
               {message.artifact ? (
@@ -714,18 +722,41 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         ) : null}
       </div>
 
-      {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={input} sessionId={sessionId} onClose={() => { setProcedurePicker(false); setInput(''); }} onResult={answer => {
-        setMessages(current => [...current, { role: 'user', text: `/${answer.procedure?.name || answer.title}`, createdAt: new Date().toISOString() }, { role: 'assistant', text: answer.narrative, workspaceAnswer: answer, createdAt: new Date().toISOString() }]);
-        setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setInput('');
+      {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={pickerSchedule ? '' : input.replace(/^\s*\/run\b\s*/i, '/')} sessionId={sessionId} onClose={() => { setProcedurePicker(false); setPickerSchedule(null); setInput(''); }} onResult={answer => {
+        setMessages(current => [...current, { role: 'user', text: `/${answer.procedure?.name || answer.title}`, createdAt: new Date().toISOString() }, { role: 'assistant', text: answer.narrative, workspaceAnswer: answer, ...(pickerSchedule ? { scheduleDraft: pickerSchedule } : {}), createdAt: new Date().toISOString() }]);
+        setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setPickerSchedule(null); setInput('');
         router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${answer.sessionId}`);
         window.dispatchEvent(new Event('bi:chat-session-created'));
       }}/>}
-      <form onSubmit={event => { if (databaseWorkspace && input.trimStart().startsWith('/')) { event.preventDefault(); setProcedurePicker(true); return; } handleSubmit(event); }} className="shrink-0 border-t border-zinc-200/80 bg-white/90 p-4">
+      {databaseWorkspace && schedulesPanel && <SchedulesPanel workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} onClose={() => setSchedulesPanel(false)} />}
+      {databaseWorkspace && input.trimStart().startsWith('/') && !procedurePicker && (
+        <div className="mx-3 mb-2 flex flex-wrap gap-2 text-xs text-zinc-600">
+          <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/run</b> run a stored procedure</span>
+          <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedule</b> question + when, e.g. “/schedule customers per package every Monday 9am for last week”</span>
+          <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedules</b> see and manage schedules</span>
+        </div>
+      )}
+      <form onSubmit={event => {
+        const command = input.trim();
+        if (databaseWorkspace && /^\/schedules\b/i.test(command)) { event.preventDefault(); setSchedulesPanel(true); setInput(''); return; }
+        if (databaseWorkspace && /^\/schedule\b/i.test(command)) {
+          event.preventDefault();
+          // "/schedule <question> <when>": answer the question now (the preview),
+          // then the answer card opens its schedule form prefilled.
+          const parsed = parseScheduleText(command);
+          const draft: ScheduleDraft = { ...parsed.schedule, dateRange: parsed.dateRange as string | null };
+          if (parsed.question) { if (!loading) void submitDatabaseQuestion(parsed.question, draft); }
+          else { setPickerSchedule(draft); setProcedurePicker(true); setInput(''); }
+          return;
+        }
+        if (databaseWorkspace && input.trimStart().startsWith('/')) { event.preventDefault(); setProcedurePicker(true); return; }
+        handleSubmit(event);
+      }} className="shrink-0 border-t border-zinc-200/80 bg-white/90 p-4">
         <div className="flex items-end gap-3 rounded-lg border border-zinc-200 bg-white p-3 transition-shadow focus-within:border-rose-300 focus-within:ring-2 focus-within:ring-rose-100">
           <textarea
             value={input}
             aria-label="Your question"
-            onChange={(event) => { setInput(event.target.value); if (databaseWorkspace && event.target.value.trimStart().startsWith('/')) setProcedurePicker(true); }}
+            onChange={(event) => { setInput(event.target.value); const typed = event.target.value.trimStart(); if (databaseWorkspace && typed.startsWith('/') && !/^\/s(c(h(e(d(u(l(e(s)?)?)?)?)?)?)?)?$|^\/schedules?\b/i.test(typed) && typed.length > 1) setProcedurePicker(true); }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();

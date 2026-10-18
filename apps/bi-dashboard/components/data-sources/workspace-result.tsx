@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { ColumnMenu } from '@/components/dashboard/tables/column-menu';
+import { ScheduleForm, type ScheduleDraft, type ScheduleInput } from './schedule-form';
 import { ProcedureGraph, type ProcedureGraphSettings } from './procedure-graph';
 import {
   ChevronLeft,
@@ -9,6 +10,7 @@ import {
   ChartColumn,
   Download,
   FileText,
+  CalendarClock,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -63,6 +65,7 @@ export function WorkspaceResult({
   variant = "chat",
   reportId,
   onNarrative,
+  scheduleDraft,
 }: {
   id: string;
   initial: WorkspaceAnswer;
@@ -70,6 +73,8 @@ export function WorkspaceResult({
   reportId?: number;
   /** Called with the finished answer text of a background report. */
   onNarrative?: (text: string) => void;
+  /** Opens the schedule form on this answer, prefilled (from "/schedule …"). */
+  scheduleDraft?: ScheduleDraft;
 }) {
   const isReport = variant === "report";
   const [answer, setAnswer] = useState<WorkspaceAnswer>(() => {
@@ -132,6 +137,9 @@ export function WorkspaceResult({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<number>();
+  const [scheduling, setScheduling] = useState(!!scheduleDraft && !isReport);
+  const [scheduled, setScheduled] = useState<{ reportId: number; description: string; nextRunAt?: number | null } | null>(null);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
   const [graph, setGraph] = useState(initial.graphVisible || false);
   const [metricChoice, setMetricChoice] = useState(initial.graphMetric || "");
   const [categoryChoice, setCategoryChoice] = useState(initial.graphCategory || "");
@@ -234,6 +242,21 @@ export function WorkspaceResult({
     } finally {
       setBusy(false);
     }
+  }
+  // Scheduling saves the report behind the scenes (the schedule needs its
+  // query or procedure entries), then stores the schedule on it.
+  async function scheduleThis(schedule: ScheduleInput) {
+    setScheduleBusy(true); setError('');
+    try {
+      const target = reportId || saved || await save();
+      if (!target) return;
+      const response = await fetch(`/api/reports/${target}/schedule`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(schedule) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save the schedule.');
+      setScheduled({ reportId: target, description: data.description, nextRunAt: data.schedule?.nextRunAt });
+      setScheduling(false);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not save the schedule.'); }
+    finally { setScheduleBusy(false); }
   }
   async function save() {
     setBusy(true);
@@ -340,12 +363,27 @@ export function WorkspaceResult({
             <ChartColumn size={16} /> {graph ? "Hide Graph" : "Generate Graph"}
           </button>
         )}
+        {!isReport && (answer.toolId || answer.procedure) && !scheduling && !scheduled && (
+          <Button size="sm" variant="outline" className="gap-2" disabled={busy} onClick={() => setScheduling(true)}><CalendarClock size={14} />Schedule</Button>
+        )}
         {saved && (
           <a className="text-sm text-rose-700" href={`/reports/${saved}?workspace=${encodeURIComponent(id)}${answer.sourceId ? `&source=${encodeURIComponent(answer.sourceId)}` : ''}`}>
             Saved report
           </a>
         )}
       </div>
+      {scheduling && !scheduled && (
+        <div className="rounded-md border border-rose-100 bg-rose-50/40 p-3">
+          <p className="mb-2 text-sm text-zinc-700">Run this report automatically. Each run appears in the “Scheduled reports” chat and the bell notifies you.</p>
+          <ScheduleForm initial={scheduleDraft} busy={scheduleBusy} submitLabel="Confirm schedule" onCancel={() => setScheduling(false)} onSubmit={scheduleThis} />
+        </div>
+      )}
+      {scheduled && (
+        <p role="status" className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+          <CalendarClock size={15} />Scheduled: {scheduled.description}{scheduled.nextRunAt ? ` · next run ${new Date(scheduled.nextRunAt).toLocaleString()}` : ''}
+          <a className="text-rose-700" href={`/reports/${scheduled.reportId}`}>Manage</a>
+        </p>
+      )}
       {runId && running && <div role="status" className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700"><span>{run?.progress || 'Starting the report'}…</span><button type="button" onClick={cancelRun} className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs">Cancel</button></div>}
       {runId && run?.status === 'failed' && <p role="alert" className="text-sm text-red-700">{run.error}</p>}
       {runId && run?.status === 'cancelled' && <p role="status" className="text-sm text-zinc-600">{run.error || 'Report cancelled.'}</p>}

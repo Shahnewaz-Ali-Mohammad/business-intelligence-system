@@ -13,6 +13,10 @@ export function cleanSchedule(input) {
   const timezone = String(input.timezone || 'UTC');
   try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }); } catch { throw new Error('Unknown timezone.'); }
   const schedule = { enabled: input.enabled !== false, frequency, time, timezone };
+  if (input.dateRange != null && input.dateRange !== 'none') {
+    if (!['today', 'yesterday', 'last_7_days', 'this_week', 'last_week', 'this_month', 'last_month', 'this_year'].includes(String(input.dateRange))) throw new Error('Unknown date range.');
+    schedule.dateRange = String(input.dateRange);
+  } else schedule.dateRange = 'none';
   if (frequency === 'weekly') {
     const day = Number(input.dayOfWeek);
     if (!Number.isInteger(day) || day < 0 || day > 6) throw new Error('Choose a weekday.');
@@ -60,5 +64,6 @@ export function nextRunAt(schedule, afterMs = Date.now()) {
 export function describeSchedule(schedule) {
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const when = schedule.frequency === 'daily' ? 'Every day' : schedule.frequency === 'weekly' ? `Every ${days[schedule.dayOfWeek]}` : `Monthly on day ${schedule.dayOfMonth}`;
-  return `${when} at ${schedule.time} (${schedule.timezone})`;
+  const ranges = { today: 'today', yesterday: 'yesterday', last_7_days: 'the last 7 days', this_week: 'this week', last_week: 'last week', this_month: 'this month', last_month: 'last month', this_year: 'this year' };
+  return `${when} at ${schedule.time} (${schedule.timezone})${ranges[schedule.dateRange] ? `, for ${ranges[schedule.dateRange]}` : ''}`;
 }
