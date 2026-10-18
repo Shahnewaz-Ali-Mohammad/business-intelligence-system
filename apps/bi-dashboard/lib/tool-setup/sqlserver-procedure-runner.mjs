@@ -31,6 +31,12 @@ export function parameterType(parameter, driver = sql, { textConversion = true }
 function driverValue(parameter, value, { textConversion = true } = {}) {
   if (value == null) return value;
   const type = (parameter.baseType || parameter.type).toLowerCase();
+  if (textConversion && /^(date|datetime|datetime2|datetimeoffset|smalldatetime|time)$/.test(type)) {
+    let text = String(value).replace(' ', 'T');
+    if (type !== 'date' && type !== 'time' && /^\d{4}-\d{2}-\d{2}$/.test(text)) text += 'T00:00:00';
+    // datetime-local inputs omit seconds; SQL Server datetime RPC conversion requires them.
+    return text.replace(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}|\d{2}:\d{2})(?=Z|[+-]\d{2}:\d{2}|$)/, '$1:00');
+  }
   if (/^(binary|varbinary|image|timestamp|rowversion)$/.test(type)) return Buffer.from(value.replace(/^0x/i, ''), 'hex');
   if (type === 'bit') return value === '1' || value === 'true';
   if (/^(int|smallint|tinyint|real|float)$/.test(type)) return Number(value);
@@ -93,6 +99,7 @@ export async function streamReportProcedure(input, procedure, values, omitted = 
   let request; let failure; let mapping = []; let setIndex = -1;
   let queue = Promise.resolve();
   const cancel = () => request?.cancel();
+  pool.on('error', error => { failure = failure || error; cancel(); });
   // Rows are handled strictly in order; while a handler is busy the stream is paused.
   const enqueue = work => {
     request.pause();
@@ -102,6 +109,8 @@ export async function streamReportProcedure(input, procedure, values, omitted = 
     if (signal?.aborted) throw new Error('Report cancelled.');
     await pool.connect();
     request = pool.request(); request.stream = true; request.arrayRowMode = true;
+    // In streaming mode mssql emits errors even when execute() returns a promise.
+    request.on('error', error => { failure = failure || error; });
     bindProcedureParameters(request, procedure, values, omitted, driver);
     signal?.addEventListener('abort', cancel, { once: true });
     request.on('recordset', metadata => {

@@ -1,12 +1,14 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { ColumnMenu } from '@/components/dashboard/tables/column-menu';
+import { ProcedureGraph, type ProcedureGraphSettings } from './procedure-graph';
 import {
   ChevronLeft,
   ChevronRight,
   Save,
   ChartColumn,
   Download,
+  FileText,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -25,6 +27,7 @@ export type WorkspaceAnswer = {
   columns?: string[];
   hiddenResultColumns?: Record<string, string[]>;
   procedureActiveResult?: number;
+  procedureGraphs?: Record<string, ProcedureGraphSettings>;
   hiddenColumns?: string[];
   missingScenario?: {question:string;gap:string;jobId?:string};
   title?: string;
@@ -104,7 +107,10 @@ export function WorkspaceResult({
         const data = responses[0].data;
         if (!responses[0].ok) { setRun({ status: 'failed', error: data.error || 'Report run unavailable.', resultSets: [] }); return; }
         setRun(data); setRunRows(responses.flatMap((r) => r.data.rows || []));
-        if (data.status === 'completed' && data.narrative) narrativeRef.current?.(data.narrative);
+        if (data.status === 'completed' && data.narrative) {
+          setAnswer(previous => previous.narrative === data.narrative ? previous : { ...previous, narrative: data.narrative });
+          narrativeRef.current?.(data.narrative);
+        }
         if (data.status === 'queued' || data.status === 'running') timer = setTimeout(load, 2000);
       } catch { if (!stopped) timer = setTimeout(load, 4000); }
     };
@@ -133,6 +139,7 @@ export function WorkspaceResult({
   const keys = activeSet?.columns || answer.columns || Object.keys(answer.rows[0] || {});
   const [legacyHiddenColumns, setHiddenColumns] = useState(initial.hiddenColumns || []);
   const [hiddenResultColumns, setHiddenResultColumns] = useState(initial.hiddenResultColumns || {});
+  const [procedureGraphs, setProcedureGraphs] = useState(initial.procedureGraphs || {});
   const hiddenColumns = answer.procedure ? hiddenResultColumns[String(activeResult)] || (activeResult === 0 ? initial.hiddenColumns || [] : []) : legacyHiddenColumns;
   const visibleKeys = keys.filter(key => !hiddenColumns.includes(key));
   const numericKeys = answer.procedure ? [] : keys.filter(
@@ -169,13 +176,13 @@ export function WorkspaceResult({
     } catch (e) { setError(e instanceof Error ? e.message : 'Graph failed.'); }
     finally { setBusy(false); }
   }
-  async function exportAll() {
+  async function exportAll(format = 'xlsx') {
     if (runId) {
       // Same flow as other reports: save first, then export every row.
       const savedReportId = reportId || saved || await save();
       if (!savedReportId) return;
       const hidden = { ...hiddenResultColumns, ...(hiddenResultColumns['0'] ? {} : { 0: initial.hiddenColumns || [] }) };
-      window.location.assign(`/api/workspaces/${id}/procedures/runs/${runId}/export?reportId=${savedReportId}&hidden=${encodeURIComponent(JSON.stringify(hidden))}`);
+      window.location.assign(`/api/workspaces/${id}/procedures/runs/${runId}/export?reportId=${savedReportId}&format=${format}&hidden=${encodeURIComponent(JSON.stringify(hidden))}`);
       return;
     }
     // Full export: every matching row, re-queried with the same approved
@@ -233,7 +240,7 @@ export function WorkspaceResult({
     setError("");
     try {
       if (reportId) {
-        const response = await fetch(`/api/reports/${reportId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hiddenColumns: answer.procedure ? hiddenResultColumns['0'] || initial.hiddenColumns || [] : hiddenColumns, ...(answer.procedure ? { hiddenResultColumns, procedureActiveResult: activeResult } : {}) }) });
+        const response = await fetch(`/api/reports/${reportId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hiddenColumns: answer.procedure ? hiddenResultColumns['0'] || initial.hiddenColumns || [] : hiddenColumns, ...(answer.procedure ? { hiddenResultColumns, procedureActiveResult: activeResult, procedureGraphs, graphVisible: graph } : {}) }) });
         if (!response.ok) throw new Error('Report settings could not be saved.');
         setSaved(reportId);
         return reportId;
@@ -263,7 +270,7 @@ export function WorkspaceResult({
             workspaceToolAnswer: {
               ...answer,
               hiddenColumns: answer.procedure ? hiddenResultColumns['0'] || initial.hiddenColumns || [] : hiddenColumns,
-              ...(answer.procedure ? { hiddenResultColumns, procedureActiveResult: activeResult } : {}),
+              ...(answer.procedure ? { hiddenResultColumns, procedureActiveResult: activeResult, procedureGraphs } : {}),
               page: answer.page || 1,
               workspaceId: id,
               graphVisible: graph,
@@ -291,10 +298,11 @@ export function WorkspaceResult({
       <div className="flex flex-wrap items-center gap-2">
         <ColumnMenu columns={keys} hidden={hiddenColumns} onChange={next => { if (answer.procedure) setHiddenResultColumns(previous => ({ ...previous, [activeResult]: next })); else setHiddenColumns(next); setSaved(undefined); }}/>
         {procedureSets && procedureSets.length > 1 && <select aria-label="Report result table" className="h-9 max-w-full rounded-md border bg-white px-2 text-sm" value={activeResult} onChange={event => { setActiveResult(Number(event.target.value)); setProcedurePage(1); setSaved(undefined); }}>{procedureSets.map((set, index) => <option key={index} value={index}>Result {index + 1} · {set.rowCount.toLocaleString()} rows</option>)}</select>}
-        {(answer.toolId || answer.procedure) && <Button size="sm" className="gap-2" disabled={busy || !!saved} onClick={save}><Save size={14} />{saved ? 'Saved' : busy ? 'Saving...' : 'Save Report'}</Button>}
+        {(answer.toolId || answer.procedure) && <Button size="sm" className="gap-2" disabled={busy || !!saved || (!!runId && run?.status !== 'completed')} onClick={save}><Save size={14} />{saved ? 'Saved' : busy ? 'Saving...' : 'Save Report'}</Button>}
         {answer.procedure && isReport && <div className="flex items-center gap-2 text-xs"><button type="button" title="Previous page" disabled={procedurePage <= 1} onClick={() => setProcedurePage(p => p - 1)}><ChevronLeft size={16}/></button>Page {procedurePage} of {pageCount}<button type="button" title="Next page" disabled={procedurePage >= (pageCount || 1)} onClick={() => setProcedurePage(p => p + 1)}><ChevronRight size={16}/></button></div>}
         <a href={`/reports?workspace=${encodeURIComponent(id)}${answer.sourceId ? `&source=${encodeURIComponent(answer.sourceId)}` : ''}`} className="inline-flex h-9 items-center justify-center rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50">Saved Reports</a>
-        {(keys.length > 0 || answer.procedure) && <Button variant="outline" size="sm" className="gap-2" onClick={exportAll} disabled={busy || running || (!answer.procedure && !visibleKeys.length)}><Download size={14} />Export Excel</Button>}
+        {(keys.length > 0 || answer.procedure) && <Button variant="outline" size="sm" className="gap-2" onClick={() => void exportAll()} disabled={busy || (!!runId && run?.status !== 'completed') || (!answer.procedure && !visibleKeys.length)}><Download size={14} />Export Excel</Button>}
+        {runId && <Button variant="outline" size="sm" className="gap-2" disabled={busy || run?.status !== 'completed'} onClick={() => void exportAll('pdf')}><FileText size={14}/>Export PDF</Button>}
         {answer.toolId && isReport && (
           <>
             <button
@@ -318,12 +326,13 @@ export function WorkspaceResult({
             </button>
           </>
         )}
-        {((answer.mode === "aggregate" && metric && category) || (answer.mode === 'rows' && keys.length > 0)) && (
+        {((answer.mode === "aggregate" && metric && category) || (answer.mode === 'rows' && keys.length > 0) || (answer.procedure && keys.length > 0 && (!runId || run?.status === 'completed'))) && (
           <button
             title="Toggle graph of current result page"
             disabled={busy}
             onClick={() => {
-              if (answer.mode === 'rows' && !graphResult) generateGraph(keys.find((k) => !/(?:id|_sk|code)$/i.test(k)) || keys[0]);
+              if (answer.procedure) { setGraph(g => !g); setSaved(undefined); }
+              else if (answer.mode === 'rows' && !graphResult) generateGraph(keys.find((k) => !/(?:id|_sk|code)$/i.test(k)) || keys[0]);
               else setGraph((g) => !g);
             }}
             className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 px-3 text-sm font-medium"
@@ -346,6 +355,7 @@ export function WorkspaceResult({
           {error}
         </p>
       )}
+      {graph && answer.procedure && keys.length > 0 && (!runId || run?.status === 'completed') && <ProcedureGraph key={`${runId || answer.procedure.id}:${activeResult}`} workspaceId={id} runId={runId} resultIndex={activeResult} columns={keys} rows={sourceRows} initial={procedureGraphs[String(activeResult)]} onChange={settings => { setProcedureGraphs(previous => ({ ...previous, [activeResult]: settings })); setSaved(undefined); }}/>}
       {graph && answer.mode === 'rows' && graphResult && <div className="space-y-3">
         <label className="text-sm">Group by<select value={graphResult.category} disabled={busy} onChange={(e) => generateGraph(e.target.value)} className="ml-2 max-w-full rounded-md border p-2">{keys.map((k) => <option key={k}>{k}</option>)}</select></label>
         <p className="text-xs text-zinc-500">{graphResult.scope}{graphResult.hasMore ? ' Additional groups are not shown.' : ''}</p>

@@ -8,6 +8,8 @@ import { streamReportProcedure } from '../lib/tool-setup/sqlserver-procedure-run
 import { readRun, writeRun, openResultWriter, cancelRequested } from '../lib/tool-setup/procedure-run-store.mjs';
 import { writeAnalyticalInsight } from './lib/analytical-insight.mjs';
 import { addNotification } from '../lib/schedules/notifications.mjs';
+import { loadProcedureMetadata } from '../lib/tool-setup/procedure-catalog.mjs';
+import { authorizeProcedureRun } from '../lib/tool-setup/report-procedures.mjs';
 
 const [workspaceId, runId] = process.argv.slice(2);
 const db = mysql.createPool({ host: process.env.DB_APP_HOST || 'localhost', port: Number(process.env.DB_APP_PORT || 3306), database: process.env.DB_APP_NAME || 'bi_app', user: process.env.DB_APP_USER || 'bi_app_user', password: process.env.DB_APP_PASSWORD || '', connectionLimit: 2 });
@@ -44,7 +46,7 @@ try {
   run = await readRun(workspaceId, runId);
   if (!run || run.status !== 'queued') process.exit(0);
   run = await writeRun(workspaceId, { ...run, status: 'running', workerPid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now(), progress: 'Running the procedure' });
-  const [sources] = await db.execute('SELECT s.database_name,v.encrypted_config FROM bi_tool_sources s JOIN bi_tool_servers v ON v.id=s.server_id WHERE s.id=? AND v.workspace_id=?', [run.sourceId, workspaceId]);
+  const [sources] = await db.execute("SELECT s.database_name,v.encrypted_config,JSON_EXTRACT(s.catalog_json, '$.reportProcedureApprovals') AS approvals FROM bi_tool_sources s JOIN bi_tool_servers v ON v.id=s.server_id JOIN workspaces w ON w.id=v.workspace_id WHERE s.id=? AND v.workspace_id=? AND w.owner_user_id=?", [run.sourceId, workspaceId, run.userId]);
   if (!sources[0]) throw new Error('Database source unavailable.');
   const config = { ...JSON.parse(decryptConnectionString(sources[0].encrypted_config)), database: sources[0].database_name };
 
@@ -60,7 +62,14 @@ try {
     } catch {}
   }); }, 2000);
 
-  const result = await streamReportProcedure(config, run.procedure, run.values, run.omitted || [], {
+  const [current] = await loadProcedureMetadata(config, run.procedure.id);
+  if (!current) throw new Error('Procedure is no longer available.');
+  const [approvalRows] = await db.execute("SELECT JSON_EXTRACT(catalog_json, '$.reportProcedureApprovals') AS approvals FROM bi_tool_sources WHERE id=?", [run.sourceId]);
+  const rawApprovals = approvalRows[0]?.approvals;
+  const approvals = typeof rawApprovals === 'string' ? JSON.parse(rawApprovals) : rawApprovals || {};
+  authorizeProcedureRun(current, approvals[String(current.id)], { hash: run.procedure.hash, allowBusinessWrites: run.allowBusinessWrites });
+  if (await cancelRequested(workspaceId, runId)) { controller.abort(); throw new Error('Report cancelled before execution.'); }
+  const result = await streamReportProcedure(config, current, run.values, run.omitted || [], {
     signal: controller.signal,
     onResultSet: async (index, columns) => {
       sets[index] = { columns }; stats[index] = Object.fromEntries(columns.map(c => [c, columnStats()]));

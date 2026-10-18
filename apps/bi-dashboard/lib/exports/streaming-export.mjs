@@ -64,10 +64,11 @@ export function startWorkbookExport(write) {
 }
 
 /** Streams a stored export file back for the Exports page. */
-export async function openStoredExport(marker) {
+export async function openStoredExport(marker, format = 'xlsx') {
+  if (!['xlsx', 'pdf'].includes(format)) throw new Error('Unsupported stored export format.');
   const fileId = String(marker).slice(FILE_MARKER.length);
   if (!/^[0-9a-f-]{36}$/i.test(fileId)) throw new Error('Invalid export file.');
-  const target = path.join(root, `${fileId}.xlsx`);
+  const target = path.join(root, `${fileId}.${format}`);
   const info = await stat(target);
   return { stream: createReadStream(target), size: info.size };
 }

@@ -19,23 +19,28 @@ export function ReportSchedule({ reportId }: { reportId: number }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/reports/${reportId}/schedule`).then((r) => r.json()).then((data) => {
+    let initial = true;
+    const refresh = () => fetch(`/api/reports/${reportId}/schedule`, { cache: 'no-store' }).then((r) => r.json()).then((data) => {
       if (cancelled || data.error) return;
       setState(data);
-      if (data.schedule) setForm((f) => ({ ...f, ...data.schedule }));
+      if (initial && data.schedule) setForm((f) => ({ ...f, ...data.schedule }));
+      initial = false;
     }).catch(() => {});
-    return () => { cancelled = true; };
+    void refresh();
+    const timer = setInterval(refresh, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [reportId]);
 
   if (!state?.schedulable) return null;
 
-  async function save(enabled: boolean) {
+  async function save(enabled: boolean, time = form.time) {
     setBusy(true); setError('');
     try {
-      const response = await fetch(`/api/reports/${reportId}/schedule`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...form, enabled }) });
+      const response = await fetch(`/api/reports/${reportId}/schedule`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...form, time, enabled }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not save the schedule.');
       setState((s) => ({ schedulable: true, ...s, schedule: data.schedule, description: data.description }));
+      setForm((f) => ({ ...f, ...data.schedule }));
       setEditing(false);
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not save the schedule.'); }
     finally { setBusy(false); }
@@ -60,11 +65,11 @@ export function ReportSchedule({ reportId }: { reportId: number }) {
             </>
           ) : <p className="text-zinc-600">Run this report automatically and get a notification when it’s ready.</p>}
         </div>
-        {!editing && <Button size="sm" variant="outline" onClick={() => setEditing(true)}>{schedule ? 'Change schedule' : 'Schedule'}</Button>}
+        {!editing && <Button size="sm" variant="outline" onClick={() => { if (schedule) setForm((f) => ({ ...f, ...schedule })); setEditing(true); }}>{schedule ? 'Change schedule' : 'Schedule'}</Button>}
         {!editing && schedule && <Button size="sm" variant="outline" disabled={busy} onClick={() => save(!schedule.enabled)}>{schedule.enabled ? 'Pause' : 'Resume'}</Button>}
       </div>
       {editing && (
-        <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); void save(true); }}>
+        <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); void save(true, String(new FormData(e.currentTarget).get('time') || form.time)); }}>
           <label className="flex flex-col gap-1 text-xs text-zinc-600">Repeat
             <select className={input} value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value as Schedule['frequency'] })}>
               <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
@@ -77,7 +82,7 @@ export function ReportSchedule({ reportId }: { reportId: number }) {
             <select className={input} value={form.dayOfMonth ?? 1} onChange={(e) => setForm({ ...form, dayOfMonth: Number(e.target.value) })}>{Array.from({ length: 31 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}{i + 1 > 28 ? ' (or last day)' : ''}</option>)}</select>
           </label>}
           <label className="flex flex-col gap-1 text-xs text-zinc-600">At
-            <input type="time" required className={input} value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} />
+            <input type="time" name="time" required className={input} value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} />
           </label>
           <p className="pb-2 text-xs text-zinc-500">{form.timezone}</p>
           <Button size="sm" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save schedule'}</Button>

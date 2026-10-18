@@ -50,7 +50,7 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
     if (!procedure) throw new Error('The stored procedure no longer exists.');
     const approvals = await readApprovals(answer.sourceId);
     authorizeProcedureRun(procedure, approvals[String(procedure.id)], { hash: procedure.hash, allowBusinessWrites: false });
-    const run = await createRun(answer.workspaceId, { sourceId: answer.sourceId, userId: report.user_id, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters }, values: answer.procedure.values, omitted: answer.procedure.omitted || [], allowBusinessWrites: false, reportTitle: baseTitle, scheduledFrom: report.id });
+    const run = await createRun(answer.workspaceId, { sourceId: answer.sourceId, userId: report.user_id, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters, hash: procedure.hash }, values: answer.procedure.values, omitted: answer.procedure.omitted || [], allowBusinessWrites: false, reportTitle: baseTitle, scheduledFrom: report.id });
     const narrative = `Running ${procedure.schema}.${procedure.name}…`;
     const reportId = await insertReport(report, { ...copy, semanticQueryTable: { headers: [], rows: [] }, workspaceToolAnswer: { ...answer, title, narrative, rows: [], procedure: { ...answer.procedure, runId: run.id } } }, narrative, title);
     await writeRun(answer.workspaceId, { ...(await readRun(answer.workspaceId, run.id)), reportId });
@@ -98,8 +98,8 @@ export async function runDueReports(now = Date.now()) {
     const schedule = parse(report.data).schedule as Schedule;
     const next = nextRunAt(schedule as Parameters<typeof nextRunAt>[0], now);
     const [claimed] = await db.execute(
-      "UPDATE generated_reports SET data = JSON_SET(data, '$.schedule.nextRunAt', ?, '$.schedule.lastRunAt', ?) WHERE id = ? AND CAST(JSON_EXTRACT(data, '$.schedule.nextRunAt') AS UNSIGNED) = ?",
-      [next, now, report.id, schedule.nextRunAt ?? 0],
+      "UPDATE generated_reports SET data = JSON_SET(data, '$.schedule.nextRunAt', ?, '$.schedule.lastRunAt', ?) WHERE id = ? AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.schedule.enabled')) = 'true' AND JSON_EXTRACT(data, '$.schedule') = JSON_EXTRACT(?, '$')",
+      [next, now, report.id, JSON.stringify(schedule)],
     );
     if (!(claimed as { affectedRows: number }).affectedRows) continue;
     try {

@@ -6,7 +6,7 @@ export const INSIGHT_PROMPT = `Write a useful business insight from the verified
 export function fallbackInsight(summary) {
   const number = (v) => v == null || !Number.isFinite(Number(v)) ? 'unavailable' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
   const label = (v) => v == null ? 'Missing (NULL)' : v === '' ? 'Empty string' : String(v);
-  const lines = (summary.numeric || []).slice(0, 3).map(({ title, statistics: s }) => `${title}: average ${number(s.average)}, ${s.median == null ? "" : `median ${number(s.median)}, `}lowest ${number(s.minimum)}, highest ${number(s.maximum)}${s.missing != null ? `; ${number(s.missing)} missing values` : ''}.`);
+  const lines = (summary.numeric || []).slice(0, 3).map(({ title, statistics: s }) => `${title}: average ${number(s.average)}, ${s.median == null ? "" : `${s.medianEstimated ? 'estimated median' : 'median'} ${number(s.median)}, `}lowest ${number(s.minimum)}, highest ${number(s.maximum)}${s.missing != null ? `; ${number(s.missing)} missing values` : ''}.`);
   for (const metric of (summary.numeric || []).slice(0, 2)) {
     const high = metric.highestGroups?.[0], low = metric.lowestGroups?.[0];
     if (high) lines.push(`${Object.values(high.labels).map(label).join(', ')} has the highest ${metric.title}, ${number(high.value)}${high.percentageOfMetricTotal != null ? ` (${high.percentageOfMetricTotal}% of the metric total)` : ''}; ${Object.values(low?.labels || {}).map(label).join(', ')} has the lowest, ${number(low?.value)}.`);
@@ -20,6 +20,7 @@ export function fallbackInsight(summary) {
 }
 
 export function groundedNarrative(text, summary, currency) {
+  if ((summary.numeric || []).some(metric => metric.statistics?.medianEstimated) && /\bmedian\b/i.test(text) && !/\b(?:estimat\w*|approximat\w*|sampl\w*)\b/i.test(text)) throw new Error('Estimated median must be labelled as estimated.');
   if (!currency && /\b(?:BDT|USD|EUR|GBP|Taka|dollars?|euros?|pounds?)\b|[$€£৳]/i.test(text)) throw new Error('Unspecified currency in insight');
   if (/result groups/i.test(summary.scope || '') && /only one record|single (?:record|entry)/i.test(text)) throw new Error('Result group mistaken for source record');
   if (/no missing (?:category|group|label)/i.test(text) && (!summary.grouping?.length || summary.grouping.some((g) => g.missingGroups || g.emptyGroups))) throw new Error('Unverified grouping coverage');

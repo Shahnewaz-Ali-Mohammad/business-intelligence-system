@@ -1,12 +1,13 @@
 {
+  "id": "BiScheduledReports01",
   "name": "BI – run scheduled reports",
   "nodes": [
     {
       "parameters": {
-        "rule": { "interval": [ { "field": "minutes", "minutesInterval": 5 } ] }
+        "rule": { "interval": [ { "field": "minutes", "minutesInterval": 1 } ] }
       },
       "id": "7f1c2b8e-1a7e-4f3b-9c5e-0d1b2a3c4d5e",
-      "name": "Every 5 minutes",
+      "name": "Every minute",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [0, 0]
@@ -27,8 +28,8 @@
     }
   ],
   "connections": {
-    "Every 5 minutes": { "main": [ [ { "node": "Run due reports", "type": "main", "index": 0 } ] ] }
+    "Every minute": { "main": [ [ { "node": "Run due reports", "type": "main", "index": 0 } ] ] }
   },
-  "settings": { "executionOrder": "v1", "saveDataSuccessExecution": "none" },
+  "settings": { "executionOrder": "v1", "saveDataSuccessExecution": "all", "saveDataErrorExecution": "all" },
   "active": false
 }

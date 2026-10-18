@@ -71,7 +71,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         const [created] = await db.execute('INSERT INTO chat_sessions(user_id,title,warehouse_id) VALUES(?,?,?)', [user.id, title, id]);
         sessionId = (created as { insertId: number }).insertId;
       }
-      const run = await createRun(id, { sourceId: body.sourceId, userId: user.id, sessionId, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters }, values: body.values, omitted: body.omitted || [], allowBusinessWrites: body.allowBusinessWrites === true });
+      const run = await createRun(id, { sourceId: body.sourceId, userId: user.id, sessionId, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters, hash: procedure.hash }, values: body.values, omitted: body.omitted || [], allowBusinessWrites: body.allowBusinessWrites === true });
       answer = { title, narrative: `Running ${title}…`, rows: [], columns: [], procedure: { id: procedure.id, name: title, values: body.values, omitted: body.omitted || [], runId: run.id, writeAuthorized: body.allowBusinessWrites === true }, sourceId: body.sourceId, sessionId, hasMore: false, scope: 'Complete procedure result' };
       await db.execute('INSERT INTO chat_messages(user_id,session_id,role,content,report_data) VALUES(?,?,?,?,?)', [user.id, sessionId, 'user', `/${title} ${JSON.stringify(body.values)}`, null]);
       const [assistant] = await db.execute('INSERT INTO chat_messages(user_id,session_id,role,content,report_data) VALUES(?,?,?,?,?)', [user.id, sessionId, 'assistant', answer.narrative, JSON.stringify({ workspaceToolAnswer: answer })]);

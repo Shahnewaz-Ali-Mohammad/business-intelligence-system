@@ -6,6 +6,7 @@ import { getAppDb } from '@/lib/db/app-db';
 import { resultRows } from '@/lib/tool-setup/procedure-run-store.mjs';
 import { procedureRunStatus } from '@/lib/tool-setup/procedure-runs';
 import { startWorkbookExport, FILE_MARKER } from '@/lib/exports/streaming-export.mjs';
+import { startPdfExport } from '@/lib/exports/pdf-export.mjs';
 
 export const runtime = 'nodejs';
 export const maxDuration = 3600;
@@ -31,10 +32,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (run.status !== 'completed') return NextResponse.json({ error: 'The report is still running.' }, { status: 409 });
   let hidden: Record<string, string[]> = {};
   try { hidden = JSON.parse(req.nextUrl.searchParams.get('hidden') || '{}'); } catch { hidden = {}; }
+  if (!hidden || typeof hidden !== 'object' || Array.isArray(hidden) || JSON.stringify(hidden).length > 200000 || Object.values(hidden).some(columns => !Array.isArray(columns) || columns.some(column => typeof column !== 'string'))) return NextResponse.json({ error: 'Invalid column settings.' }, { status: 400 });
+  const format = req.nextUrl.searchParams.get('format') || 'xlsx';
+  if (!['xlsx', 'pdf'].includes(format)) return NextResponse.json({ error: 'Invalid export format.' }, { status: 400 });
 
-  const fileName = `${String(run.procedure?.name || 'report').replace(/[^\w.-]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const fileName = `${String(run.procedure?.name || 'report').replace(/[^\w.-]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.${format}`;
   const sets = run.resultSets as { columns: string[]; rowCount: number }[];
-  const { response, done } = startWorkbookExport(async (book: WorkbookBuilder) => {
+  const { response, done } = format === 'pdf' ? startPdfExport({ title: `${run.procedure.schema}.${run.procedure.name}`, narrative: run.narrative || '', tables: sets.map((set, index) => ({ columns: set.columns.filter(column => !(hidden[String(index)] || []).includes(column)), rows: () => resultRows(id, runId, index) })), output: run.output || {}, returnValue: run.returnValue }) : startWorkbookExport(async (book: WorkbookBuilder) => {
     for (const [index, set] of sets.entries()) {
       const columns = set.columns.filter((c) => !(hidden[String(index)] || []).includes(c));
       const sheet = book.sheet(sets.length > 1 ? `Result ${index + 1}` : 'Report', columns);
@@ -46,8 +50,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     await outputs.add(['Return code', run.returnValue ?? '']);
     await outputs.close();
   });
-  void done.then(({ fileId }) => getAppDb().execute('INSERT INTO report_exports (user_id, report_id, file_name, format, file_content) VALUES (?, ?, ?, ?, ?)', [user.id, reportId, fileName, 'xlsx', FILE_MARKER + fileId])).catch((error) => console.error('[procedure export] failed:', error instanceof Error ? error.message : error));
+  void done.then(({ fileId }) => getAppDb().execute('INSERT INTO report_exports (user_id, report_id, file_name, format, file_content) VALUES (?, ?, ?, ?, ?)', [user.id, reportId, fileName, format, FILE_MARKER + fileId])).catch((error) => console.error('[procedure export] failed:', error instanceof Error ? error.message : error));
   return new NextResponse(Readable.toWeb(response) as ReadableStream, {
-    headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="${fileName}"`, 'Cache-Control': 'no-store' },
+    headers: { 'Content-Type': format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="${fileName}"`, 'Cache-Control': 'no-store' },
   });
 }

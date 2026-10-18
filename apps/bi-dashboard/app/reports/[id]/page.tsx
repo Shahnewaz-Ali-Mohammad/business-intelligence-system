@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ClientPaginatedTable, PaginatedListTable, isListTopic, listExportUrl } from '@/components/dashboard/tables/paginated-list-table';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { FileSpreadsheet, MessageSquare, Trash2, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
@@ -61,6 +61,7 @@ async function logExport(reportId: number, fileName: string, fileContent: string
 export default function ReportDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -81,7 +82,18 @@ export default function ReportDetailPage() {
       })
       .catch(() => { if (!controller.signal.aborted) setReport(null); });
     return () => controller.abort();
-  }, [params.id]);
+  }, [params.id, router]);
+
+  useEffect(() => {
+    if (!report || String(report.id) !== params.id) return;
+    const answer = (report.data as { workspaceToolAnswer?: WorkspaceAnswer & { workspaceId: string } }).workspaceToolAnswer;
+    if (!answer?.workspaceId) return;
+    const search = new URLSearchParams(searchParams.toString());
+    if (search.get('workspace') === answer.workspaceId && (!answer.sourceId || search.get('source') === answer.sourceId)) return;
+    search.set('workspace', answer.workspaceId);
+    if (answer.sourceId) search.set('source', answer.sourceId);
+    router.replace(`/reports/${params.id}?${search}`, { scroll: false });
+  }, [report, params.id, router, searchParams]);
 
   async function handleDelete() {
     if (!report) return;

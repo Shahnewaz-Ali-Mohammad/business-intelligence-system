@@ -8,10 +8,10 @@
 #          in apps/bi-dashboard/.env.local). See n8n/README.md.
 services:
   n8n:
-    image: docker.n8n.io/n8nio/n8n:latest
+    image: docker.n8n.io/n8nio/n8n:2.42.4
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5678:5678"   # only reachable from this machine
+      - "127.0.0.1:${BI_N8N_PORT:-5679}:5678"   # separate from other projects
     environment:
       GENERIC_TIMEZONE: ${TIMEZONE:-Asia/Dhaka}
       TZ: ${TIMEZONE:-Asia/Dhaka}

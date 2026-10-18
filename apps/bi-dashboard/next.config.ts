@@ -17,6 +17,7 @@ const appRoot = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = join(appRoot, '..', '..');
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ['pdfkit'],
   outputFileTracingRoot: monorepoRoot,
   outputFileTracingIncludes: {
     '/api/**': ['../../cube/model/isp.yml'],

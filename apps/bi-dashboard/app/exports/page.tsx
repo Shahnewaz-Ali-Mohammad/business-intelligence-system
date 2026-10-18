@@ -63,7 +63,7 @@ function ExportList() {
   }
 
   return (
-    <WorkspacePage active="Exports" title="Exports" subtitle="Download history for generated Excel reports." scroll>
+    <WorkspacePage active="Exports" title="Exports" subtitle="Report export history" scroll>
       {!authLoading && !user ? (
         <div className="flex flex-col items-center gap-3 rounded-lg border border-zinc-200/80 bg-white p-10 text-center shadow-sm">
           <LogIn size={22} className="text-zinc-400" />

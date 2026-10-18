@@ -24,12 +24,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const stored = typeof row.file_content === 'string' && row.file_content.startsWith(FILE_MARKER);
     return NextResponse.json({ export: { ...row, file_content: stored ? null : row.file_content, stored } });
   }
-  const type = row.format === 'csv' ? 'text/csv;charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const type = row.format === 'pdf' ? 'application/pdf' : row.format === 'csv' ? 'text/csv;charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const headers = { 'Content-Type': type, 'Content-Disposition': `attachment; filename="${row.file_name.replace(/"/g, '')}"`, 'Cache-Control': 'no-store' };
   if (!row.file_content) return NextResponse.json({ error: 'This export file is no longer available.' }, { status: 404 });
   if (row.file_content.startsWith(FILE_MARKER)) {
     try {
-      const file = await openStoredExport(row.file_content);
+      const file = await openStoredExport(row.file_content, row.format);
       return new NextResponse(Readable.toWeb(file.stream) as ReadableStream, { headers: { ...headers, 'Content-Length': String(file.size) } });
     } catch { return NextResponse.json({ error: 'This export file is no longer available.' }, { status: 404 }); }
   }
