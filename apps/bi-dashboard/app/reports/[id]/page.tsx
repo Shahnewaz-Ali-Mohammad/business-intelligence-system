@@ -15,6 +15,8 @@ import type { ReportGraphSpec } from '@/lib/dashboard/report-graph';
 import { reportGraphSource } from '@/lib/dashboard/report-graph';
 import { ReportGraph } from '@/components/dashboard/charts/report-graph';
 import {WorkspaceResult,type WorkspaceAnswer} from '@/components/data-sources/workspace-result';
+import { ColumnMenu } from '@/components/dashboard/tables/column-menu';
+import { projectColumns } from '@/lib/dashboard/column-visibility.mjs';
 
 type ReportRow = {
   id: number;
@@ -102,7 +104,7 @@ export default function ReportDetailPage() {
     const revision = graphRevision.current;
     setSavingGraph(true); setGraphSaveError(null);
     try {
-      const res = await fetch(`/api/reports/${report.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chartSpec: report.chart_spec }) });
+      const res = await fetch(`/api/reports/${report.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chartSpec: report.chart_spec, hiddenColumns: report.data.hiddenColumns || [] }) });
       if (!res.ok) throw new Error('Could not save graph settings.');
       if (graphRevision.current === revision) setGraphDirty(false);
     } catch (e) { setGraphSaveError(e instanceof Error ? e.message : 'Could not save graph settings.'); }
@@ -153,7 +155,8 @@ export default function ReportDetailPage() {
     setExporting(true);
     try {
       const fileName = `${report!.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
-      const base64 = buildXlsxBase64(table.headers, table.rows);
+      const projected = projectColumns(table.headers, table.rows, report!.data.hiddenColumns);
+      const base64 = buildXlsxBase64(projected.headers, projected.rows);
       triggerDownload(fileName, base64ToBlob(base64, XLSX_MIME_TYPE));
       await logExport(report!.id, fileName, base64);
     } finally {
@@ -236,11 +239,12 @@ export default function ReportDetailPage() {
 
         <div className="min-w-0 bg-white px-4 py-4 sm:px-5">
           <ReportGraph key={report.id} source={reportGraphSource(data)} title={report.title} spec={report.chart_spec?.reportGraph} onChange={changeGraph} />
-          {graphDirty && <Button size="sm" variant="outline" className="mt-3 gap-2" disabled={savingGraph} onClick={saveGraph}><Save size={14} />{savingGraph ? 'Saving...' : 'Save graph'}</Button>}
+          {graphDirty && <Button size="sm" variant="outline" className="mt-3 gap-2" disabled={savingGraph} onClick={saveGraph}><Save size={14} />{savingGraph ? 'Saving...' : 'Save report settings'}</Button>}
           {graphSaveError && <p role="alert" className="mt-2 text-sm text-red-600">{graphSaveError}</p>}
         </div>
 
           <section className="overflow-hidden rounded-lg border border-zinc-200/80 bg-white shadow-sm">
+            <div className="flex justify-end border-b p-2"><ColumnMenu columns={table.headers} hidden={report.data.hiddenColumns} onChange={hiddenColumns => { graphRevision.current += 1; setReport(current => current ? { ...current, data: { ...current.data, hiddenColumns } } : current); setGraphDirty(true); }}/></div>
             {/* FIX 2026-10-01: real gap found live, same bug class as the
                 chat panel's inline table (see chat-workspace.tsx's own
                 comment) -- this page unconditionally mapped EVERY row of
@@ -256,7 +260,7 @@ export default function ReportDetailPage() {
               <PaginatedListTable topic={report.topic} data={report.data} />
             ) : (
               // 2026-10-04: every saved table pages through ALL its rows.
-              <ClientPaginatedTable headers={table.headers} rows={table.rows} />
+              <ClientPaginatedTable headers={table.headers} rows={table.rows} hiddenColumns={report.data.hiddenColumns}/>
             )}
           </section>
 

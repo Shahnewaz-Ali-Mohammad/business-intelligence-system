@@ -7,6 +7,7 @@
 // row shape (POP/package/status/entry date).
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
+import { projectColumns, exportHiddenColumns } from '@/lib/dashboard/column-visibility.mjs';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getAppDb } from '@/lib/db/app-db';
 import { streamAllCustomerList as streamAllCustomerListUntyped } from '../../../../../bi-warehouse/src/services/customerService.mjs';
@@ -85,7 +86,8 @@ export async function GET(req: NextRequest) {
   const totalRows = aoa.length - 1;
   console.log(`[api/exports/customer-list] built xlsx with ${totalRows} customer rows`);
 
-  const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+  const projected = projectColumns(HEADERS, aoa.slice(1), exportHiddenColumns(searchParams));
+  const worksheet = XLSX.utils.aoa_to_sheet([projected.headers, ...projected.rows]);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'All Customers');
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;

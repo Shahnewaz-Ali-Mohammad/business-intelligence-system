@@ -107,9 +107,24 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!user) return NextResponse.json({ error: 'Sign in to save graph settings.' }, { status: 401 });
   const { id } = await params;
   const body = await req.json().catch(() => null);
+  if (body && Object.hasOwn(body, 'hiddenColumns')) {
+    if (!Array.isArray(body.hiddenColumns) || body.hiddenColumns.length > 2000 || body.hiddenColumns.some((key: unknown) => typeof key !== 'string' || key.length > 1000)) return NextResponse.json({ error: 'Invalid column settings.' }, { status: 400 });
+    if (!Object.hasOwn(body, 'chartSpec')) {
+      if (Object.hasOwn(body, 'hiddenResultColumns')) {
+        const settings = body.hiddenResultColumns;
+        if (!settings || typeof settings !== 'object' || Array.isArray(settings) || JSON.stringify(settings).length > 200000 || Object.entries(settings).some(([key, value]) => !/^\d{1,3}$/.test(key) || Number(key) >= 200 || !Array.isArray(value) || value.length > 2000 || value.some((column: unknown) => typeof column !== 'string' || column.length > 1000)) || !Number.isInteger(body.procedureActiveResult) || body.procedureActiveResult < 0 || body.procedureActiveResult >= 200) return NextResponse.json({ error: 'Invalid result-table settings.' }, { status: 400 });
+        const [result] = await getAppDb().execute("UPDATE generated_reports SET data=JSON_SET(data, '$.workspaceToolAnswer.hiddenColumns', JSON_EXTRACT(?, '$'), '$.workspaceToolAnswer.hiddenResultColumns', JSON_EXTRACT(?, '$'), '$.workspaceToolAnswer.procedureActiveResult', ?) WHERE id=? AND user_id=?", [JSON.stringify(body.hiddenColumns), JSON.stringify(settings), body.procedureActiveResult, id, user.id]);
+        return (result as { affectedRows: number }).affectedRows ? NextResponse.json({ updated: true }) : NextResponse.json({ error: 'Report not found.' }, { status: 404 });
+      }
+      const [result] = await getAppDb().execute("UPDATE generated_reports SET data=JSON_SET(data, '$.hiddenColumns', JSON_EXTRACT(?, '$'), '$.workspaceToolAnswer.hiddenColumns', JSON_EXTRACT(?, '$')) WHERE id=? AND user_id=?", [JSON.stringify(body.hiddenColumns), JSON.stringify(body.hiddenColumns), id, user.id]);
+      return (result as { affectedRows: number }).affectedRows ? NextResponse.json({ updated: true }) : NextResponse.json({ error: 'Report not found.' }, { status: 404 });
+    }
+  }
   const spec = body?.chartSpec;
   if (spec !== null && (!spec || typeof spec !== 'object' || Array.isArray(spec) || JSON.stringify(spec).length > 20000)) return NextResponse.json({ error: 'Invalid graph settings.' }, { status: 400 });
-  const [result] = await getAppDb().execute('UPDATE generated_reports SET chart_spec=? WHERE id=? AND user_id=?', [spec ? JSON.stringify(spec) : null, id, user.id]);
+  const [result] = body?.hiddenColumns
+    ? await getAppDb().execute("UPDATE generated_reports SET chart_spec=?, data=JSON_SET(data, '$.hiddenColumns', JSON_EXTRACT(?, '$')) WHERE id=? AND user_id=?", [spec ? JSON.stringify(spec) : null, JSON.stringify(body.hiddenColumns), id, user.id])
+    : await getAppDb().execute('UPDATE generated_reports SET chart_spec=? WHERE id=? AND user_id=?', [spec ? JSON.stringify(spec) : null, id, user.id]);
   return (result as { affectedRows: number }).affectedRows ? NextResponse.json({ updated: true }) : NextResponse.json({ error: 'Report not found.' }, { status: 404 });
 }
 

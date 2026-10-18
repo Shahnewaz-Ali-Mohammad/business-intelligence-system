@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { DashboardData } from '@/lib/dashboard/metrics';
 import { getReportTable } from '@/lib/dashboard/report-table';
+import { visibleColumnIndexes } from '@/lib/dashboard/column-visibility.mjs';
 
 export type ListTopic = 'ticket_list' | 'customer_list' | 'top_customers' | 'semantic_query';
 
@@ -70,7 +71,7 @@ function toQuery(params: Params | undefined): string {
 export function listExportUrl(topic: ListTopic, data: DashboardData): string | null {
   const params = PAGED[topic].params(data);
   if (!params) return null;
-  const q = toQuery(params);
+  const q = toQuery({ ...params, hiddenColumns: JSON.stringify(data.hiddenColumns || []) });
   return q ? `${PAGED[topic].exportPath}?${q}` : PAGED[topic].exportPath;
 }
 
@@ -153,6 +154,7 @@ function PaginatedListTableBody({ topic, data }: { topic: ListTopic; data: Dashb
   }, [page, topic, queryString, data]);
 
   const firstRow = total ? (page - 1) * PAGE_SIZE + 1 : 0;
+  const visibleIndexes = visibleColumnIndexes(table.headers, data.hiddenColumns);
   const lastRow = Math.min(page * PAGE_SIZE, total);
   const go = (p: number) => setPage(Math.min(pageCount, Math.max(1, p)));
 
@@ -191,19 +193,19 @@ function PaginatedListTableBody({ topic, data }: { topic: ListTopic; data: Dashb
         <table className="w-full text-left text-sm">
           <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
             <tr>
-              {table.headers.map((header, i) => (
-                <th key={`${header}-${i}`} className="px-5 py-3 font-semibold">{header}</th>
+              {visibleIndexes.map((i: number) => (
+                <th key={i} className="px-5 py-3 font-semibold">{table.headers[i]}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100">
             {table.rows.map((row, i) => (
               <tr key={i}>
-                {row.map((cell, j) => (
+                {visibleIndexes.map((j: number) => { const cell = row[j]; return (
                   <td key={j} className="px-5 py-3 text-zinc-700">
                     {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
                   </td>
-                ))}
+                ); })}
               </tr>
             ))}
           </tbody>
@@ -215,7 +217,8 @@ function PaginatedListTableBody({ topic, data }: { topic: ListTopic; data: Dashb
 
 // Client-side pagination for every OTHER table on the report page (the
 // rows are already in the saved report, so no server round trip needed).
-export function ClientPaginatedTable({ headers, rows }: { headers: string[]; rows: (string | number)[][] }) {
+export function ClientPaginatedTable({ headers, rows, hiddenColumns = [] }: { headers: string[]; rows: (string | number)[][]; hiddenColumns?: string[] }) {
+  const visibleIndexes = visibleColumnIndexes(headers, hiddenColumns);
   const [page, setPage] = useState(1);
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const shown = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -245,19 +248,19 @@ export function ClientPaginatedTable({ headers, rows }: { headers: string[]; row
         <table className="w-full text-left text-sm">
           <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
             <tr>
-              {headers.map((header, i) => (
-                <th key={`${header}-${i}`} className="px-5 py-3 font-semibold">{header}</th>
+              {visibleIndexes.map((i: number) => (
+                <th key={i} className="px-5 py-3 font-semibold">{headers[i]}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100">
             {shown.map((row, i) => (
               <tr key={i}>
-                {row.map((cell, j) => (
+                {visibleIndexes.map((j: number) => { const cell = row[j]; return (
                   <td key={j} className="px-5 py-3 text-zinc-700">
                     {typeof cell === 'number' ? cell.toLocaleString('en-US') : cell}
                   </td>
-                ))}
+                ); })}
               </tr>
             ))}
           </tbody>

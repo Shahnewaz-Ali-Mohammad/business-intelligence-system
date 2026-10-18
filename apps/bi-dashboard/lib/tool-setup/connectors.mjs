@@ -41,7 +41,7 @@ export function validateConnection(input) {
     );
   return config;
 }
-export async function withDatabase(input, fn) {
+export async function withDatabase(input, fn, { requestTimeout = 30000 } = {}) {
   const c = validateConnection(input);
   if (c.dialect === "postgres") {
     const client = new pg.Client({
@@ -108,15 +108,17 @@ export async function withDatabase(input, fn) {
       appName: "BI tool setup",
     },
     connectionTimeout: 10000,
-    requestTimeout: 30000,
+    requestTimeout,
     pool: { max: 1, min: 0 },
   });
   try {
     await pool.connect();
-    return await fn(async (sql, values = []) => {
+    return await fn(async (sql, values = [], { singleResult = false } = {}) => {
       const request = pool.request();
       values.forEach((value, index) => request.input(`p${index + 1}`, value));
-      return (await request.query(sql)).recordset || [];
+      const result = await request.query(sql);
+      if (singleResult && result.recordsets.length > 1) throw new Error('This procedure returns multiple result sets. Use a single-result reporting procedure; no result has been discarded.');
+      return result.recordset || [];
     });
   } finally {
     await pool.close();

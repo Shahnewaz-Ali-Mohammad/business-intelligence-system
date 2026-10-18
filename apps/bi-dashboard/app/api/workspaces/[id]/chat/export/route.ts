@@ -8,6 +8,7 @@ import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getTool, getSource } from '@/lib/tool-setup/store';
 import { discoverDatabase, streamToolRows } from '@/lib/tool-setup/connectors.mjs';
 import { getAppDb } from '@/lib/db/app-db';
+import { exportHiddenColumns } from '@/lib/dashboard/column-visibility.mjs';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -36,7 +37,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     let headers: string[] = [];
     const rows: (string | number)[][] = [];
     await streamToolRows(source.config, tool.definition, catalog, { query }, (batch: Record<string, unknown>[], fields: string[]) => {
-      if (!headers.length) headers = fields;
+      if (!headers.length) headers = fields.filter(key => !exportHiddenColumns(sp).includes(key));
       for (const row of batch) {
         rows.push(headers.map((key) => {
           const value = row[key];

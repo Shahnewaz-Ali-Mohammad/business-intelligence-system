@@ -3,6 +3,7 @@ import 'server-only';
 import type { CustomerMix, Kpi, PageLink, TopCustomerByOrders } from '@/lib/dashboard/types';
 
 export type DashboardData = {
+  hiddenColumns?: string[];
   // FIX 2026-09-17: which financial columns (billed/collected/refunded/
   // adjusted/outstanding) the user actually named this turn, for
   // per-POP/per-package/per-customer tables -- empty/undefined means show

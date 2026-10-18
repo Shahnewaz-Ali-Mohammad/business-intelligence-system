@@ -14,6 +14,13 @@ export function buildXlsxBase64(headers: string[], rows: (string | number)[][]):
   return XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
 }
 
+export function buildWorkbookBase64(sheets: { name: string; headers: string[]; rows: (string | number)[][] }[]): string {
+  const workbook = XLSX.utils.book_new();
+  for (const sheet of sheets) XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([sheet.headers, ...sheet.rows]), sheet.name.slice(0, 31));
+  if (!sheets.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['No result tables']]), 'Report');
+  return XLSX.write(workbook, { type: 'base64', bookType: 'xlsx' });
+}
+
 export function triggerDownload(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');

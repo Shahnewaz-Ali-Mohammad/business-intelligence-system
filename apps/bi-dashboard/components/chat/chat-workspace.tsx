@@ -1,8 +1,11 @@
 'use client';
 import {MissingScenario} from '@/components/data-sources/missing-scenario';
+import { ProcedurePicker } from '@/components/data-sources/procedure-picker';
 
 import Link from 'next/link';
 import { ReportCard } from './report-card';
+import { ColumnMenu } from '@/components/dashboard/tables/column-menu';
+import { projectColumns } from '@/lib/dashboard/column-visibility.mjs';
 import { isListTopic, listExportUrl } from '@/components/dashboard/tables/paginated-list-table';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
@@ -173,6 +176,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   }, []);
 
   const [input, setInput] = useState('');
+  const [procedurePicker, setProcedurePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [streamProgress, setStreamProgress] = useState('Understanding your question');
@@ -501,7 +505,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
     let reportId = message.savedReportId;
     let ok = false;
     if (reportId) {
-      try { const res = await fetch(`/api/reports/${reportId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chartSpec: target.chartSpec || null }) }); ok = res.ok; } catch {}
+      try { const res = await fetch(`/api/reports/${reportId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chartSpec: target.chartSpec || null, hiddenColumns: target.data.hiddenColumns || [] }) }); ok = res.ok; } catch {}
     } else { reportId = await saveReport(target, sessionId) || undefined; ok = !!reportId; }
     if (ok && message.id && reportId) {
       try {
@@ -537,7 +541,8 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
     }
     const table = getReportTable(artifact.topic, artifact.data, artifact.chartType);
     const fileName = `${artifact.title.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
-    const base64 = buildXlsxBase64(table.headers, table.rows);
+    const projected = projectColumns(table.headers, table.rows, artifact.data.hiddenColumns);
+    const base64 = buildXlsxBase64(projected.headers, projected.rows);
     triggerDownload(fileName, base64ToBlob(base64, XLSX_MIME_TYPE));
     // FIX 2026-09-19: this used to only trigger the browser download --
     // the /exports page (and its own empty-state copy: "click Export Excel
@@ -666,7 +671,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
               </div>
 
               {message.workspaceAnswer?.missingScenario && databaseWorkspace && <div className="mx-0 sm:ml-12 sm:mr-12"><MissingScenario id={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} {...message.workspaceAnswer.missingScenario} onRetry={(question)=>{if(!loading)void submitDatabaseQuestion(question);}} /></div>}
-              {message.workspaceAnswer && databaseWorkspace && message.workspaceAnswer.rows.length > 0 ? (
+              {message.workspaceAnswer && databaseWorkspace && (message.workspaceAnswer.rows.length > 0 || !!message.workspaceAnswer.procedure) ? (
                 <div className="mx-0 sm:ml-12 sm:mr-12">
                   <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} />
                 </div>
@@ -688,6 +693,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                       onSave={() => handleSaveReport(index)}
                       onExport={() => handleExportArtifact(index)}
                       onToggleExpand={() => toggleTableExpanded(index)}
+                      onColumnsChange={(hiddenColumns) => updateMessage(index, { artifact: { ...message.artifact!, data: { ...message.artifact!.data, hiddenColumns } }, reportSaveState: 'idle' })}
                       onGraphChange={(spec) => updateMessage(index, { artifact: { ...message.artifact!, chartSpec: { ...message.artifact!.chartSpec, groups: message.artifact!.chartSpec?.groups || [], reportGraph: spec } }, reportSaveState: 'idle' })}
                     />
                 </div>
@@ -708,12 +714,18 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         ) : null}
       </div>
 
-      <form onSubmit={handleSubmit} className="shrink-0 border-t border-zinc-200/80 bg-white/90 p-4">
+      {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={input} sessionId={sessionId} onClose={() => { setProcedurePicker(false); setInput(''); }} onResult={answer => {
+        setMessages(current => [...current, { role: 'user', text: `/${answer.procedure?.name || answer.title}`, createdAt: new Date().toISOString() }, { role: 'assistant', text: answer.narrative, workspaceAnswer: answer, createdAt: new Date().toISOString() }]);
+        setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setInput('');
+        router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${answer.sessionId}`);
+        window.dispatchEvent(new Event('bi:chat-session-created'));
+      }}/>}
+      <form onSubmit={event => { if (databaseWorkspace && input.trimStart().startsWith('/')) { event.preventDefault(); setProcedurePicker(true); return; } handleSubmit(event); }} className="shrink-0 border-t border-zinc-200/80 bg-white/90 p-4">
         <div className="flex items-end gap-3 rounded-lg border border-zinc-200 bg-white p-3 transition-shadow focus-within:border-rose-300 focus-within:ring-2 focus-within:ring-rose-100">
           <textarea
             value={input}
             aria-label="Your question"
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => { setInput(event.target.value); if (databaseWorkspace && event.target.value.trimStart().startsWith('/')) setProcedurePicker(true); }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
@@ -755,6 +767,7 @@ function ReportBlock({
   onExport,
   onToggleExpand,
   onGraphChange,
+  onColumnsChange,
 }: {
   artifact: Artifact;
   user: boolean;
@@ -764,6 +777,7 @@ function ReportBlock({
   onExport: () => void;
   onToggleExpand: () => void;
   onGraphChange: (spec: import('@/lib/dashboard/report-graph').ReportGraphSpec | null) => void;
+  onColumnsChange: (hidden: string[]) => void;
 }) {
   const inlineTable = getReportTable(artifact.topic, artifact.data, artifact.chartType);
 
@@ -792,6 +806,7 @@ function ReportBlock({
 
   return (
     <ReportCard title={artifact.title}>
+      <div className="flex justify-end"><ColumnMenu columns={inlineTable.headers} hidden={artifact.data.hiddenColumns} onChange={onColumnsChange}/></div>
       <div className="flex flex-wrap gap-2">
         {user ? (
           <Button
@@ -888,7 +903,7 @@ function ReportBlock({
           <table className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-zinc-50 text-xs uppercase tracking-wider text-zinc-500">
               <tr>
-                {inlineTable.headers.map((header, i) => (
+                {inlineTable.headers.map((header, i) => artifact.data.hiddenColumns?.includes(header) ? null : (
                   <th key={`${header}-${i}`} className="px-4 py-2.5 font-semibold">{header}</th>
                 ))}
               </tr>
@@ -897,7 +912,7 @@ function ReportBlock({
               {visibleRows.length ? (
                 visibleRows.map((row, i) => (
                   <tr key={i} className="odd:bg-white even:bg-zinc-50/40">
-                    {row.map((cell, j) => (
+                    {row.map((cell, j) => artifact.data.hiddenColumns?.includes(inlineTable.headers[j]) ? null : (
                       <td key={j} className="px-4 py-2.5 text-zinc-700">{cell}</td>
                     ))}
                   </tr>

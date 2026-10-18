@@ -4,6 +4,7 @@
 // request is unbounded) until every row is in the workbook.
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
+import { projectColumns, exportHiddenColumns } from '@/lib/dashboard/column-visibility.mjs';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getAppDb } from '@/lib/db/app-db';
 import { getReportTable } from '@/lib/dashboard/report-table';
@@ -79,7 +80,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ kind
     return NextResponse.json({ error: 'Could not build the export.' }, { status: 500 });
   }
 
-  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const projected = projectColumns(headers, rows, exportHiddenColumns(sp));
+  const worksheet = XLSX.utils.aoa_to_sheet([projected.headers, ...projected.rows]);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
