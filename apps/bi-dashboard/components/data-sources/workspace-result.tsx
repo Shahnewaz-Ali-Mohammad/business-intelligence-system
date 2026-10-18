@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ColumnMenu } from '@/components/dashboard/tables/column-menu';
 import {
   ChevronLeft,
@@ -59,11 +59,14 @@ export function WorkspaceResult({
   initial,
   variant = "chat",
   reportId,
+  onNarrative,
 }: {
   id: string;
   initial: WorkspaceAnswer;
   variant?: "chat" | "report";
   reportId?: number;
+  /** Called with the finished answer text of a background report. */
+  onNarrative?: (text: string) => void;
 }) {
   const isReport = variant === "report";
   const [answer, setAnswer] = useState<WorkspaceAnswer>(() => {
@@ -82,6 +85,9 @@ export function WorkspaceResult({
   // Stored-procedure runs execute in the background and keep every row on
   // the server; this view polls the run and loads one page at a time.
   const runId = answer.procedure?.runId;
+  // Kept in a ref so a new callback from the parent does not refetch the run.
+  const narrativeRef = useRef(onNarrative);
+  useEffect(() => { narrativeRef.current = onNarrative; });
   const [run, setRun] = useState<ProcedureRun | null>(null);
   const [runRows, setRunRows] = useState<Record<string, unknown>[]>([]);
   const running = !!runId && (!run || run.status === 'queued' || run.status === 'running');
@@ -90,17 +96,21 @@ export function WorkspaceResult({
     let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       try {
-        const response = await fetch(`/api/workspaces/${id}/procedures/runs/${runId}?set=${activeResult}&page=${procedurePage}`);
-        const data = await response.json();
+        // Like every chat answer, chat shows the first 200 rows; the saved
+        // report pages through all of them.
+        const pages = isReport ? [procedurePage] : [1, 2];
+        const responses = await Promise.all(pages.map((p) => fetch(`/api/workspaces/${id}/procedures/runs/${runId}?set=${activeResult}&page=${p}`).then(async (r) => ({ ok: r.ok, data: await r.json() }))));
         if (stopped) return;
-        if (!response.ok) { setRun({ status: 'failed', error: data.error || 'Report run unavailable.', resultSets: [] }); return; }
-        setRun(data); setRunRows(data.rows || []);
+        const data = responses[0].data;
+        if (!responses[0].ok) { setRun({ status: 'failed', error: data.error || 'Report run unavailable.', resultSets: [] }); return; }
+        setRun(data); setRunRows(responses.flatMap((r) => r.data.rows || []));
+        if (data.status === 'completed' && data.narrative) narrativeRef.current?.(data.narrative);
         if (data.status === 'queued' || data.status === 'running') timer = setTimeout(load, 2000);
       } catch { if (!stopped) timer = setTimeout(load, 4000); }
     };
     void load();
     return () => { stopped = true; if (timer) clearTimeout(timer); };
-  }, [id, runId, activeResult, procedurePage]);
+  }, [id, runId, activeResult, procedurePage, isReport]);
   const procedureSets = runId ? run?.resultSets?.map((set) => ({ columns: set.columns, rows: [] as Record<string, unknown>[], rowCount: set.rowCount })) : answer.procedure?.resultSets?.map((set) => ({ ...set, rowCount: set.rows.length }));
   const activeSet = procedureSets?.[activeResult];
   const sourceRows = runId ? runRows : activeSet?.rows || answer.rows;
@@ -161,8 +171,11 @@ export function WorkspaceResult({
   }
   async function exportAll() {
     if (runId) {
+      // Same flow as other reports: save first, then export every row.
+      const savedReportId = reportId || saved || await save();
+      if (!savedReportId) return;
       const hidden = { ...hiddenResultColumns, ...(hiddenResultColumns['0'] ? {} : { 0: initial.hiddenColumns || [] }) };
-      window.location.assign(`/api/workspaces/${id}/procedures/runs/${runId}/export?hidden=${encodeURIComponent(JSON.stringify(hidden))}`);
+      window.location.assign(`/api/workspaces/${id}/procedures/runs/${runId}/export?reportId=${savedReportId}&hidden=${encodeURIComponent(JSON.stringify(hidden))}`);
       return;
     }
     // Full export: every matching row, re-queried with the same approved
@@ -279,7 +292,7 @@ export function WorkspaceResult({
         <ColumnMenu columns={keys} hidden={hiddenColumns} onChange={next => { if (answer.procedure) setHiddenResultColumns(previous => ({ ...previous, [activeResult]: next })); else setHiddenColumns(next); setSaved(undefined); }}/>
         {procedureSets && procedureSets.length > 1 && <select aria-label="Report result table" className="h-9 max-w-full rounded-md border bg-white px-2 text-sm" value={activeResult} onChange={event => { setActiveResult(Number(event.target.value)); setProcedurePage(1); setSaved(undefined); }}>{procedureSets.map((set, index) => <option key={index} value={index}>Result {index + 1} · {set.rowCount.toLocaleString()} rows</option>)}</select>}
         {(answer.toolId || answer.procedure) && <Button size="sm" className="gap-2" disabled={busy || !!saved} onClick={save}><Save size={14} />{saved ? 'Saved' : busy ? 'Saving...' : 'Save Report'}</Button>}
-        {answer.procedure && (isReport || runId) && <div className="flex items-center gap-2 text-xs"><button type="button" title="Previous page" disabled={procedurePage <= 1} onClick={() => setProcedurePage(p => p - 1)}><ChevronLeft size={16}/></button>Page {procedurePage} of {pageCount}<button type="button" title="Next page" disabled={procedurePage >= (pageCount || 1)} onClick={() => setProcedurePage(p => p + 1)}><ChevronRight size={16}/></button></div>}
+        {answer.procedure && isReport && <div className="flex items-center gap-2 text-xs"><button type="button" title="Previous page" disabled={procedurePage <= 1} onClick={() => setProcedurePage(p => p - 1)}><ChevronLeft size={16}/></button>Page {procedurePage} of {pageCount}<button type="button" title="Next page" disabled={procedurePage >= (pageCount || 1)} onClick={() => setProcedurePage(p => p + 1)}><ChevronRight size={16}/></button></div>}
         <a href={`/reports?workspace=${encodeURIComponent(id)}${answer.sourceId ? `&source=${encodeURIComponent(answer.sourceId)}` : ''}`} className="inline-flex h-9 items-center justify-center rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50">Saved Reports</a>
         {(keys.length > 0 || answer.procedure) && <Button variant="outline" size="sm" className="gap-2" onClick={exportAll} disabled={busy || running || (!answer.procedure && !visibleKeys.length)}><Download size={14} />Export Excel</Button>}
         {answer.toolId && isReport && (
@@ -327,7 +340,6 @@ export function WorkspaceResult({
       {runId && running && <div role="status" className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700"><span>{run?.progress || 'Starting the report'}…</span><button type="button" onClick={cancelRun} className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs">Cancel</button></div>}
       {runId && run?.status === 'failed' && <p role="alert" className="text-sm text-red-700">{run.error}</p>}
       {runId && run?.status === 'cancelled' && <p role="status" className="text-sm text-zinc-600">{run.error || 'Report cancelled.'}</p>}
-      {isReport && runId && run?.status === 'completed' && run.narrative && <p className="text-sm text-zinc-700">{run.narrative}</p>}
       {answer.procedure && <div className="space-y-2 text-sm"><p className="text-xs text-zinc-500">Return code: {procedureReturn ?? (running ? 'pending' : 'not provided')}</p>{Object.entries(procedureOutput || {}).length > 0 && <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">{Object.entries(procedureOutput || {}).map(([name, value]) => <div key={name} className="min-w-0 border-b py-2"><dt className="break-all font-medium">{name}</dt><dd className="break-words text-zinc-600">{value == null ? 'NULL' : String(value)}</dd></div>)}</dl>}{!!answer.procedure.messages?.length && <details><summary className="cursor-pointer text-xs text-zinc-500">SQL Server messages</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs">{answer.procedure.messages.join('\n')}</pre></details>}</div>}
       {error && (
         <p role="alert" className="text-sm text-red-700">
@@ -395,12 +407,12 @@ export function WorkspaceResult({
           </div>
         </div>
       )}
-      {!isReport && !runId && totalCount !== undefined && totalCount > displayRows.length && (
+      {!isReport && totalCount !== undefined && totalCount > displayRows.length && (
         <p className="text-xs text-zinc-500">
           Showing {displayRows.length.toLocaleString()} of {totalCount.toLocaleString()} rows. Save the report to browse every row, or use Export Excel to download all of them.
         </p>
       )}
-      {(isReport || runId) && totalCount !== undefined && (
+      {isReport && totalCount !== undefined && (
         <p className="text-xs text-zinc-500">
           Rows {(((answer.procedure ? procedurePage : answer.page || 1) - 1) * REPORT_PAGE_SIZE + (displayRows.length ? 1 : 0)).toLocaleString()}–{(((answer.procedure ? procedurePage : answer.page || 1) - 1) * REPORT_PAGE_SIZE + displayRows.length).toLocaleString()} of {totalCount.toLocaleString()}
         </p>

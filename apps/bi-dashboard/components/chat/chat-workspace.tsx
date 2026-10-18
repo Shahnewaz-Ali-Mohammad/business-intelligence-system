@@ -673,7 +673,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
               {message.workspaceAnswer?.missingScenario && databaseWorkspace && <div className="mx-0 sm:ml-12 sm:mr-12"><MissingScenario id={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} {...message.workspaceAnswer.missingScenario} onRetry={(question)=>{if(!loading)void submitDatabaseQuestion(question);}} /></div>}
               {message.workspaceAnswer && databaseWorkspace && (message.workspaceAnswer.rows.length > 0 || !!message.workspaceAnswer.procedure) ? (
                 <div className="mx-0 sm:ml-12 sm:mr-12">
-                  <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} />
+                  <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} onNarrative={(text) => { if (message.text !== text) updateMessage(index, { text }); }} />
                 </div>
               ) : null}
               {message.artifact ? (

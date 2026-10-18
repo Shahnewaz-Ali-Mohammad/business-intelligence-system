@@ -7,7 +7,6 @@ import { Download, FileSpreadsheet, LogIn, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkspacePage } from '@/components/workspace/workspace-page';
 import { useAuth } from '@/components/auth/auth-provider';
-import { XLSX_MIME_TYPE, base64ToBlob, triggerDownload } from '@/lib/download';
 
 type ExportRow = {
   id: number;
@@ -43,11 +42,10 @@ function ExportList() {
   async function handleDownload(item: ExportRow) {
     setDownloadingId(item.id);
     try {
-      const res = await fetch(`/api/exports/${item.id}`);
-      const body: { export: { file_name: string; format: string; file_content: string | null } | null } =
-        await res.json();
-      if (!body.export || !body.export.file_content) return;
-      triggerDownload(body.export.file_name, base64ToBlob(body.export.file_content, body.export.format === 'csv' ? 'text/csv;charset=utf-8' : XLSX_MIME_TYPE));
+      // The server sends the file directly, so exports of any size download.
+      const link = document.createElement('a');
+      link.href = `/api/exports/${item.id}?download=1`;
+      document.body.appendChild(link); link.click(); link.remove();
     } finally {
       setDownloadingId(null);
     }

@@ -2,13 +2,17 @@
 // and query plan behind the report and writes EVERY matching row, not just
 // the rows shown in chat or on the current report page.
 import { NextRequest, NextResponse } from 'next/server';
-import * as XLSX from 'xlsx';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getTool, getSource } from '@/lib/tool-setup/store';
 import { discoverDatabase, streamToolRows } from '@/lib/tool-setup/connectors.mjs';
 import { getAppDb } from '@/lib/db/app-db';
 import { exportHiddenColumns } from '@/lib/dashboard/column-visibility.mjs';
+import { Readable } from 'node:stream';
+import { startWorkbookExport, FILE_MARKER } from '@/lib/exports/streaming-export.mjs';
+
+type SheetWriter = { add: (values: unknown[]) => Promise<void>; close: () => Promise<void> };
+type WorkbookBuilder = { sheet: (name: string, headers: string[]) => SheetWriter };
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -34,28 +38,22 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const source = await getSource(id, tool.source_id);
     const catalog = await discoverDatabase(source.config);
     if (catalog.fingerprint !== tool.catalog_fingerprint) throw new Error('Schema changed.');
-    let headers: string[] = [];
-    const rows: (string | number)[][] = [];
-    await streamToolRows(source.config, tool.definition, catalog, { query }, (batch: Record<string, unknown>[], fields: string[]) => {
-      if (!headers.length) headers = fields.filter(key => !exportHiddenColumns(sp).includes(key));
-      for (const row of batch) {
-        rows.push(headers.map((key) => {
-          const value = row[key];
-          if (value == null) return '';
-          if (typeof value === 'number') return value;
-          if (value instanceof Date) return value.toISOString();
-          return String(value);
-        }));
-      }
-    });
-    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
-    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    // Streams every row straight into the workbook (and the stored copy for
+    // the Exports page); nothing is held in memory, so any size exports.
+    const hidden = exportHiddenColumns(sp);
     const safeName = tool.definition.name.replace(/[^a-z0-9_]+/gi, '-');
     const fileName = `${safeName}-${new Date().toISOString().slice(0, 10)}.xlsx`;
-    await getAppDb().execute('INSERT INTO report_exports (user_id, report_id, file_name, format, file_content) VALUES (?, ?, ?, ?, ?)', [user.id, reportId, fileName, 'xlsx', buffer.toString('base64')]);
-    return new Response(new Uint8Array(buffer), {
+    const { response, done } = startWorkbookExport(async (book: WorkbookBuilder) => {
+      let sheet: SheetWriter | null = null; let headers: string[] = [];
+      await streamToolRows(source.config, tool.definition, catalog, { query }, async (batch: Record<string, unknown>[], fields: string[]) => {
+        if (!sheet) { headers = fields.filter((key) => !hidden.includes(key)); sheet = book.sheet('Report', headers); }
+        for (const row of batch) await sheet.add(headers.map((key) => row[key]));
+      });
+      if (!sheet) sheet = book.sheet('Report', ['No rows']);
+      await sheet.close();
+    });
+    void done.then(({ fileId }) => getAppDb().execute('INSERT INTO report_exports (user_id, report_id, file_name, format, file_content) VALUES (?, ?, ?, ?, ?)', [user.id, reportId, fileName, 'xlsx', FILE_MARKER + fileId])).catch((error) => console.error('[workspace export] failed:', error instanceof Error ? error.message : error));
+    return new Response(Readable.toWeb(response) as ReadableStream, {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'Content-Disposition': `attachment; filename="${fileName}"`,
