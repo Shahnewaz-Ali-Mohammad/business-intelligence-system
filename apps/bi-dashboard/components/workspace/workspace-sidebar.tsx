@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { NotificationBell } from './notification-bell';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -267,6 +268,7 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
           <p className="text-sm font-bold text-zinc-800">Business Intelligence</p>
           <p className="text-xs text-zinc-500">Read-only analytics</p>
         </div>
+        <NotificationBell />
       </div>
 
       <div className="space-y-5 px-3.5 py-5">

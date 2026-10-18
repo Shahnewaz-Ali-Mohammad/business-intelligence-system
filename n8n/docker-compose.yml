@@ -1,0 +1,29 @@
+# n8n (https://n8n.io) runs the schedule for automatic reports. Every few
+# minutes it calls the BI app, which runs any saved report whose scheduled
+# time has arrived. The schedules themselves are set in the BI app (report
+# page → Schedule), so this workflow never needs editing.
+#
+# Start:   cd n8n && docker compose up -d      → open http://localhost:5678
+# Needs:   n8n/.env with BI_AUTOMATION_KEY (same value as AUTOMATION_API_KEY
+#          in apps/bi-dashboard/.env.local). See n8n/README.md.
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"   # only reachable from this machine
+    environment:
+      GENERIC_TIMEZONE: ${TIMEZONE:-Asia/Dhaka}
+      TZ: ${TIMEZONE:-Asia/Dhaka}
+      N8N_SECURE_COOKIE: "false"           # local http://localhost use
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false" # lets the workflow read BI_* below
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      BI_APP_URL: ${BI_APP_URL:-http://host.docker.internal:3000}
+      BI_AUTOMATION_KEY: ${BI_AUTOMATION_KEY:?Set BI_AUTOMATION_KEY in n8n/.env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:

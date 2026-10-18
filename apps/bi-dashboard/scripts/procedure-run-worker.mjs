@@ -7,6 +7,7 @@ import { decryptConnectionString } from '../lib/workspaces/secrets.ts';
 import { streamReportProcedure } from '../lib/tool-setup/sqlserver-procedure-runner.mjs';
 import { readRun, writeRun, openResultWriter, cancelRequested } from '../lib/tool-setup/procedure-run-store.mjs';
 import { writeAnalyticalInsight } from './lib/analytical-insight.mjs';
+import { addNotification } from '../lib/schedules/notifications.mjs';
 
 const [workspaceId, runId] = process.argv.slice(2);
 const db = mysql.createPool({ host: process.env.DB_APP_HOST || 'localhost', port: Number(process.env.DB_APP_PORT || 3306), database: process.env.DB_APP_NAME || 'bi_app', user: process.env.DB_APP_USER || 'bi_app_user', password: process.env.DB_APP_PASSWORD || '', connectionLimit: 2 });
@@ -95,6 +96,12 @@ try {
   if (run.messageId) {
     await db.execute("UPDATE chat_messages SET content=?, report_data=JSON_SET(report_data, '$.workspaceToolAnswer.narrative', ?, '$.workspaceToolAnswer.totalCount', ?) WHERE id=? AND user_id=?", [narrative, narrative, rowCount, run.messageId, run.userId]);
   }
+  // A scheduled run completes its saved report and notifies its owner.
+  if (run.reportId) {
+    await db.execute("UPDATE generated_reports SET narrative=?, data=JSON_SET(data, '$.workspaceToolAnswer.narrative', ?, '$.workspaceToolAnswer.totalCount', ?) WHERE id=? AND user_id=?", [narrative, narrative, rowCount, run.reportId, run.userId]);
+    await addNotification(run.userId, { title: `Scheduled report ready: ${run.reportTitle || title}`, message: countLine, reportId: run.reportId, status: 'success' });
+    if (run.scheduledFrom) await db.execute("UPDATE generated_reports SET data=JSON_SET(data, '$.schedule.lastStatus', 'completed') WHERE id=? AND user_id=? AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.schedule.lastReportId'))=?", [run.scheduledFrom, run.userId, String(run.reportId)]);
+  }
 } catch (error) {
   finished = true; clearInterval(heartbeat); await beat;
   const cancelled = controller.signal.aborted;
@@ -102,6 +109,11 @@ try {
   if (run) {
     await writeRun(workspaceId, { ...run, status: cancelled ? 'cancelled' : 'failed', finishedAt: Date.now(), error: message, progress: cancelled ? 'Cancelled' : 'Failed' }).catch(() => {});
     if (run.messageId) await db.execute("UPDATE chat_messages SET content=?, report_data=JSON_SET(report_data, '$.workspaceToolAnswer.narrative', ?) WHERE id=? AND user_id=?", [message, message, run.messageId, run.userId]).catch(() => {});
+    if (run.reportId) {
+      await db.execute("UPDATE generated_reports SET narrative=?, data=JSON_SET(data, '$.workspaceToolAnswer.narrative', ?) WHERE id=? AND user_id=?", [message, message, run.reportId, run.userId]).catch(() => {});
+      await addNotification(run.userId, { title: `Scheduled report failed: ${run.reportTitle || run.procedure?.name || 'report'}`, message, reportId: run.reportId, status: 'error' }).catch(() => {});
+      if (run.scheduledFrom) await db.execute("UPDATE generated_reports SET data=JSON_SET(data, '$.schedule.lastStatus', 'failed', '$.schedule.lastError', ?) WHERE id=? AND user_id=?", [message.slice(0, 500), run.scheduledFrom, run.userId]).catch(() => {});
+    }
   }
 } finally {
   await db.end();
