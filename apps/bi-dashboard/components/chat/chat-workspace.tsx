@@ -12,7 +12,7 @@ import { projectColumns } from '@/lib/dashboard/column-visibility.mjs';
 import { isListTopic, listExportUrl } from '@/components/dashboard/tables/paginated-list-table';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Check, Database, Download, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User } from 'lucide-react';
+import { Check, Database, Download, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/components/auth/auth-provider';
 import { getReportTable } from '@/lib/dashboard/report-table';
@@ -23,7 +23,6 @@ import { reportGraphSource } from '@/lib/dashboard/report-graph';
 import { ReportGraph } from '@/components/dashboard/charts/report-graph';
 import { runChat, RunFailed, emptyRunView, type RunView } from '@/lib/chat/agui-client';
 import { useSmoothText } from '@/lib/chat/use-smooth-text';
-import { ResultPreview, SavedSteps, StepList, StopButton } from './run-activity';
 import { WorkspaceResult, type WorkspaceAnswer } from '@/components/data-sources/workspace-result';
 
 type Message = {
@@ -202,6 +201,13 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   const showRun = (view: RunView) => { lastRunRef.current = view; setRunView(view); };
   const resetRun = () => showRun(emptyRunView());
   const streamText = useSmoothText(runView.text, loading);
+  // Lets a finished answer finish typing before the final card replaces it.
+  const typedRef = useRef('');
+  useEffect(() => { typedRef.current = streamText; }, [streamText]);
+  const finishTyping = async () => {
+    const until = Date.now() + 2500;
+    while (Date.now() < until && lastRunRef.current.text && typedRef.current.length < lastRunRef.current.text.length) await new Promise((r) => setTimeout(r, 40));
+  };
   const activeStep = [...runView.steps].reverse().find((s) => s.status === 'active')?.name;
   const streamProgress = activeStep || runView.steps.at(-1)?.name || 'Understanding your question';
   const followStreamRef = useRef(true);
@@ -361,6 +367,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         showRun,
         (stop) => { chatAbortRef.current = { abort: stop }; },
       );
+      await finishTyping();
       const completed = answer;
       setMessages((prev) => [...prev, { role: 'assistant', text: completed.narrative, workspaceAnswer: completed, ...(scheduleDraft ? { scheduleDraft } : {}), createdAt: new Date().toISOString() }]);
       // Only the reload right after this answer may use the draft.
@@ -430,6 +437,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         showRun,
         (stop) => { chatAbortRef.current = { abort: stop }; },
       );
+      await finishTyping();
       // A turn can come back with real, freshly-queried breakdown data even
       // when the report gate didn't call this a "create a report" request --
       // e.g. a correction like "i meant X" that answers a question about a
@@ -673,7 +681,6 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                 {formatMessageTime(message.createdAt) ? (
                   <p className="mt-1 ml-1 text-[11px] text-zinc-400">{formatMessageTime(message.createdAt)}</p>
                 ) : null}
-                <SavedSteps steps={message.steps || (message.workspaceAnswer as { steps?: { name: string; ms: number }[] } | undefined)?.steps} />
                 </div>
               </div>
 
@@ -714,17 +721,9 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
               <Sparkles size={16} />
             </div>
             <div className="bi-message min-w-0 flex-1 rounded-lg border border-zinc-200/80 bg-white px-4 py-3 text-sm leading-7 text-zinc-700 sm:mr-12">
-              {streamText ? <p className="whitespace-pre-line break-words">{streamText}<span className="bi-cursor" aria-hidden="true" /></p> : null}
-              {runView.preview ? <ResultPreview preview={runView.preview} /> : null}
-              <div className={streamText || runView.preview ? 'mt-3' : ''}>
-                {runView.steps.length ? <StepList steps={runView.steps} tools={runView.tools} live /> : (
-                  <div className="flex items-center gap-2 text-xs text-zinc-500"><span className="bi-dots" aria-hidden="true"><i /><i /><i /></span>{streamProgress}</div>
-                )}
-              </div>
-              <div className="mt-2 flex items-center gap-3">
-                <StopButton onStop={() => chatAbortRef.current?.abort()} />
-                {slowRequest ? <span className="text-xs text-zinc-400">Still working</span> : null}
-              </div>
+              {streamText
+                ? <p className="whitespace-pre-line break-words">{streamText}<span className="bi-cursor" aria-hidden="true" /></p>
+                : <p className="bi-shimmer">{streamProgress}…</p>}
             </div>
           </div>
         ) : null}
@@ -775,14 +774,26 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
             className="max-h-32 min-h-12 min-w-0 flex-1 resize-none bg-transparent text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-500"
             placeholder={databaseWorkspace ? `Ask about ${databaseWorkspace.name || databaseWorkspace.database}...` : "Ask anything about billing, collections, POPs, or tickets..."}
           />
-          <Button
-            type="submit"
-            disabled={loading || !input.trim() || (!!databaseWorkspace && !user)}
-            className="h-10 shrink-0 gap-2 rounded-md bg-rose-700 px-4 font-semibold text-white shadow-none transition-colors hover:bg-rose-800 disabled:opacity-50"
-          >
-            <Send size={16} />
-            {loading ? 'Working' : 'Ask'}
-          </Button>
+          {loading ? (
+            <Button
+              type="button"
+              onClick={() => chatAbortRef.current?.abort()}
+              aria-label="Stop generating"
+              className="h-10 shrink-0 gap-2 rounded-md bg-zinc-800 px-4 font-semibold text-white shadow-none transition-colors hover:bg-zinc-900"
+            >
+              <Square size={12} className="fill-current" />
+              Stop
+            </Button>
+          ) : (
+            <Button
+              type="submit"
+              disabled={!input.trim() || (!!databaseWorkspace && !user)}
+              className="h-10 shrink-0 gap-2 rounded-md bg-rose-700 px-4 font-semibold text-white shadow-none transition-colors hover:bg-rose-800 disabled:opacity-50"
+            >
+              <Send size={16} />
+              Ask
+            </Button>
+          )}
         </div>
       </form>
     </div>

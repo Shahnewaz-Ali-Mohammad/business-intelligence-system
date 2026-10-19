@@ -49,17 +49,24 @@ export async function writeAnalyticalInsight({ question, summary, warnings = [],
     const messages = [{ role: 'system', content: `${INSIGHT_PROMPT} Equal mean and median alone do NOT establish symmetry, normality or absence of skew; never make that inference. Do not generalize missing-value coverage of summarized fields to all columns. highestGroups and lowestGroups contain at most THREE EXAMPLES, not all tied groups. Use each example's tiedGroupCount for the number of tied groups; never infer that count from the example array length. For a single scalar aggregate, answer directly in one sentence; its mean/median/min/max across one result are not additional insights. If currency context is absent, do not attach any currency name, code or symbol to Amount or other numeric fields. ElapsedHours is not automatically resolution time; do not relabel a metric or invent its meaning. For a ranked report, explicitly distinguish full-population statistics from the limited top-N table.` }, { role: 'user', content: JSON.stringify(payload) }];
     let result;
     if (onText && !invoke) {
-      const stream = streamWriter ? await streamWriter(messages, { signal }) : await new ChatOpenAI({ model: process.env.OPENAI_INSIGHT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0, timeout: 20000, maxRetries: 0 }).withStructuredOutput(z.object({ narrative: z.string() })).stream(messages, { signal });
+      // Structured output only returns the narrative once it is complete, so
+      // the live answer is streamed as plain text, token by token.
+      const stream = streamWriter ? await streamWriter(messages, { signal }) : streamPlainNarrative(messages, signal);
       for await (const partial of stream) {
         result = partial;
         // Validate complete sentences before showing them; never expose raw JSON
         // or a draft that bypasses the existing grounding checks.
+        // Words appear as they are written. Each finished sentence is checked
+        // against the database figures; if one fails, the shown text is cut
+        // back to the last verified sentence and the final check decides.
         const draft = partial.narrative || '';
         const boundary = [...draft.matchAll(/[.!?](?=\s)/g)].at(-1)?.index;
-        if (boundary != null) {
-          const safe = groundedNarrative(draft.slice(0, boundary + 1), summary, currency);
-          if (safe) onText(safe);
-        }
+        const done = boundary == null ? '' : draft.slice(0, boundary + 1);
+        const safe = done ? groundedNarrative(done, summary, currency) : '';
+        if (done && !safe) continue;
+        const tail = draft.slice(done.length).replace(/\S*$/, '');
+        const shown = `${safe || ''}${tail}`.trimEnd();
+        if (shown) onText(shown);
       }
     } else result = await call(messages);
     if (!result?.narrative?.trim()) throw new Error('Empty insight');
@@ -69,5 +76,18 @@ export async function writeAnalyticalInsight({ question, summary, warnings = [],
   } catch {
     if (signal?.aborted) throw signal.reason;
     return `${fallbackInsight(summary)} AI wording is unavailable; these are the verified database statistics.`;
+  }
+}
+
+/** Streams the insight as plain text, yielding the narrative written so far. */
+async function* streamPlainNarrative(messages, signal) {
+  const model = new ChatOpenAI({ model: process.env.OPENAI_INSIGHT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0, timeout: 20000, maxRetries: 0, streaming: true });
+  const plain = [{ ...messages[0], content: `${messages[0].content} Reply with the insight text only: no JSON, no headings, no lists.` }, ...messages.slice(1)];
+  let narrative = '';
+  for await (const chunk of await model.stream(plain, { signal })) {
+    const piece = typeof chunk.content === 'string' ? chunk.content : (chunk.content || []).map((part) => part?.text || '').join('');
+    if (!piece) continue;
+    narrative += piece;
+    yield { narrative };
   }
 }

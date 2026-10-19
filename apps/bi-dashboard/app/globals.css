@@ -142,12 +142,16 @@ input[type='checkbox'], input[type='radio'] {
 .bi-message { animation: bi-enter 180ms ease-out; }
 .bi-cursor { display: inline-block; width: 2px; height: 1em; margin-left: 4px; background: #be123c; vertical-align: -2px; animation: bi-blink 1s ease-in-out infinite; }
 .bi-dots { display: inline-flex; gap: 3px; }
+/* Status line while the answer is being prepared: a light sweep across the text. */
+.bi-shimmer { color: transparent; background: linear-gradient(90deg, #a1a1aa 0%, #a1a1aa 40%, #27272a 50%, #a1a1aa 60%, #a1a1aa 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; animation: bi-shimmer 1.6s linear infinite; }
+@keyframes bi-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 .bi-dots i { width: 4px; height: 4px; border-radius: 50%; background: #be123c; animation: bi-blink 1.2s ease-in-out infinite; }
 .bi-dots i:nth-child(2) { animation-delay: 150ms; }
 .bi-dots i:nth-child(3) { animation-delay: 300ms; }
 @keyframes bi-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes bi-blink { 50% { opacity: 0.25; } }
 @media (prefers-reduced-motion: reduce) {
-  .bi-message, .bi-cursor, .bi-dots i { animation: none; }
+  .bi-message, .bi-cursor, .bi-dots i, .bi-shimmer { animation: none; }
+  .bi-shimmer { color: #71717a; background: none; }
   .bi-chat * { scroll-behavior: auto !important; transition: none !important; }
 }

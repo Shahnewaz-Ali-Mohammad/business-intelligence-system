@@ -57,14 +57,14 @@ test('specific records answer with their actual fields, not single-row averages'
   assert.ok(!/average|median|100%/.test(text));
 });
 
-test('insights publish checked sentences while the model is still generating', async () => {
+test('insights appear word by word while the model is still generating', async () => {
   const received = [];
   const text = await writeAnalyticalInsight({ question: 'Explain', summary, onText: (text) => received.push(text) }, undefined, async function* (messages) {
     assert.deepEqual(JSON.parse(messages[1].content).summary, summary);
     yield { narrative: 'The average is 1,001' };
-    assert.equal(received.length, 0);
+    assert.deepEqual(received, ['The average is']);
     yield { narrative: 'The average is 1,001. The minimum' };
-    assert.deepEqual(received, ['The average is 1,001.']);
+    assert.deepEqual(received.at(-1), 'The average is 1,001. The');
     yield { narrative: 'The average is 1,001. The minimum is 1.' };
   });
   assert.equal(text, 'The average is 1,001. The minimum is 1.');
