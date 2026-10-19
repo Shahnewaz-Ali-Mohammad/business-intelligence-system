@@ -21,7 +21,9 @@ import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
 import type { ChartSpec } from '@/lib/dashboard/chart-spec';
 import { reportGraphSource } from '@/lib/dashboard/report-graph';
 import { ReportGraph } from '@/components/dashboard/charts/report-graph';
-import { readEventStream } from '../../scripts/lib/ag-ui-stream.mjs';
+import { runChat, RunFailed, emptyRunView, type RunView } from '@/lib/chat/agui-client';
+import { useSmoothText } from '@/lib/chat/use-smooth-text';
+import { ResultPreview, SavedSteps, StepList, StopButton } from './run-activity';
 import { WorkspaceResult, type WorkspaceAnswer } from '@/components/data-sources/workspace-result';
 
 type Message = {
@@ -45,6 +47,10 @@ type Message = {
   // DB a moment later, but the chat should show a time immediately, not
   // wait on that round trip).
   createdAt?: string;
+  // Stages this answer went through (name and duration).
+  steps?: { name: string; ms: number }[];
+  // A failed or stopped answer offers to ask the same question again.
+  retry?: string;
 };
 
 type Artifact = {
@@ -189,10 +195,25 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   // a new answer: it is attached to the newest answer when messages load.
   const pendingScheduleRef = useRef<ScheduleDraft | null>(null);
   const [loading, setLoading] = useState(false);
-  const [streamText, setStreamText] = useState('');
-  const [streamProgress, setStreamProgress] = useState('Understanding your question');
+  // The answer being written, as AG-UI events describe it: text, stages,
+  // tool calls and an early preview of the result table.
+  const [runView, setRunView] = useState<RunView>(emptyRunView);
+  const lastRunRef = useRef<RunView>(emptyRunView());
+  const showRun = (view: RunView) => { lastRunRef.current = view; setRunView(view); };
+  const resetRun = () => showRun(emptyRunView());
+  const streamText = useSmoothText(runView.text, loading);
+  const activeStep = [...runView.steps].reverse().find((s) => s.status === 'active')?.name;
+  const streamProgress = activeStep || runView.steps.at(-1)?.name || 'Understanding your question';
   const followStreamRef = useRef(true);
-  const chatAbortRef = useRef<AbortController | null>(null);
+  const chatAbortRef = useRef<{ abort: () => void } | null>(null);
+  const savedSteps = (view: RunView) => view.steps.map((s) => ({ name: s.name, ms: s.ms ?? 0 }));
+  const failureText = (error: unknown, fallback: string) => {
+    if (error instanceof RunFailed && error.code === 'stopped') {
+      const at = [...lastRunRef.current.steps].reverse().find((s) => s.status === 'active')?.name;
+      return `Stopped${at ? ` at: ${at}` : ''}.`;
+    }
+    return error instanceof Error ? error.message : fallback;
+  };
   useEffect(() => () => chatAbortRef.current?.abort(), []);
   // FIX 2026-09-15: the loading bubble below used to say the same fixed
   // sentence no matter how long a turn actually took -- a real compound
@@ -327,29 +348,19 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   async function submitDatabaseQuestion(message: string, scheduleDraft?: ScheduleDraft) {
     pendingScheduleRef.current = scheduleDraft || null;
     if (!databaseWorkspace || !user) return;
-    setInput(''); setLoading(true); setStreamText(''); setStreamProgress('Understanding your question');
+    setInput(''); setLoading(true); resetRun();
     setSlowRequest(false);
     if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current);
     slowRequestTimerRef.current = setTimeout(() => setSlowRequest(true), 8_000);
     followStreamRef.current = true;
     setMessages((prev) => [...prev, { role: 'user', text: message, createdAt: new Date().toISOString() }]);
     try {
-      const response = await fetch(`/api/workspaces/${databaseWorkspace.id}/chat`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        signal: (chatAbortRef.current = new AbortController()).signal,
-        body: JSON.stringify({ message, sourceId: databaseWorkspace.sourceId, sessionId: sessionId || undefined }),
-      });
-      if (!response.ok) { const body = await response.json(); throw new Error(body.error || 'Query failed.'); }
-      let answer: WorkspaceAnswer | undefined, finished = false, draft = '';
-      await readEventStream(response.body, (event: { type: string; name?: string; value?: unknown; delta?: string; message?: string; messages?: { content: string }[] }) => {
-        if (event.type === 'TEXT_MESSAGE_CONTENT') { draft += event.delta || ''; setStreamText(draft); }
-        else if (event.type === 'MESSAGES_SNAPSHOT') { draft = event.messages?.[0]?.content || ''; setStreamText(draft); }
-        else if (event.type === 'CUSTOM' && event.name === 'bi_progress') setStreamProgress(String(event.value));
-        else if (event.type === 'CUSTOM' && event.name === 'bi_result') answer = event.value as WorkspaceAnswer;
-        else if (event.type === 'RUN_FINISHED') finished = true;
-        else if (event.type === 'RUN_ERROR') throw new Error(event.message || 'Query failed.');
-      });
-      if (!finished || !answer) throw new Error('The answer did not finish. Please try again.');
+      const answer = await runChat<WorkspaceAnswer>(
+        `/api/workspaces/${databaseWorkspace.id}/chat`,
+        { message, sourceId: databaseWorkspace.sourceId, sessionId: sessionId || undefined },
+        showRun,
+        (stop) => { chatAbortRef.current = { abort: stop }; },
+      );
       const completed = answer;
       setMessages((prev) => [...prev, { role: 'assistant', text: completed.narrative, workspaceAnswer: completed, ...(scheduleDraft ? { scheduleDraft } : {}), createdAt: new Date().toISOString() }]);
       // Only the reload right after this answer may use the draft.
@@ -360,8 +371,9 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         window.dispatchEvent(new Event('bi:chat-session-created'));
       }
     } catch (error) {
-      setMessages((prev) => [...prev, { role: 'assistant', text: error instanceof Error ? error.message : 'Could not complete this query.' }]);
-    } finally { setLoading(false); setStreamText(''); chatAbortRef.current = null; if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current); }
+      const partial = lastRunRef.current.text;
+      setMessages((prev) => [...prev, { role: 'assistant', text: [partial, failureText(error, 'Could not complete this query.')].filter(Boolean).join('\n\n'), steps: savedSteps(lastRunRef.current), retry: message, createdAt: new Date().toISOString() }]);
+    } finally { setLoading(false); resetRun(); chatAbortRef.current = null; if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current); }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -372,8 +384,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
 
     setInput('');
     setLoading(true);
-    setStreamText('');
-    setStreamProgress('Understanding your question');
+    resetRun();
     followStreamRef.current = true;
     setSlowRequest(false);
     if (slowRequestTimerRef.current) clearTimeout(slowRequestTimerRef.current);
@@ -401,55 +412,24 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
       // Goes through this app's own /api/chat route, not the internal
       // backend directly -- that route enforces sign-in and rate limiting
       // before it ever reaches the backend. See app/api/chat/route.ts.
-      const response = await fetch(
+      const result = await runChat<ChatResponse>(
         '/api/chat',
         {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-          signal: (chatAbortRef.current = new AbortController()).signal,
-          body: JSON.stringify({
-            message,
-            sessionId: activeSessionId,
-            history: messages.slice(-12).map((m) => ({ role: m.role, content: m.text })),
-            page_state: {
-              page: 'chat',
-              days: lastArtifact?.days ?? 30,
-              region: lastArtifact?.region ?? null,
-              kpis: activeData?.kpis?.map((kpi) => kpi.label) ?? [],
-              chartSources: activeData?.chartSources ?? null,
-              semanticQuery: activeData?.semanticQuery ?? activeData?.chartQuery ?? null,
-            },
-          }),
+          message,
+          sessionId: activeSessionId,
+          history: messages.slice(-12).map((m) => ({ role: m.role, content: m.text })),
+          page_state: {
+            page: 'chat',
+            days: lastArtifact?.days ?? 30,
+            region: lastArtifact?.region ?? null,
+            kpis: activeData?.kpis?.map((kpi) => kpi.label) ?? [],
+            chartSources: activeData?.chartSources ?? null,
+            semanticQuery: activeData?.semanticQuery ?? activeData?.chartQuery ?? null,
+          },
         },
+        showRun,
+        (stop) => { chatAbortRef.current = { abort: stop }; },
       );
-
-      if (!response.ok) {
-        const body = await response.text();
-        // The API returns { error: "..." } as JSON -- surface that message
-        // directly instead of the raw JSON blob when we can parse it.
-        let message = body || 'Chat request failed';
-        try {
-          const parsed = JSON.parse(body) as { error?: string };
-          if (parsed.error) message = parsed.error;
-        } catch {
-          // body wasn't JSON -- fall back to the raw text above.
-        }
-        throw new Error(message);
-      }
-
-      let result: ChatResponse | undefined;
-      if (response.headers.get('content-type')?.includes('text/event-stream') && response.body) {
-        let draft = '', finished = false;
-        await readEventStream(response.body, (event: { type: string; name?: string; value?: unknown; delta?: string; message?: string; messages?: { content: string }[] }) => {
-          if (event.type === 'TEXT_MESSAGE_CONTENT') { draft += event.delta || ''; setStreamText(draft); }
-          else if (event.type === 'MESSAGES_SNAPSHOT') { draft = event.messages?.[0]?.content || ''; setStreamText(draft); }
-          else if (event.type === 'CUSTOM' && event.name === 'bi_progress') setStreamProgress(String(event.value));
-          else if (event.type === 'CUSTOM' && event.name === 'bi_result') result = event.value as ChatResponse;
-          else if (event.type === 'RUN_FINISHED') finished = true;
-          else if (event.type === 'RUN_ERROR') throw new Error(event.message || 'The answer could not be completed.');
-        });
-        if (!finished || !result) throw new Error('The connection ended before the answer was complete. Please try again.');
-      } else result = (await response.json()) as ChatResponse;
       // A turn can come back with real, freshly-queried breakdown data even
       // when the report gate didn't call this a "create a report" request --
       // e.g. a correction like "i meant X" that answers a question about a
@@ -485,6 +465,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
           artifact: newArtifact,
           reportSaveState: newArtifact ? 'idle' : undefined,
           tableExpanded: false,
+          steps: savedSteps(lastRunRef.current),
           createdAt: new Date().toISOString(),
         },
       ]);
@@ -497,18 +478,21 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         window.dispatchEvent(new Event('bi:chat-session-created'));
       }
     } catch (error) {
-      const errorText =
-        error instanceof Error
+      const stopped = error instanceof RunFailed && error.code === 'stopped';
+      const errorText = stopped
+        ? failureText(error, '')
+        : error instanceof Error
           ? `I could not complete that request: ${error.message}`
           : 'I could not complete that request.';
-      setMessages((prev) => [...prev, { role: 'assistant', text: errorText, createdAt: new Date().toISOString() }]);
+      const partial = lastRunRef.current.text;
+      setMessages((prev) => [...prev, { role: 'assistant', text: [partial, errorText].filter(Boolean).join('\n\n'), steps: savedSteps(lastRunRef.current), retry: message, createdAt: new Date().toISOString() }]);
     } finally {
       if (slowRequestTimerRef.current) {
         clearTimeout(slowRequestTimerRef.current);
         slowRequestTimerRef.current = null;
       }
       setLoading(false);
-      setStreamText('');
+      resetRun();
       chatAbortRef.current = null;
       setSlowRequest(false);
     }
@@ -664,6 +648,11 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                 <div className="min-w-0 flex-1 sm:mr-12">
                 <div className="bi-message min-w-0 max-w-full rounded-lg border border-zinc-200/80 bg-white px-4 py-3 text-sm leading-7 text-zinc-700">
                   <p className="whitespace-pre-line break-words">{message.text}</p>
+                  {message.retry && !loading ? (
+                    <button type="button" className="mt-2 rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50" onClick={() => { const question = message.retry!; if (databaseWorkspace) void submitDatabaseQuestion(question); else { setInput(question); } }}>
+                      Try again
+                    </button>
+                  ) : null}
                   {Array.isArray(message.tablesUsed) && message.tablesUsed.length > 0 ? (
                     <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-zinc-100 pt-2">
                       <Database size={12} className="text-zinc-400" />
@@ -684,6 +673,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                 {formatMessageTime(message.createdAt) ? (
                   <p className="mt-1 ml-1 text-[11px] text-zinc-400">{formatMessageTime(message.createdAt)}</p>
                 ) : null}
+                <SavedSteps steps={message.steps || (message.workspaceAnswer as { steps?: { name: string; ms: number }[] } | undefined)?.steps} />
                 </div>
               </div>
 
@@ -725,7 +715,16 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
             </div>
             <div className="bi-message min-w-0 flex-1 rounded-lg border border-zinc-200/80 bg-white px-4 py-3 text-sm leading-7 text-zinc-700 sm:mr-12">
               {streamText ? <p className="whitespace-pre-line break-words">{streamText}<span className="bi-cursor" aria-hidden="true" /></p> : null}
-              <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500"><span className="bi-dots" aria-hidden="true"><i /><i /><i /></span>{streamText ? 'Composing insight' : slowRequest ? `${streamProgress} - still working` : streamProgress}</div>
+              {runView.preview ? <ResultPreview preview={runView.preview} /> : null}
+              <div className={streamText || runView.preview ? 'mt-3' : ''}>
+                {runView.steps.length ? <StepList steps={runView.steps} tools={runView.tools} live /> : (
+                  <div className="flex items-center gap-2 text-xs text-zinc-500"><span className="bi-dots" aria-hidden="true"><i /><i /><i /></span>{streamProgress}</div>
+                )}
+              </div>
+              <div className="mt-2 flex items-center gap-3">
+                <StopButton onStop={() => chatAbortRef.current?.abort()} />
+                {slowRequest ? <span className="text-xs text-zinc-400">Still working</span> : null}
+              </div>
             </div>
           </div>
         ) : null}

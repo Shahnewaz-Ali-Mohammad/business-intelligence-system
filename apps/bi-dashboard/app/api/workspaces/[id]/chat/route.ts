@@ -30,6 +30,7 @@ import { getAppDb } from "@/lib/db/app-db";
 import {
   createRunEvents,
   eventFrame,
+  errorCode,
 } from "../../../../../scripts/lib/ag-ui-stream.mjs";
 
 export const runtime = "nodejs";
@@ -159,6 +160,8 @@ export async function POST(
   );
   const tools = candidateTools(input.message, approvedTools);
   let lastFailureReason = '';
+  // Stages of this answer (name and duration), saved with the message.
+  let runSteps: () => { name: string; ms: number }[] = () => [];
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(150000)]);
   async function saveAnswer(answer: {
     narrative: string;
@@ -175,7 +178,7 @@ export async function POST(
         );
         sessionId = (insert as { insertId: number }).insertId;
       }
-      const savedAnswer = { ...answer, sourceId: input.sourceId, sessionId };
+      const savedAnswer = { ...answer, sourceId: input.sourceId, sessionId, steps: runSteps() };
       await db.execute(
         "INSERT INTO chat_messages(user_id,session_id,role,content,report_data) VALUES(?,?,?,?,?),(?,?,?,?,?)",
         [
@@ -214,6 +217,7 @@ export async function POST(
           messageId: crypto.randomUUID(),
         },
       );
+      runSteps = () => run.steps();
       try {
         // 2026-10-13: same LangGraph pipeline as the original chat
         // (scripts/chat/agent.mjs -> getBiGraph: draft -> critique -> retry).
@@ -263,7 +267,14 @@ export async function POST(
         const completedExecutions: {toolId: string; query: string}[] = [];
         let executionFailed=false;
         let executionFailureReason='';
+        const tableName = (base: string) => catalog.objects.find((object: { id: string; name?: string }) => object.id === base)?.name || base;
         const server = createToolServer(tools, async (chosen: { id: string }, args: Record<string, unknown>) => {
+          const picked = tools.find((t) => t.id === chosen.id);
+          const call = run.toolStart({
+            name: picked?.definition.name || 'query',
+            label: picked ? `Querying ${tableName(picked.definition.base)}${picked.definition.mode === 'aggregate' ? ' (summary)' : ''}` : 'Querying the database',
+            args,
+          });
           try {
           let latest = await approvedNow(chosen.id);
           if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
@@ -313,6 +324,7 @@ export async function POST(
             ? await executeTool(source.config, latest.definition, catalog, parameters, 50)
             : null;
           completedExecutions.push({toolId: latest.id, query: parameters.query});
+          run.toolEnd(call, { rows: summary ? population : preview?.rows.length });
           return {
             tool: latest.definition.name,
             mode: latest.definition.mode,
@@ -324,6 +336,7 @@ export async function POST(
           };
           } catch (error) {
             devLog('tool-error', {args, error: error instanceof Error ? error.message : String(error)});
+            run.toolEnd(call, { ok: false, note: 'This attempt could not run; trying another way' });
             executionFailed = true;
             const reason = error instanceof Error ? error.message : '';
             if (/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason)) { executionFailureReason = reason; lastFailureReason = reason; }
@@ -406,13 +419,24 @@ export async function POST(
         // database statistics over the FULL result (writeAnalyticalInsight),
         // never replaced by a fixed placeholder sentence.
         const countLine = current.definition.mode === 'rows' ? recordNarrative(result, summary, query) : '';
+        // The table is ready before the insight is written: show it now.
+        run.state({
+          preview: {
+            title: catalog.objects.find((object: { id: string }) => object.id === current.definition.base)?.name || 'Results',
+            mode: current.definition.mode,
+            totalCount: summary ? Number(summary.population) || result.rows.length : result.rows.length,
+            rows: result.rows.slice(0, 8),
+          },
+        });
         const matched = current.definition.mode === 'rows' ? Number(summary?.population ?? result.rows.length) : summary?.matchedRecords;
         if (matched === 0) {
           narrativeText = 'No records match the requested filters.';
         } else if (summary?.matchedRecords && summary.numeric.length && summary.numeric.every((n:{statistics:{present:unknown}})=>Number(n.statistics.present)===0)) {
           narrativeText=`${summary.matchedRecords.toLocaleString()} matching records were found, but the requested amount values are missing. A total cannot be calculated from those values.`;
         } else {
-          run.progress('Preparing insights');
+          run.progress('Writing the insight');
+          // The count line goes first so the insight only ever adds to it.
+          if (countLine) run.text(countLine);
           const records = result.rows.length && result.rows.length <= 5 && !result.hasMore ? result.rows : undefined;
           let insight = '';
           try {
@@ -446,7 +470,8 @@ export async function POST(
         console.error('[workspace chat] query failed:', error instanceof Error ? error.message : error);
         devLog('failed', error instanceof Error ? error.stack || error.message : String(error));
         run.error(
-          error instanceof Error&&/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship)/.test(error.message)?error.message:lastFailureReason?`I could not build a valid query for this with the approved tools. ${lastFailureReason} Try rephrasing with the table or column you mean.`:'Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.',
+          signal.aborted ? 'The request took too long. Please try again.' : error instanceof Error&&/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship)/.test(error.message)?error.message:lastFailureReason?`I could not build a valid query for this with the approved tools. ${lastFailureReason} Try rephrasing with the table or column you mean.`:'Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.',
+          errorCode(error, signal),
         );
       } finally {
         out.close();

@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
     const stream = new ReadableStream({
       async start(output) {
         let closed = false;
-        const emit = (event: Record<string, unknown>) => { if (!closed && !signal.aborted) output.enqueue(encoder.encode(eventFrame(event))); };
+        const emit = (event: Record<string, unknown>) => { if (!closed && !(signal.aborted && event.type !== 'RUN_ERROR')) { try { output.enqueue(encoder.encode(eventFrame(event))); } catch {} } };
         const run = createRunEvents(emit, { threadId: String(payload.sessionId || 'chat'), runId: crypto.randomUUID(), messageId: crypto.randomUUID() });
         const heartbeat = setInterval(() => { if (!closed && !signal.aborted) output.enqueue(encoder.encode(': heartbeat\n\n')); }, 10000);
         try {
@@ -114,11 +114,16 @@ export async function POST(req: NextRequest) {
             if (!upstream.ok) throw new Error('Chat backend unavailable');
             if (upstream.headers.get('content-type')?.includes('text/event-stream') && upstream.body) {
               let finished = false;
-              await readEventStream(upstream.body, (event: { type: string; name?: string; value?: unknown; delta?: string; messages?: { content: string }[] }) => {
-                if (event.type === 'CUSTOM' && event.name === 'bi_progress') run.progress(event.value);
+              // Relays the chat backend's AG-UI run. Older backends still send
+              // bi_progress / bi_result custom events; both forms are accepted.
+              await readEventStream(upstream.body, (event: { type: string; name?: string; value?: unknown; delta?: string; stepName?: string; snapshot?: unknown; result?: unknown; messages?: { content: string }[] }) => {
+                if (event.type === 'STEP_STARTED') run.step(event.stepName);
+                else if (event.type === 'CUSTOM' && event.name === 'bi_progress') run.step(event.value);
                 else if (event.type === 'TEXT_MESSAGE_CONTENT') { currentText += event.delta || ''; run.text(currentText); }
                 else if (event.type === 'MESSAGES_SNAPSHOT') { currentText = event.messages?.[0]?.content || ''; run.text(currentText); }
+                else if (event.type === 'STATE_SNAPSHOT') run.state(event.snapshot);
                 else if (event.type === 'CUSTOM' && event.name === 'bi_result') { run.finish(event.value); finished = true; }
+                else if (event.type === 'RUN_FINISHED' && event.result) { run.finish(event.result); finished = true; }
                 else if (event.type === 'RUN_ERROR') throw new Error('Upstream run failed');
               });
               if (!finished) throw new Error('Incomplete answer stream');
@@ -129,7 +134,7 @@ export async function POST(req: NextRequest) {
           }
         } catch {
           if (!signal.aborted) run.error('Could not complete this answer. Please try again.');
-          else if (!req.signal.aborted && !controller.signal.aborted) output.enqueue(encoder.encode(eventFrame({ type: 'RUN_ERROR', message: 'The request took too long. Please try again.' })));
+          else if (!req.signal.aborted && !controller.signal.aborted) run.error('The request took too long. Please try again.', 'timeout');
         } finally { closed = true; clearInterval(heartbeat); try { output.close(); } catch {} }
       },
       cancel() { controller.abort(); },
