@@ -212,6 +212,7 @@ export async function POST(
       const config = await getServer(workspaceId, body.serverId);
       const setup=await listSetup(workspaceId);
       const database=body.database || setup.sources.find((source)=>source.serverId===body.serverId)?.database || config.database;
+      if (!database) return NextResponse.json({ error: "Choose a database on this server." }, { status: 400 });
       stage = "discovery";
       const catalog = await discoverDatabase({...config,database});
       stage = "storage";

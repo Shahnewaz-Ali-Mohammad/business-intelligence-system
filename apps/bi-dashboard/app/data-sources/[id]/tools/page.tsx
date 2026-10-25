@@ -96,6 +96,10 @@ export default function ToolSetupPage({
   });
   const [name, setName] = useState("");
   const [serverId, setServerId] = useState("");
+  // Databases the saved login can open on the chosen server.
+  const [databases, setDatabases] = useState<string[]>([]);
+  const [databaseChoice, setDatabaseChoice] = useState("");
+  const [databasesState, setDatabasesState] = useState<"idle" | "loading" | "error">("idle");
   const [sourceId, setSourceId] = useState("");
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -126,6 +130,19 @@ export default function ToolSetupPage({
   const source = setup.sources.find((s) => s.id === sourceId);
   const tools = setup.tools.filter((t) => t.sourceId === sourceId);
   const endpoint = `/api/workspaces/${id}/tool-setup`;
+  // Selects a saved server and lists the databases its login can open.
+  const databasesRequest = useRef(0);
+  function chooseServer(next: string) {
+    setServerId(next);
+    setDatabases([]); setDatabaseChoice("");
+    const request = ++databasesRequest.current;
+    if (!next) { setDatabasesState("idle"); return; }
+    setDatabasesState("loading");
+    fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "databases", serverId: next }) })
+      .then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error); return data.databases as string[]; })
+      .then((list) => { if (request !== databasesRequest.current) return; setDatabases(list); setDatabaseChoice(list.length === 1 ? list[0] : ""); setDatabasesState("idle"); })
+      .catch(() => { if (request === databasesRequest.current) setDatabasesState("error"); });
+  }
   const reload = useCallback(async () => {
     const response = await fetch(`/api/workspaces/${id}/tool-setup`);
     const body = await response.json();
@@ -341,7 +358,7 @@ export default function ToolSetupPage({
                 type="button"
                 disabled={!reuseId || !!busy || !available}
                 className={primaryClass}
-                onClick={() => action({ action: "reuseConnection", serverId: reuseId }, (data) => { setServerId(String(data.serverId)); setReuseId(""); setNotice("Connection verified and saved."); })}
+                onClick={() => action({ action: "reuseConnection", serverId: reuseId }, (data) => { chooseServer(String(data.serverId)); setReuseId(""); setNotice("Connection verified and saved."); })}
               >
                 <Plug size={16} />
                 {busy === "reuseConnection" ? "Connecting..." : "Use connection"}
@@ -355,7 +372,7 @@ export default function ToolSetupPage({
               action(
                 { action: "connect", name: name || config.host, config },
                 (data) => {
-                  setServerId(String(data.serverId));
+                  chooseServer(String(data.serverId));
 
                   setConfig((c) => ({ ...c, password: "" }));
                   setNotice(
@@ -449,17 +466,6 @@ export default function ToolSetupPage({
                 className={inputClass}
               />
             </label>
-            <label className="space-y-1 text-sm">
-              Database
-              <input
-                required
-                value={config.database}
-                onChange={(e) =>
-                  setConfig((c) => ({ ...c, database: e.target.value }))
-                }
-                className={inputClass}
-              />
-            </label>
             <div className="flex flex-col justify-end gap-2">
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -507,7 +513,7 @@ export default function ToolSetupPage({
                 className={inputClass}
                 value={serverId}
                 onChange={(e) => {
-                  setServerId(e.target.value);
+                  chooseServer(e.target.value);
 
 
                 }}
@@ -520,11 +526,25 @@ export default function ToolSetupPage({
                 ))}
               </select>
             </label>
+            <label className="flex min-w-48 flex-1 flex-col gap-1 text-sm">
+              <span>Database</span>
+              <select
+                className={inputClass}
+                value={databaseChoice}
+                disabled={!serverId || databasesState === "loading"}
+                onChange={(e) => setDatabaseChoice(e.target.value)}
+              >
+                <option value="">
+                  {!serverId ? "Select a server first" : databasesState === "loading" ? "Loading databases..." : databasesState === "error" ? "Could not list databases" : databases.length ? "Select database" : "This login cannot open any database"}
+                </option>
+                {databases.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </label>
             <button
-              disabled={!serverId || !!busy}
+              disabled={!serverId || !databaseChoice || !!busy}
               className={`${primaryClass} h-10`}
               onClick={() =>
-                action({ action: "discover", serverId }, (data) => {
+                action({ action: "discover", serverId, database: databaseChoice }, (data) => {
                   chooseSource(String(data.sourceId));
                   setNotice("Database objects discovered.");
                 })

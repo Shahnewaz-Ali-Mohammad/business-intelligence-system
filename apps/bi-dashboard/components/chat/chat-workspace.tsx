@@ -3,6 +3,7 @@ import {MissingScenario} from '@/components/data-sources/missing-scenario';
 import { ProcedurePicker } from '@/components/data-sources/procedure-picker';
 import { SchedulesPanel } from '@/components/data-sources/schedules-panel';
 import type { ScheduleDraft } from '@/components/data-sources/schedule-form';
+import { IspSchedule, type IspScheduleRequest } from './isp-schedule';
 import { parseScheduleText } from '@/lib/schedules/schedule-intent.mjs';
 
 import Link from 'next/link';
@@ -50,6 +51,8 @@ type Message = {
   steps?: { name: string; ms: number }[];
   // A failed or stopped answer offers to ask the same question again.
   retry?: string;
+  // "/schedule" in the original chat: the schedule form for this answer.
+  ispSchedule?: IspScheduleRequest;
 };
 
 type Artifact = {
@@ -63,6 +66,8 @@ type Artifact = {
   region: string | null;
   tablesUsed: string[];
   chartSpec?: ChartSpec;
+  // The question that produced this report, so a saved copy can be re-asked on a schedule.
+  question?: string;
 };
 
 const WELCOME_MESSAGE: Message = {
@@ -136,7 +141,7 @@ async function saveReport(
         chartType: 'none',
         filters: { days: artifact.days, region: artifact.region },
         tablesUsed: artifact.tablesUsed,
-        data: artifact.data,
+        data: artifact.question ? { ...artifact.data, ispQuestion: { question: artifact.question, days: artifact.days, region: artifact.region } } : artifact.data,
         chartSpec: artifact.chartSpec || null,
         sourceSessionId,
       }),
@@ -338,6 +343,10 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   useEffect(() => {
     const grew = messages.length > prevMessageCountRef.current;
     prevMessageCountRef.current = messages.length;
+    if (grew && messages.at(-1)?.role === 'assistant') {
+      scrollRef.current?.querySelector<HTMLElement>(`[data-assistant-turn="${messages.length - 1}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return;
+    }
     if (!grew && (!loading || !followStreamRef.current)) return;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: loading ? 'auto' : 'smooth' });
   }, [messages, loading, streamText]);
@@ -388,6 +397,10 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
     const message = input.trim();
     if (!message || loading) return;
     if (databaseWorkspace) { await submitDatabaseQuestion(message); return; }
+    await submitIspQuestion(message);
+  }
+
+  async function submitIspQuestion(message: string, scheduleDraft?: ScheduleDraft) {
 
     setInput('');
     setLoading(true);
@@ -459,6 +472,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
               days: result.filters.days,
               region: result.filters.region,
               tablesUsed: result.tablesUsed,
+              question: message,
             }
           : undefined;
       const completed = result;
@@ -474,6 +488,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
           reportSaveState: newArtifact ? 'idle' : undefined,
           tableExpanded: false,
           steps: savedSteps(lastRunRef.current),
+          ...(scheduleDraft ? { ispSchedule: { question: message, draft: scheduleDraft, answer: { title: completed.title, narrative: completed.narrative, topic: completed.topic, filters: completed.filters, tablesUsed: completed.tablesUsed, data: completed.data as Record<string, unknown> | null }, sessionId: activeSessionId } } : {}),
           createdAt: new Date().toISOString(),
         },
       ]);
@@ -643,7 +658,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
               ) : null}
             </div>
           ) : (
-            <div key={`${message.role}-${index}`} className="space-y-3">
+            <div key={`${message.role}-${index}`} data-assistant-turn={index} className="space-y-3">
               {/* mr-12 (48px) is the exact same fixed right margin the
                   report card below uses -- a percentage cap still let a
                   long reply crowd the edge, so both now stop the same
@@ -690,6 +705,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                   <WorkspaceResult id={databaseWorkspace.id} initial={message.workspaceAnswer} scheduleDraft={message.scheduleDraft} onNarrative={(text) => { if (message.text !== text) updateMessage(index, { text }); }} />
                 </div>
               ) : null}
+              {message.ispSchedule ? <div className="mx-0 sm:ml-12 sm:mr-12"><IspSchedule request={message.ispSchedule} /></div> : null}
               {message.artifact ? (
                 // Same left inset as the bubble above (avatar width + the
                 // row's own gap-3 -- h-9 avatar is 36px, gap-3 is 12px,
@@ -736,17 +752,33 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${answer.sessionId}`);
         window.dispatchEvent(new Event('bi:chat-session-created'));
       }}/>}
-      {databaseWorkspace && schedulesPanel && <SchedulesPanel workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} onClose={() => setSchedulesPanel(false)} />}
-      {databaseWorkspace && input.trimStart().startsWith('/') && !procedurePicker && (
+      {schedulesPanel && <SchedulesPanel workspaceId={databaseWorkspace?.id ?? 'isp-default'} sourceId={databaseWorkspace?.sourceId ?? ''} onClose={() => setSchedulesPanel(false)} />}
+      {input.trimStart().startsWith('/') && !procedurePicker && (
         <div className="mx-3 mb-2 flex flex-wrap gap-2 text-xs text-zinc-600">
-          <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/run</b> run a stored procedure</span>
+          {databaseWorkspace ? <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/run</b> run a stored procedure</span> : null}
           <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedule</b> question + when, e.g. “/schedule customers per package every Monday 9am for last week”</span>
           <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedules</b> see and manage schedules</span>
         </div>
       )}
       <form onSubmit={event => {
         const command = input.trim();
-        if (databaseWorkspace && /^\/schedules\b/i.test(command)) { event.preventDefault(); setSchedulesPanel(true); setInput(''); return; }
+        // Slash commands work the same in every chat; /run only where stored procedures exist.
+        if (/^\/schedules\b/i.test(command)) { event.preventDefault(); setSchedulesPanel(true); setInput(''); return; }
+        if (!databaseWorkspace && /^\/schedule\b/i.test(command)) {
+          event.preventDefault();
+          const parsed = parseScheduleText(command);
+          const draft: ScheduleDraft = { ...parsed.schedule, dateRange: parsed.dateRange as string | null };
+          if (parsed.question) { if (!loading) void submitIspQuestion(parsed.question, draft); }
+          else setMessages((prev) => [...prev, { role: 'assistant', text: 'Add the question to schedule, for example: /schedule total collections every Monday 9am for last week', createdAt: new Date().toISOString() }]);
+          setInput('');
+          return;
+        }
+        if (!databaseWorkspace && /^\/\S/.test(command) && !/^\/schedules?\b/i.test(command)) {
+          event.preventDefault();
+          setMessages((prev) => [...prev, { role: 'assistant', text: 'Commands in this chat: /schedule <question> <when>, /schedules.', createdAt: new Date().toISOString() }]);
+          setInput('');
+          return;
+        }
         if (databaseWorkspace && /^\/schedule\b/i.test(command)) {
           event.preventDefault();
           // "/schedule <question> <when>": answer the question now (the preview),

@@ -14,7 +14,8 @@ export const ConnectionSchema = z
     port: z.number().int().min(1).max(65535),
     username: z.string().min(1).max(200),
     password: z.string().max(1000),
-    database: z.string().min(1).max(128),
+    // Optional: the server is saved once; databases are chosen afterwards.
+    database: z.string().max(128).default(''),
     tls: z.boolean().default(true),
     trustServerCertificate: z.boolean().default(false),
   })

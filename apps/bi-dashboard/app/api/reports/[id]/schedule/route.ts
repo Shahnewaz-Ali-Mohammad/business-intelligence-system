@@ -7,7 +7,7 @@ import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
 export const runtime = 'nodejs';
 
 async function ownedReport(id: string, userId: number) {
-  const [rows] = await getAppDb().execute("SELECT id, JSON_EXTRACT(data, '$.schedule') AS schedule, JSON_EXTRACT(data, '$.workspaceToolAnswer.workspaceId') AS workspaceId, JSON_EXTRACT(data, '$.scheduledFrom') AS scheduledFrom FROM generated_reports WHERE id=? AND user_id=?", [id, userId]);
+  const [rows] = await getAppDb().execute("SELECT id, JSON_EXTRACT(data, '$.schedule') AS schedule, COALESCE(JSON_EXTRACT(data, '$.workspaceToolAnswer.workspaceId'), IF(JSON_EXTRACT(data, '$.ispQuestion.question') IS NULL, NULL, 'isp-default')) AS workspaceId, JSON_EXTRACT(data, '$.scheduledFrom') AS scheduledFrom FROM generated_reports WHERE id=? AND user_id=?", [id, userId]);
   return (rows as { id: number; schedule: unknown; workspaceId: unknown; scheduledFrom: unknown }[])[0] || null;
 }
 const parse = (value: unknown) => (typeof value === 'string' ? JSON.parse(value) : value);
@@ -29,7 +29,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const report = await ownedReport(id, user.id);
   if (!report) return NextResponse.json({ error: 'Report not found.' }, { status: 404 });
-  if (!report.workspaceId || report.scheduledFrom) return NextResponse.json({ error: 'Only saved database workspace reports can be scheduled.' }, { status: 400 });
+  if (!report.workspaceId || report.scheduledFrom) return NextResponse.json({ error: 'This report has no saved question or query to run again.' }, { status: 400 });
   try {
     const body = await req.json();
     const previous = parse(report.schedule) || {};

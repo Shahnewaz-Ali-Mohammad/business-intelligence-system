@@ -9,7 +9,7 @@ import {
   isProtectedColumn,
   quote,
 } from "./model.mjs";
-import { summaryQuery, isSummaryMeasure, groupingCoverageQuery } from "./result-summary.mjs";
+import { summaryQuery, isSummaryMeasure, groupingCoverageQuery, detailMedianMeasures } from "./result-summary.mjs";
 
 // Credential-like columns are never returned in results or exports, even
 // when an approved tool selects them (e.g. router passwords such as MKPass).
@@ -49,7 +49,7 @@ export async function withDatabase(input, fn, { requestTimeout = 30000 } = {}) {
       port: c.port,
       user: c.username,
       password: c.password,
-      database: c.database,
+      database: c.database || 'postgres',
       ssl: c.tls ? { rejectUnauthorized: true } : false,
       connectionTimeoutMillis: 10000,
       statement_timeout: 30000,
@@ -72,7 +72,7 @@ export async function withDatabase(input, fn, { requestTimeout = 30000 } = {}) {
       port: c.port,
       user: c.username,
       password: c.password,
-      database: c.database,
+      database: c.database || undefined,
       ssl: c.tls ? { rejectUnauthorized: true } : undefined,
       connectTimeout: 10000,
       multipleStatements: false,
@@ -101,7 +101,7 @@ export async function withDatabase(input, fn, { requestTimeout = 30000 } = {}) {
     port: c.port,
     user: c.username,
     password: c.password,
-    database: c.database,
+    database: c.database || undefined,
     options: {
       encrypt: c.tls,
       trustServerCertificate: c.trustServerCertificate,
@@ -365,15 +365,17 @@ async function summarizeRecords(config, compiled, columns) {
     const v = `CAST(${q(`c${index}`)} AS DECIMAL(38,6))`;
     parts.push(`${count}(${q(`c${index}`)}) AS ${q(`p${i}`)}`, `MIN(${v}) AS ${q(`mn${i}`)}`, `MAX(${v}) AS ${q(`mx${i}`)}`, `AVG(${v}) AS ${q(`av${i}`)}`, `SUM(${v}) AS ${q(`tt${i}`)}`);
   });
-  const [row] = await withDatabase(config, (query) => query(`SELECT ${parts.join(", ")} FROM (${compiled.populationSql}) AS ${q("population")}`, compiled.values));
+  const [row] = await withDatabase(config, (query) => query(`SELECT ${parts.join(", ")} FROM (${compiled.populationSql}) AS ${q("population")}`, compiled.values), { requestTimeout: 60000 });
   const population = Number(row.population);
-  // Medians for the first few measures, in parallel; one that is too slow
-  // only loses its median, never the rest of the summary.
-  const medians = await Promise.allSettled(measures.slice(0, 4).map(({ index }) =>
+  // Optional exact medians must not add several full-table sorts to a detail
+  // report. Uncomputed medians remain null, never estimated from preview rows.
+  const medianMeasures = detailMedianMeasures(population, measures);
+  const medians = await Promise.allSettled(medianMeasures.map(({ index }) =>
     withDatabase(config, (query) => query(summaryQuery(compiled, config.dialect, index), compiled.values)).then(([s]) => s?.median)));
   return {
     population,
     scope: compiled.grain || "Full matching records",
+    medianStatus: population > 100000 ? "Not calculated for this large detail report." : "Exact where available",
     numeric: measures.map(({ field }, i) => ({
       title: field,
       statistics: { present: Number(row[`p${i}`]), minimum: row[`mn${i}`], maximum: row[`mx${i}`], average: row[`av${i}`], total: row[`tt${i}`], median: medians[i]?.status === "fulfilled" ? medians[i].value ?? null : null, missing: population - Number(row[`p${i}`]) },
