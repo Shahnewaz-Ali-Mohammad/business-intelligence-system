@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 // Proxy in front of the internal read-only backend's GET /api/dashboard
 // (readonly-api.mjs, port 4100). The Home dashboard used to call that port
 // directly from the browser via a NEXT_PUBLIC_ env var; that port is now
@@ -29,7 +30,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 export async function GET(req: NextRequest) {
   // Company-wide ISP figures: CEO (all data) only.
   const guard = await requireAccess('data.all');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const clientKey = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? 'unknown';
   if (isRateLimited(clientKey)) {
     return NextResponse.json({ error: 'Too many requests -- please wait a moment.' }, { status: 429 });

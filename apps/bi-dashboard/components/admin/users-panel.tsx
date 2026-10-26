@@ -6,7 +6,7 @@ import { inputClass, buttonClass, ghostClass, post } from './admin-ui';
 
 type Role = { name: string; label: string; description: string };
 type Department = { id: number; name: string; parentId: number | null };
-type User = { id: number; email: string; displayName: string | null; disabledAt: string | null; lastSignIn: string | null; roles: string[]; departmentIds: number[] };
+type User = { id: number; email: string; displayName: string | null; disabledAt: string | null; lastSignIn: string | null; roles: string[]; departmentIds: number[]; mfa: boolean };
 type Invite = { id: number; email: string; roles: string[]; departmentIds: number[]; expiresAt: string };
 type Data = { users: User[]; invitations: Invite[]; roles: Role[]; departments: Department[]; me: number };
 
@@ -90,7 +90,7 @@ export function UsersPanel() {
             <tbody>
               {data.users.map((u) => (
                 <tr key={u.id} className={`border-t border-zinc-100 align-top ${u.disabledAt ? 'text-zinc-400' : ''}`}>
-                  <td className="px-3 py-2"><div className="font-medium">{u.displayName || u.email}</div>{u.displayName && <div className="text-xs text-zinc-500">{u.email}</div>}{u.disabledAt && <div className="text-xs text-red-600">Disabled</div>}</td>
+                  <td className="px-3 py-2"><div className="font-medium">{u.displayName || u.email}</div>{u.displayName && <div className="text-xs text-zinc-500">{u.email}</div>}{u.disabledAt && <div className="text-xs text-red-600">Disabled</div>}<div className="text-xs text-zinc-500">Two-step sign-in: {u.mfa ? 'on' : 'off'}</div></td>
                   {editing?.id === u.id ? (
                     <td colSpan={3} className="px-3 py-2">
                       <AccessPicker data={data} roles={editing.roles} departments={editing.departments} onRoles={(r) => setEditing({ ...editing, roles: r })} onDepartments={(d) => setEditing({ ...editing, departments: d })} />
@@ -109,6 +109,7 @@ export function UsersPanel() {
                   <td className="px-3 py-2 text-right">
                     {editing?.id !== u.id && <div className="flex justify-end gap-1">
                       <button className={ghostClass} disabled={busy} onClick={() => setEditing({ id: u.id, roles: u.roles, departments: u.departmentIds })}>Edit access</button>
+                      {u.mfa && u.id !== data.me && <button className={ghostClass} disabled={busy} onClick={() => { if (window.confirm(`Reset two-step sign-in for ${u.email}? They are signed out and set it up again.`)) void run({ action: 'resetMfa', userId: u.id }); }}>Reset 2-step</button>}
                       {u.id !== data.me && <button className={ghostClass} disabled={busy} onClick={() => { if (u.disabledAt || window.confirm(`Disable ${u.email}? They are signed out everywhere immediately.`)) void run({ action: u.disabledAt ? 'enable' : 'disable', userId: u.id }); }}>{u.disabledAt ? 'Enable' : 'Disable'}</button>}
                     </div>}
                   </td>

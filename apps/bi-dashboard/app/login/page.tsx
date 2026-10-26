@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { LogIn } from 'lucide-react';
@@ -14,22 +13,29 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Two-step sign-in: after the password, the 6-digit code from the authenticator app.
+  const [ticket, setTicket] = useState('');
+  const [code, setCode] = useState('');
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
+      const res = ticket
+        ? await fetch('/api/auth/mfa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket, code }) })
+        : await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
       const body = await res.json();
       if (!res.ok) {
         setError(body.error ?? 'Login failed.');
+        if (ticket && /expired|again/i.test(body.error || '')) { setTicket(''); setCode(''); }
         return;
       }
+      if (body.mfa) { setTicket(body.ticket); setPassword(''); return; }
       await refresh();
       router.push('/chat');
     } finally {
@@ -50,6 +56,18 @@ export default function LoginPage() {
           </div>
         </div>
 
+        {ticket ? (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-zinc-600">6-digit code from your authenticator app</label>
+              <input autoFocus inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} required value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-center text-lg tracking-[0.4em] outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-100" />
+            </div>
+            {error ? <p className="text-sm font-medium text-red-600">{error}</p> : null}
+            <Button type="submit" disabled={submitting || code.length !== 6} className="w-full">{submitting ? 'Checking...' : 'Verify'}</Button>
+            <button type="button" className="w-full text-xs text-zinc-500 hover:underline" onClick={() => { setTicket(''); setCode(''); setError(null); }}>Use a different account</button>
+          </form>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="mb-1 block text-xs font-semibold text-zinc-600">Email</label>
@@ -76,12 +94,10 @@ export default function LoginPage() {
             {submitting ? 'Signing in...' : 'Sign in'}
           </Button>
         </form>
+        )}
 
         <p className="mt-5 text-center text-sm text-zinc-500">
-          No account?{' '}
-          <Link href="/register" className="font-semibold text-rose-700 hover:underline">
-            Create one
-          </Link>
+          No account? Ask your admin for an invite link.
         </p>
       </div>
     </div>

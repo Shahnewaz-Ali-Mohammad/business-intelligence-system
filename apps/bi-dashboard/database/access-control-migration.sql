@@ -2,7 +2,11 @@
 -- Applied automatically by the app on first use (lib/access/access-db.ts);
 -- kept here so it can also be run by hand.
 
-ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at DATETIME NULL;
+-- Kept in its own table so the app never needs to ALTER the users table.
+CREATE TABLE IF NOT EXISTS user_status (
+  user_id     INT UNSIGNED PRIMARY KEY,
+  disabled_at DATETIME NULL
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS departments (
   id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -57,3 +61,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
   KEY idx_audit_time (created_at),
   KEY idx_audit_user (user_id, created_at)
 ) ENGINE=InnoDB;
+
+-- Two-step sign-in: the authenticator secret (encrypted) per person, and
+-- password-checked sign-ins waiting for their 6-digit code.
+CREATE TABLE IF NOT EXISTS user_mfa (
+  user_id    INT UNSIGNED PRIMARY KEY,
+  secret     TEXT NOT NULL,
+  enabled_at DATETIME NULL,
+  last_step  BIGINT NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS pending_logins (
+  token_hash CHAR(64) PRIMARY KEY,
+  user_id    INT UNSIGNED NOT NULL,
+  attempts   INT NOT NULL DEFAULT 0,
+  expires_at DATETIME NOT NULL
+) ENGINE=InnoDB;
+
+-- First install only: every existing user becomes Admin + CEO, so nobody is
+-- locked out. Adjust people afterwards on the Admin > Users page.
+INSERT INTO user_roles (user_id, role)
+SELECT u.id, r.role FROM users u CROSS JOIN (SELECT 'admin' AS role UNION ALL SELECT 'ceo') r
+WHERE NOT EXISTS (SELECT 1 FROM user_roles);
+
+-- The app's own database user needs read/write on these tables (not DDL).

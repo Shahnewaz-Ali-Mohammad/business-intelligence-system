@@ -5,7 +5,7 @@ import { randomBytes } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { cookies } from 'next/headers';
 import { getAppDb } from '@/lib/db/app-db';
-import { ensureAccessSchema } from '@/lib/access/access-db';
+import { disabledAtSql } from '@/lib/access/access-db';
 
 export const SESSION_COOKIE = 'bi_session';
 const SESSION_TTL_DAYS = 30;
@@ -47,13 +47,12 @@ export async function destroySession(token: string): Promise<void> {
 
 export async function getUserFromToken(token: string | undefined | null): Promise<SessionUser | null> {
   if (!token) return null;
-  await ensureAccessSchema();
   const db = getAppDb();
   const [rows] = await db.execute(
     `SELECT u.id, u.email, u.display_name
      FROM sessions s
      JOIN users u ON u.id = s.user_id
-     WHERE s.token = ? AND s.expires_at > NOW() AND u.disabled_at IS NULL`,
+     WHERE s.token = ? AND s.expires_at > NOW() AND ${await disabledAtSql()} IS NULL`,
     [token],
   );
   const list = rows as Array<{ id: number; email: string; display_name: string | null }>;

@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {getAppDb} from '@/lib/db/app-db';
@@ -10,7 +11,7 @@ import { getWorkspace, deleteWorkspace } from '@/lib/workspaces/workspaceDb';
 
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const guard = await requireAccess('setup.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const user = guard.user;
   const { id: workspaceId } = await params;
 

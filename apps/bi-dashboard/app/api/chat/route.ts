@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied } from '@/lib/access/guard';
 // Authenticated proxy in front of the internal chat backend (readonly-api.mjs,
@@ -61,7 +62,7 @@ function isRateLimited(userId: number): boolean {
 const REQUEST_TIMEOUT_MS = 155_000;
 
 export async function POST(req: NextRequest) {
-  const guard = await requireAccess(['chat.use', 'data.all']); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(['chat.use', 'data.all']); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   void audit(user.id, 'question', 'original chat');
   if (!user) {
     return NextResponse.json({ error: 'Sign in to use the chat assistant.' }, { status: 401 });

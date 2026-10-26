@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
@@ -9,7 +10,7 @@ export const maxDuration = 300;
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string; runId: string }> }) {
   try {
     const { id, runId } = await params;
-    const guard = await requireAccess('procedures.run'); if (denied(guard)) return guard; const user = guard.user; const workspace = user && await getWorkspace(id);
+    const guard = await requireAccess('procedures.run'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user; const workspace = user && await getWorkspace(id);
     if (!user || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
     const run = await readRun(id, runId);
     if (!run || String(run.userId) !== String(user.id)) return NextResponse.json({ error: 'Report unavailable.' }, { status: 404 });

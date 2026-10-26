@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Workspace list/create -- the entry point for onboarding a new customer
 // database alongside the existing (hardcoded, untouched) ISP system. Every
@@ -13,7 +14,7 @@ const CreateWorkspaceSchema = z.object({ name: z.string().min(1).max(200) });
 
 export async function GET() {
   const guard = await requireAccess();
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   // Workspaces are shared across the organisation; what each person sees
   // inside them is limited by their department.
   if (!canOpenWorkspace(guard.access)) return NextResponse.json({ workspaces: [] });
@@ -30,7 +31,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const guard = await requireAccess('setup.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const user = guard.user;
   const body = await req.json().catch(() => null);
   const parsed = CreateWorkspaceSchema.safeParse(body);

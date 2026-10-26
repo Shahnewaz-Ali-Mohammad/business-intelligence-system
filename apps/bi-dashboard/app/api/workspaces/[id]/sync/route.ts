@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Runs the dlt sync (pysync/sync_workspace.py, open source, does the real
 // work) for a workspace's saved connection. This route is pure glue: spawn
@@ -10,7 +11,7 @@ import { getWorkspace, getConnection, recordSyncRun } from '@/lib/workspaces/wor
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const guard = await requireAccess('setup.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const user = guard.user;
   const { id: workspaceId } = await params;
 

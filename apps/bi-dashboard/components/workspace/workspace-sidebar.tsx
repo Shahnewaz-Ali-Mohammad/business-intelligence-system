@@ -429,6 +429,10 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                 <p className="truncate font-semibold text-zinc-800">{user.displayName || user.email}</p>
                 <p className="truncate text-xs text-zinc-400">{user.email}</p>
               </div>
+              <Link href="/security" onClick={onNavigate} className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-zinc-600 transition hover:bg-white hover:text-zinc-800 hover:shadow-sm">
+                <ShieldCheck size={15} className="text-zinc-400" />
+                Account security
+              </Link>
               <button
                 type="button"
                 onClick={() => logout()}

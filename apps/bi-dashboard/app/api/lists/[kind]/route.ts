@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied } from '@/lib/access/guard';
 // Server-side pagination for row-level list reports (tickets / customers).
 // The chat and the saved-report page load only the first page inline; every
@@ -30,7 +31,7 @@ export const runtime = 'nodejs';
 const MAX_PAGE_SIZE = 500;
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ kind: string }> }) {
-  const guard = await requireAccess('data.all'); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess('data.all'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Sign in to view data.' }, { status: 401 });
 
   const { kind } = await params;

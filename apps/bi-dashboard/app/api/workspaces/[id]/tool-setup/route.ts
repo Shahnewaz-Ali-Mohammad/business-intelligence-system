@@ -94,10 +94,9 @@ const Body = z.discriminatedUnion("action", [
 /** Tool setup is admin work; its test runs see sample rows of the database being set up. */
 async function access(workspaceId: string) {
   const guard = await requireAccess("setup.manage");
-  if (denied(guard)) return false;
-  enterAccess({ ...guard.access, setupPreview: true });
+  if (denied(guard)) return null;
   const workspace = await getWorkspace(workspaceId);
-  return !!workspace && workspaceId !== "isp-default";
+  return workspace && workspaceId !== "isp-default" ? { ...guard.access, setupPreview: true } : null;
 }
 function failure(error: unknown, stage: string) {
   const code = (error as { code?: string }).code;
@@ -125,7 +124,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: workspaceId } = await params;
-  if (!(await access(workspaceId)))
+  const setupAccess = await access(workspaceId);
+  if (setupAccess) enterAccess(setupAccess);
+  if (!setupAccess)
     return NextResponse.json(
       { error: "Workspace unavailable. Sign in with its owner account." },
       { status: 403 },
@@ -153,7 +154,9 @@ export async function POST(
       { status: 403 },
     );
   const { id: workspaceId } = await params;
-  if (!(await access(workspaceId)))
+  const setupAccess = await access(workspaceId);
+  if (setupAccess) enterAccess(setupAccess);
+  if (!setupAccess)
     return NextResponse.json(
       { error: "Workspace unavailable." },
       { status: 403 },

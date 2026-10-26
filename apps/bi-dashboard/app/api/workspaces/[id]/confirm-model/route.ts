@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Human-in-the-loop confirmation: the review screen sends back the
 // (possibly edited) YAML, which becomes the workspace's confirmed_yaml --
@@ -15,7 +16,7 @@ const BodySchema = z.object({ confirmedYaml: z.string().min(1) });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const guard = await requireAccess('setup.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const user = guard.user;
   const { id: workspaceId } = await params;
 

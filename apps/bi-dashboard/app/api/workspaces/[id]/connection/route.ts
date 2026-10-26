@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Saves a workspace's source-database connection (encrypted at rest, see
 // lib/workspaces/secrets.ts) and immediately runs schema introspection
@@ -26,7 +27,7 @@ const ConnectionSchema = z.object({
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const guard = await requireAccess('setup.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const user = guard.user;
   const { id: workspaceId } = await params;
 

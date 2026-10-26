@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppDb } from '@/lib/db/app-db';
@@ -9,7 +10,7 @@ export const runtime = 'nodejs';
 
 export async function GET() {
   const guard = await requireAccess('users.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const [counts] = await getAppDb().execute('SELECT department_id, COUNT(*) AS n FROM user_departments GROUP BY department_id');
   const members = new Map((counts as { department_id: number; n: number }[]).map((r) => [Number(r.department_id), Number(r.n)]));
   return NextResponse.json({ departments: (await listDepartments()).map((d) => ({ ...d, members: members.get(d.id) || 0 })) });
@@ -26,7 +27,7 @@ const Body = z.union([
 export async function POST(req: NextRequest) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const guard = await requireAccess('users.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   const body = parsed.data;

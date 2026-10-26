@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
@@ -38,7 +39,7 @@ function parseReportData(value: unknown): unknown | null {
 // read-only Sessions transcript view, which loads a few exchanges at a time
 // instead of the whole history at once.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ session: null, messages: [], hasMore: false }, { status: 401 });
 
   const { id } = await params;
@@ -100,7 +101,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ deleted: false }, { status: 401 });
 
   const { id } = await params;
@@ -113,7 +114,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
 // Rename action. Only ever changes `title`; nothing else about the
 // session (its messages, updated_at) is touched by a rename.
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Not signed in.' }, { status: 401 });
 
   const { id } = await params;

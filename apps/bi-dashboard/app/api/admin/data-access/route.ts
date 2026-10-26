@@ -1,9 +1,12 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppDb } from '@/lib/db/app-db';
 import { requireAccess, denied } from '@/lib/access/guard';
 import { audit, getPolicy, savePolicy, sourceKey, listDepartments, type DataPolicy } from '@/lib/access/access-db';
-import { getSource } from '@/lib/tool-setup/store';
+import { getSource, listSetup } from '@/lib/tool-setup/store';
+import { loadAccess } from '@/lib/access/access-db';
+import { scopeToolParameters } from '@/lib/access/data-scope.mjs';
 import { withDatabase } from '@/lib/tool-setup/connectors.mjs';
 import { quote } from '@/lib/tool-setup/model.mjs';
 import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
@@ -19,7 +22,7 @@ type CatalogObject = { id: string; schema: string; name: string; kind: string; c
  */
 export async function GET(req: NextRequest) {
   const guard = await requireAccess('users.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const sourceId = req.nextUrl.searchParams.get('sourceId');
   const db = getAppDb();
   if (!sourceId) {
@@ -31,6 +34,25 @@ export async function GET(req: NextRequest) {
   if (!workspaceId) return NextResponse.json({ error: 'Database not found.' }, { status: 404 });
   const source = await getSource(workspaceId, sourceId);
   const objects = ((source.catalog?.objects || []) as CatalogObject[]);
+  // "View as": what one person would get from one table under the saved rules.
+  const previewUser = Number(req.nextUrl.searchParams.get('previewUser'));
+  const previewTable = req.nextUrl.searchParams.get('table');
+  if (previewUser && previewTable) {
+    const person = await loadAccess(previewUser);
+    const policy = await getPolicy(sourceId);
+    const setup = await listSetup(workspaceId);
+    const tool = setup.tools.find((t) => t.sourceId === sourceId && t.status === 'approved' && t.definition.base === previewTable && t.definition.capabilities)
+      || setup.tools.find((t) => t.sourceId === sourceId && t.status === 'approved' && t.definition.base === previewTable);
+    if (!person.dataRole) return NextResponse.json({ outcome: 'blocked', message: 'This person has no data role (Admin only), so they see no business data.' });
+    if (!tool) return NextResponse.json({ outcome: 'blocked', message: 'No approved tool reads this table, so nobody can query it in chat.' });
+    try {
+      const scoped = scopeToolParameters({ definition: tool.definition, catalog: source.catalog, parameters: tool.definition.capabilities ? { query: '{}' } : {}, access: person, policy });
+      const where = tool.definition.capabilities ? JSON.parse(String((scoped as { query?: string }).query || '{}')).where : null;
+      return NextResponse.json(where ? { outcome: 'filtered', message: `Only rows where ${where.field.split(':').pop()} is one of: ${where.value.join(', ')}`, departments: person.departmentNames } : { outcome: 'all', message: person.allData ? 'Sees every row (CEO).' : 'Sees every row (shared table).', departments: person.departmentNames });
+    } catch (error) {
+      return NextResponse.json({ outcome: 'blocked', message: error instanceof Error ? error.message : 'Blocked.', departments: person.departmentNames });
+    }
+  }
   const field = req.nextUrl.searchParams.get('field');
   if (field) {
     const [objectId, column] = [field.slice(0, field.indexOf(':')), field.slice(field.indexOf(':') + 1)];
@@ -69,7 +91,7 @@ const Policy = z.object({
 export async function PUT(req: NextRequest) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const guard = await requireAccess('users.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const body = await req.json().catch(() => null);
   const parsed = z.object({ sourceId: z.string().min(1).max(64), policy: Policy }).strict().safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: 'Invalid rules.' }, { status: 400 });

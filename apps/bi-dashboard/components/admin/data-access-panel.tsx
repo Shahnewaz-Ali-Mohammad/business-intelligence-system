@@ -144,6 +144,8 @@ export function DataAccessPanel() {
             </section>
           )}
 
+          <ViewAs sourceId={sourceId} tables={detail.tables} />
+
           <div className="flex items-center gap-3">
             <button className={buttonClass} disabled={busy} onClick={() => void save()}>{busy ? 'Saving...' : 'Save rules'}</button>
             {notice && <span className="text-sm text-emerald-700">{notice}</span>}
@@ -151,5 +153,41 @@ export function DataAccessPanel() {
         </>
       )}
     </div>
+  );
+}
+
+/** "View as": checks what one person would get from one table under the SAVED rules. */
+function ViewAs({ sourceId, tables }: { sourceId: string; tables: Table[] }) {
+  const [people, setPeople] = useState<{ id: number; email: string }[]>([]);
+  const [person, setPerson] = useState('');
+  const [table, setTable] = useState('');
+  const [result, setResult] = useState<{ outcome: string; message: string; departments?: string[] } | null>(null);
+  useEffect(() => { fetch('/api/admin/users').then((r) => r.json()).then((d) => setPeople(d.users || [])).catch(() => {}); }, []);
+  function check(nextPerson: string, nextTable: string) {
+    setResult(null);
+    if (!nextPerson || !nextTable) return;
+    fetch(`/api/admin/data-access?sourceId=${encodeURIComponent(sourceId)}&previewUser=${nextPerson}&table=${encodeURIComponent(nextTable)}`).then((r) => r.json()).then(setResult).catch(() => setResult({ outcome: 'blocked', message: 'Could not check.' }));
+  }
+  return (
+    <section className="space-y-2 rounded-lg border border-zinc-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-zinc-800">View as</h2>
+      <p className="text-xs text-zinc-500">Check what a person would see from a table, using the saved rules (save first).</p>
+      <div className="flex flex-wrap gap-2">
+        <select value={person} onChange={(e) => { setPerson(e.target.value); check(e.target.value, table); }} className={inputClass}>
+          <option value="">Choose a person</option>
+          {people.map((p) => <option key={p.id} value={p.id}>{p.email}</option>)}
+        </select>
+        <select value={table} onChange={(e) => { setTable(e.target.value); check(person, e.target.value); }} className={inputClass}>
+          <option value="">Choose a table</option>
+          {tables.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      </div>
+      {result && (
+        <p className={`rounded-md border p-2 text-sm ${result.outcome === 'blocked' ? 'border-red-200 bg-red-50 text-red-800' : result.outcome === 'filtered' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>
+          {result.outcome === 'blocked' ? 'Blocked: ' : result.outcome === 'filtered' ? 'Filtered: ' : 'All rows: '}{result.message}
+          {result.departments?.length ? <span className="block text-xs opacity-80">Departments covered: {result.departments.join(', ')}</span> : null}
+        </p>
+      )}
+    </section>
   );
 }

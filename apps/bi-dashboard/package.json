@@ -12,7 +12,8 @@
     "start": "next start",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "dev:all": "concurrently -n dashboard,api,cube -c blue,green,magenta \"npm:dev\" \"npm:dev:api\" \"docker compose -f ../../cube/docker-compose.yml --env-file ../../cube/.env up\""
+    "dev:all": "concurrently -n dashboard,api,cube -c blue,green,magenta \"npm:dev\" \"npm:dev:api\" \"docker compose -f ../../cube/docker-compose.yml --env-file ../../cube/.env up\"",
+    "db:access": "node database/apply-access-control.mjs"
   },
   "dependencies": {
     "@ag-ui/client": "1.0.3",

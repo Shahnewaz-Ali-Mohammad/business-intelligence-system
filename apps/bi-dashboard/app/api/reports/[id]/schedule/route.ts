@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
@@ -14,7 +15,7 @@ async function ownedReport(id: string, userId: number) {
 const parse = (value: unknown) => (typeof value === 'string' ? JSON.parse(value) : value);
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Sign in.' }, { status: 401 });
   const report = await ownedReport((await params).id, user.id);
   if (!report) return NextResponse.json({ error: 'Report not found.' }, { status: 404 });
@@ -25,7 +26,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 /** Sets, changes or turns off a report's schedule. */
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
-  const guard = await requireAccess('reports.schedule'); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess('reports.schedule'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Sign in.' }, { status: 401 });
   const { id } = await params;
   const report = await ownedReport(id, user.id);
@@ -43,7 +44,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
-  const guard = await requireAccess('reports.schedule'); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess('reports.schedule'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Sign in.' }, { status: 401 });
   await getAppDb().execute("UPDATE generated_reports SET data=JSON_REMOVE(data, '$.schedule') WHERE id=? AND user_id=? AND JSON_EXTRACT(data, '$.schedule') IS NOT NULL", [(await params).id, user.id]);
   return NextResponse.json({ removed: true });

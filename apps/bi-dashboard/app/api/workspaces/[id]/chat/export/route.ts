@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Full .xlsx export of a workspace answer: re-runs the exact approved tool
@@ -21,7 +22,7 @@ export const maxDuration = 300;
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const guard = await requireAccess(['chat.use', 'reports.export']); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(['chat.use', 'reports.export']); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   void audit(user.id, 'export', new URL(req.url).pathname);
   const workspace = user && (await getWorkspace(id));
   if (!user || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });

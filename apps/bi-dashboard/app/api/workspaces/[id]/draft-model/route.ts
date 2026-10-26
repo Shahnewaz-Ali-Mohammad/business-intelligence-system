@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Re-introspects the workspace's saved connection and asks the model to
 // draft a candidate semantic model from it. Never auto-confirmed -- see
@@ -11,7 +12,7 @@ import { introspectPostgres } from '../../../../../../bi-warehouse/src/introspec
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const guard = await requireAccess('setup.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const user = guard.user;
   const { id: workspaceId } = await params;
 

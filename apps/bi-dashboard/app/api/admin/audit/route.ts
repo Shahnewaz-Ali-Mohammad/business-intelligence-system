@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { requireAccess, denied } from '@/lib/access/guard';
@@ -8,7 +9,7 @@ const PAGE = 100;
 /** Who did what, newest first. Filters: ?user=<email part> &action=<prefix> &page=. */
 export async function GET(req: NextRequest) {
   const guard = await requireAccess('audit.view');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const sp = req.nextUrl.searchParams;
   const page = Math.max(1, Number(sp.get('page')) || 1);
   const clauses: string[] = []; const values: string[] = [];

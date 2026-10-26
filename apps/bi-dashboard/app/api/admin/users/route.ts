@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { createHash, randomBytes } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -13,16 +14,17 @@ const parse = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
 /** Users with their roles and departments, open invitations, and the role catalogue. */
 export async function GET() {
   const guard = await requireAccess('users.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const db = getAppDb();
-  const [users] = await db.execute(`SELECT u.id, u.email, u.display_name, u.created_at, u.disabled_at,
+  const [users] = await db.execute(`SELECT u.id, u.email, u.display_name, u.created_at, (SELECT disabled_at FROM user_status WHERE user_id=u.id) AS disabled_at,
       (SELECT JSON_ARRAYAGG(r.role) FROM user_roles r WHERE r.user_id=u.id) AS roles,
       (SELECT JSON_ARRAYAGG(d.department_id) FROM user_departments d WHERE d.user_id=u.id) AS departments,
-      (SELECT MAX(s.created_at) FROM sessions s WHERE s.user_id=u.id) AS last_sign_in
-    FROM users u ORDER BY u.disabled_at IS NOT NULL, u.email`);
+      (SELECT MAX(s.created_at) FROM sessions s WHERE s.user_id=u.id) AS last_sign_in,
+      (SELECT enabled_at FROM user_mfa m WHERE m.user_id=u.id) AS mfa_at
+    FROM users u ORDER BY disabled_at IS NOT NULL, u.email`);
   const [invites] = await db.execute('SELECT id, email, roles, department_ids, expires_at, created_at FROM invitations WHERE used_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC');
   return NextResponse.json({
-    users: (users as Record<string, unknown>[]).map((u) => ({ id: u.id, email: u.email, displayName: u.display_name, createdAt: u.created_at, disabledAt: u.disabled_at, lastSignIn: u.last_sign_in, roles: parse(u.roles) || [], departmentIds: parse(u.departments) || [] })),
+    users: (users as Record<string, unknown>[]).map((u) => ({ id: u.id, email: u.email, displayName: u.display_name, createdAt: u.created_at, disabledAt: u.disabled_at, lastSignIn: u.last_sign_in, mfa: !!u.mfa_at, roles: parse(u.roles) || [], departmentIds: parse(u.departments) || [] })),
     invitations: (invites as Record<string, unknown>[]).map((i) => ({ id: i.id, email: i.email, roles: parse(i.roles), departmentIds: parse(i.department_ids), expiresAt: i.expires_at })),
     roles: ROLE_NAMES.map((name) => ({ name, ...ROLES[name as keyof typeof ROLES] })),
     departments: await listDepartments(),
@@ -34,13 +36,14 @@ const Invite = z.object({ action: z.literal('invite'), email: z.string().trim().
 const Update = z.object({ action: z.literal('update'), userId: z.number().int().positive(), roles: z.array(z.string()), departmentIds: z.array(z.number().int().positive()).max(50) }).strict();
 const Disable = z.object({ action: z.enum(['disable', 'enable']), userId: z.number().int().positive() }).strict();
 const Revoke = z.object({ action: z.literal('revokeInvite'), inviteId: z.number().int().positive() }).strict();
-const Body = z.union([Invite, Update, Disable, Revoke]);
+const ResetMfa = z.object({ action: z.literal('resetMfa'), userId: z.number().int().positive() }).strict();
+const Body = z.union([Invite, Update, Disable, Revoke, ResetMfa]);
 
 /** The admin's actions on people: invite, change roles/departments, disable, revoke an invitation. */
 export async function POST(req: NextRequest) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const guard = await requireAccess('users.manage');
-  if (denied(guard)) return guard;
+  if (denied(guard)) return guard; enterAccess(guard.access);
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   const body = parsed.data;
@@ -55,7 +58,7 @@ export async function POST(req: NextRequest) {
       if (body.roles.some((r) => r === 'manager' || r === 'executive') && !body.departmentIds.length) throw new Error('Managers and Executives need at least one department.');
     }
     const adminsLeft = async (excluding: number) => {
-      const [rows] = await db.execute("SELECT COUNT(*) AS n FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.role='admin' AND u.disabled_at IS NULL AND u.id<>?", [excluding]);
+      const [rows] = await db.execute("SELECT COUNT(*) AS n FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.role='admin' AND (SELECT disabled_at FROM user_status WHERE user_id=u.id) IS NULL AND u.id<>?", [excluding]);
       return Number((rows as { n: number }[])[0].n);
     };
     let result: Record<string, unknown> = { ok: true };
@@ -76,10 +79,15 @@ export async function POST(req: NextRequest) {
       await audit(me, 'user.access_changed', String(body.userId), { roles: body.roles, departmentIds: body.departmentIds });
     } else if (body.action === 'disable' || body.action === 'enable') {
       if (body.action === 'disable' && body.userId === me) throw new Error('You cannot disable your own account.');
-      await db.execute(`UPDATE users SET disabled_at=${body.action === 'disable' ? 'NOW()' : 'NULL'} WHERE id=?`, [body.userId]);
+      await db.execute(`INSERT INTO user_status (user_id, disabled_at) VALUES (?, ${body.action === 'disable' ? 'NOW()' : 'NULL'}) ON DUPLICATE KEY UPDATE disabled_at=VALUES(disabled_at)`, [body.userId]);
       // Disabling signs the person out everywhere immediately.
       if (body.action === 'disable') await db.execute('DELETE FROM sessions WHERE user_id=?', [body.userId]);
       await audit(me, `user.${body.action}d`, String(body.userId));
+    } else if (body.action === 'resetMfa') {
+      // Lost phone: their two-step sign-in is removed and they set it up again; their sessions end.
+      await db.execute('DELETE FROM user_mfa WHERE user_id=?', [body.userId]);
+      await db.execute('DELETE FROM sessions WHERE user_id=?', [body.userId]);
+      await audit(me, 'user.mfa_reset', String(body.userId));
     } else if (body.action === 'revokeInvite') {
       await db.execute('UPDATE invitations SET expires_at=NOW() WHERE id=? AND used_at IS NULL', [body.inviteId]);
       await audit(me, 'user.invite_revoked', String(body.inviteId));

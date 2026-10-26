@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { verifyPassword, createSession, SESSION_COOKIE } from '@/lib/auth/session';
-import { ensureAccessSchema, audit } from '@/lib/access/access-db';
+import { disabledAtSql, audit, accessReady } from '@/lib/access/access-db';
+import { mfaEnabled, createPendingLogin } from '@/lib/auth/mfa';
 
 // Repeated wrong passwords lock the account (and the address trying) for a
 // while, so passwords cannot be guessed by brute force.
@@ -24,9 +25,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Too many failed sign-in attempts. Try again in 15 minutes.' }, { status: 429 });
     }
 
-    await ensureAccessSchema();
     const [rows] = await getAppDb().execute(
-      'SELECT id, email, password_hash, display_name, disabled_at FROM users WHERE email = ?',
+      `SELECT u.id, u.email, u.password_hash, u.display_name, ${await disabledAtSql()} AS disabled_at FROM users u WHERE u.email = ?`,
       [account],
     );
     const list = rows as Array<{ id: number; email: string; password_hash: string; display_name: string | null; disabled_at: unknown }>;
@@ -41,6 +41,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'This account is disabled. Contact your admin.' }, { status: 403 });
     }
     keys.forEach((key) => failures.delete(key));
+    // Accounts with two-step sign-in get a short ticket, not a session, until the code is entered.
+    if ((await accessReady()) && (await mfaEnabled(list[0].id))) {
+      return NextResponse.json({ mfa: true, ticket: await createPendingLogin(list[0].id) });
+    }
 
     const token = await createSession(list[0].id);
     void audit(list[0].id, 'login', account);

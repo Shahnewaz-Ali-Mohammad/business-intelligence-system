@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { hashPassword, createSession, SESSION_COOKIE } from '@/lib/auth/session';
-import { ensureAccessSchema, audit } from '@/lib/access/access-db';
+import { accessReady, audit } from '@/lib/access/access-db';
 import { validRoles } from '@/lib/access/permissions.mjs';
 
 // Accounts are created only from an admin's invitation. The very first
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
     if (typeof password !== 'string' || password.length < 10 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
       return NextResponse.json({ error: 'Password must be at least 10 characters and include a letter and a number.' }, { status: 400 });
     }
-    await ensureAccessSchema();
+    if (!(await accessReady())) return NextResponse.json({ error: 'Invitations are not available until roles are installed (npm run db:access).' }, { status: 503 });
     const db = await getAppDb().getConnection();
     try {
       await db.beginTransaction();
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
 
 /** What the sign-up page needs to show: first-time setup or an invitation. */
 export async function GET(req: NextRequest) {
-  await ensureAccessSchema();
+  if (!(await accessReady())) return NextResponse.json({ mode: 'invite-required' });
   const [[{ users }]] = (await getAppDb().query('SELECT COUNT(*) AS users FROM users')) as unknown as [[{ users: number }]];
   const invite = req.nextUrl.searchParams.get('invite');
   if (Number(users) === 0) return NextResponse.json({ mode: 'first-admin' });

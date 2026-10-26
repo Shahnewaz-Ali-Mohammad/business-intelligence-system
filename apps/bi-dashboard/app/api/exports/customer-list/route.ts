@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied } from '@/lib/access/guard';
 // Whole-customer-LIST .xlsx export -- same fix as app/api/exports/tickets
@@ -49,7 +50,7 @@ const HEADERS = [
 ];
 
 export async function GET(req: NextRequest) {
-  const guard = await requireAccess(['reports.export', 'data.all']); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(['reports.export', 'data.all']); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   void audit(user.id, 'export', new URL(req.url).pathname);
   if (!user) {
     return new Response('Sign in to export data.', { status: 401 });

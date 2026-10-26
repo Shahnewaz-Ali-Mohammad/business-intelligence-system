@@ -1,3 +1,5 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
+import { runWithAccess, AccessDenied } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {groundReferenceLabels} from '@/lib/tool-setup/reference-binding.mjs';
@@ -81,7 +83,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   const workspace = user && (await getWorkspace(id));
   if (
     !user ||
@@ -167,7 +169,10 @@ export async function POST(
   let lastFailureReason = '';
   // Stages of this answer (name and duration), saved with the message.
   let runSteps: () => { name: string; ms: number }[] = () => [];
-  const signal = AbortSignal.any([req.signal, AbortSignal.timeout(150000)]);
+  // Stops the run at once when the person's role cannot see what was asked.
+  const denial = new AbortController();
+  let accessDeniedMessage = '';
+  const signal = AbortSignal.any([req.signal, AbortSignal.timeout(150000), denial.signal]);
   async function saveAnswer(answer: {
     narrative: string;
     [key: string]: unknown;
@@ -212,8 +217,10 @@ export async function POST(
     }
   }
   const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(out) {
+  const stream = new ReadableStream<Uint8Array>({
+    // The person's access travels with the whole run, including tool calls
+    // made by the agent, so every query in it is filtered for them.
+    start: (out) => runWithAccess(guard.access, async () => {
       const run = createRunEvents(
         (event: unknown) => out.enqueue(encoder.encode(eventFrame(event))),
         {
@@ -353,6 +360,7 @@ export async function POST(
             devLog('tool-error', {args, error: error instanceof Error ? error.message : String(error)});
             run.toolEnd(call, { ok: false, note: 'This attempt could not run; trying another way' });
             executionFailed = true;
+            if (error instanceof AccessDenied) { accessDeniedMessage = error.message; denial.abort(); }
             const reason = error instanceof Error ? error.message : '';
             if (/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason)) { executionFailureReason = reason; lastFailureReason = reason; }
             throw error;
@@ -488,6 +496,12 @@ export async function POST(
         run.finish(await saveAnswer(answer));
         void audit(user.id, 'question', input.message.slice(0, 255), { workspaceId: id, sourceId: input.sourceId, tool: current.definition.name, rows: answer.totalCount ?? result.rows.length, scope: answer.dataScope });
       } catch (error) {
+        if (accessDeniedMessage || error instanceof AccessDenied) {
+          const message = accessDeniedMessage || (error as Error).message;
+          void audit(user.id, 'question.denied', input.message.slice(0, 255), { workspaceId: id, reason: message });
+          run.error(message, 'access_denied');
+          return;
+        }
         console.error('[workspace chat] query failed:', error instanceof Error ? error.message : error);
         devLog('failed', error instanceof Error ? error.stack || error.message : String(error));
         run.error(
@@ -497,7 +511,7 @@ export async function POST(
       } finally {
         out.close();
       }
-    },
+    }),
   });
   return new Response(stream, {
     headers: {

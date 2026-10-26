@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied } from '@/lib/access/guard';
 // Chat "sessions" are real conversations: a title, a set of paired
 // user/assistant messages, and a timestamp. Listing here powers the
@@ -15,7 +16,7 @@ import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 const PAGE_SIZE = 6;
 
 export async function GET(req: NextRequest) {
-  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ sessions: [], total: 0, page: 1 });
 
   const page = Math.max(1, Number(req.nextUrl.searchParams.get('page')) || 1);
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Not signed in.' }, { status: 401 });
 
   const body = await req.json().catch(() => ({}));

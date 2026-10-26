@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
@@ -22,7 +23,7 @@ type WorkbookBuilder = { sheet: (name: string, headers: string[]) => SheetWriter
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string; runId: string }> }) {
   const { id, runId } = await params;
-  const guard = await requireAccess(['procedures.run', 'reports.export']); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess(['procedures.run', 'reports.export']); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   void audit(user.id, 'export', new URL(req.url).pathname);
   const workspace = user && await getWorkspace(id);
   if (!user || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });

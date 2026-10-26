@@ -1,3 +1,4 @@
+import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {namedKeyLinks} from '@/lib/tool-setup/named-key-links.mjs';
 import { NextRequest, NextResponse } from "next/server";
@@ -22,7 +23,7 @@ export async function POST(
       { status: 403 },
     );
   const { id } = await params;
-  const guard = await requireAccess('setup.manage'); if (denied(guard)) return guard; const user = guard.user;
+  const guard = await requireAccess('setup.manage'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   const workspace = user && (await getWorkspace(id));
   if (
     !user ||

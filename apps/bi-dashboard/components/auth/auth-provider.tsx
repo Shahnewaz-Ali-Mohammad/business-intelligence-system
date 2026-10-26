@@ -1,8 +1,9 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 
-export type AuthUser = { id: number; email: string; displayName: string | null; roles?: string[]; permissions?: string[]; departments?: string[] };
+export type AuthUser = { id: number; email: string; displayName: string | null; roles?: string[]; permissions?: string[]; departments?: string[]; mfaSetupRequired?: boolean; accessInstalled?: boolean };
 
 /** True when the signed-in person's role allows this. The server checks again. */
 export function can(user: AuthUser | null, permission: string) {
@@ -61,6 +62,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  // Admin and CEO accounts must set up two-step sign-in before anything else.
+  const pathname = usePathname();
+  const router = useRouter();
+  useEffect(() => {
+    if (user?.mfaSetupRequired && !['/security', '/login', '/register'].includes(pathname)) router.replace('/security');
+  }, [user, pathname, router]);
 
   return (
     <AuthContext.Provider value={{ user, loading, refresh, logout }}>{children}</AuthContext.Provider>

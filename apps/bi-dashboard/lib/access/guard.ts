@@ -18,6 +18,10 @@ export async function requireAccess(permission?: string | string[]): Promise<Gua
   const needed = permission == null ? [] : Array.isArray(permission) ? permission : [permission];
   if (needed.some((p) => !access.permissions.includes(p)))
     return NextResponse.json({ error: 'Your role does not allow this.' }, { status: 403 });
+  if (access.mfaSetupRequired)
+    return NextResponse.json({ error: 'Set up two-step sign-in to continue (Account security).', code: 'mfa_required' }, { status: 403 });
+  if (access.notInstalled && needed.some((p) => p === 'users.manage' || p === 'audit.view'))
+    return NextResponse.json({ error: 'Roles are not installed yet. Run `npm run db:access` once (with a database admin account), then reload.', code: 'not_installed' }, { status: 503 });
   enterAccess(access);
   return { user, access };
 }

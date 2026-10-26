@@ -11,7 +11,7 @@ import { writeAnalyticalInsight } from '../../scripts/lib/analytical-insight.mjs
 import { nextRunAt } from './schedule-time.mjs';
 import { addNotification } from './notifications.mjs';
 import { rerunIspReport } from './run-isp-scheduled';
-import { loadAccess, audit } from '@/lib/access/access-db';
+import { loadAccess, audit, disabledAtSql } from '@/lib/access/access-db';
 import { runWithAccess, currentAccess, scopeProcedureValues } from '@/lib/access/data-scope.mjs';
 import { presetRange, applyRangeToQuery, procedureRangeArguments } from './schedule-intent.mjs';
 
@@ -153,7 +153,7 @@ export async function runDueReports(now = Date.now()) {
     try {
       // Runs with the owner's CURRENT role and departments, never the ones
       // they had when the schedule was created.
-      const [owners] = await db.execute('SELECT disabled_at FROM users WHERE id=?', [report.user_id]);
+      const [owners] = await db.execute(`SELECT ${await disabledAtSql()} AS disabled_at FROM users u WHERE u.id=?`, [report.user_id]);
       const owner = (owners as { disabled_at: unknown }[])[0];
       if (!owner || owner.disabled_at) throw new Error('The owner of this schedule no longer has an active account.');
       const access = await loadAccess(report.user_id);
