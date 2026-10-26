@@ -3,7 +3,7 @@ import { runWithAccess, AccessDenied } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {groundReferenceLabels} from '@/lib/tool-setup/reference-binding.mjs';
-import {labelRecovery} from '@/lib/tool-setup/label-recovery.mjs';
+import {assertRelevantLabels,labelRecovery,relevantLabelEvidence} from '@/lib/tool-setup/label-recovery.mjs';
 import {validateExecutionRequest} from '@/lib/tool-setup/execution-request.mjs';
 import {candidateTools} from '@/lib/tool-setup/chat-planning.mjs';
 import { ChatOpenAI } from '@langchain/openai';
@@ -25,7 +25,6 @@ import { createToolServer, mcpToolName } from '@/lib/tool-setup/mcp.mjs';
 import { runWorkspaceAgent } from '../../../../../scripts/chat/agent.mjs';
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getCurrentUser } from "@/lib/auth/session";
 import { getWorkspace } from "@/lib/workspaces/workspaceDb";
 import { listSetup, getTool, getSource } from "@/lib/tool-setup/store";
 import {
@@ -273,6 +272,8 @@ export async function POST(
           if (catalog.fingerprint !== latest.catalog_fingerprint) throw new Error('Schema changed');
           return latest;
         };
+        const executeReferenceLookup=async(tool:{id:string},query:string)=>{const current=await approvedNow(tool.id);return executeTool(source.config,current.definition,catalog,{query},20);};
+        const verifiedLabels=await relevantLabelEvidence({message:input.message,approvedTools,catalog,execute:executeReferenceLookup});
         // What the AI reads: database-computed statistics over the FULL
         // result, never row dumps (rows only for tiny results; aggregate
         // groups are themselves database summaries).
@@ -325,6 +326,7 @@ export async function POST(
             devLog('rerouted', { reason: 'named table', to: target.definition.name });
           }
           assertNamedColumns(input.message,latest.definition,parameters.query);
+          assertRelevantLabels(parameters.query,verifiedLabels);
           validateExecutionRequest(input.message,latest.definition,catalog,source.config.dialect,parameters);
           devLog('tool-call', {tool: latest.definition.name, parameters});
           // Statistics are best-effort: if they cannot be computed, the agent
@@ -362,7 +364,7 @@ export async function POST(
             executionFailed = true;
             if (error instanceof AccessDenied) { accessDeniedMessage = error.message; denial.abort(); }
             const reason = error instanceof Error ? error.message : '';
-            if (/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason)) { executionFailureReason = reason; lastFailureReason = reason; }
+            if (/^(Use the requested|The requested|Verified request|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship|This request|Choose the stored)/.test(reason)) { executionFailureReason = reason; lastFailureReason = reason; }
             throw error;
           }
         }, catalog);
@@ -394,7 +396,8 @@ export async function POST(
               return {field,values:result.rows,hasMore:result.hasMore,note:'Use exact stored labels. This lookup does not fulfill the employee report request.'};
             };
             const lcTools = tools.some(t=>t.definition.template) ? [...savedReportTools(client,tools,{findValues,valueFields}),...exposed.filter(t=>reusableNames.has(t.name))] : exposed;
-            agentResult = await runWorkspaceAgent({message:input.message,history,workspaceName:sourceName(setup,input.sourceId)||workspace!.name,tools:lcTools,signal,onProgress:(text:string)=>run.progress(text)});
+            const verifiedContext=verifiedLabels.length?'Verified stored labels required by this request: '+JSON.stringify(verifiedLabels)+'. Preserve prior report filters and include these exact label filters in the report query.':'';
+            agentResult = await runWorkspaceAgent({message:input.message,history,workspaceName:sourceName(setup,input.sourceId)||workspace!.name,tools:lcTools,businessNotes:verifiedContext,signal,onProgress:(text:string)=>run.progress(text)});
           }
         } finally {
           await client.close().catch(() => {});
@@ -505,7 +508,7 @@ export async function POST(
         console.error('[workspace chat] query failed:', error instanceof Error ? error.message : error);
         devLog('failed', error instanceof Error ? error.stack || error.message : String(error));
         run.error(
-          signal.aborted ? 'The request took too long. Please try again.' : error instanceof Error&&/^(Use the requested|The requested|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship)/.test(error.message)?error.message:lastFailureReason?`I could not build a valid query for this with the approved tools. ${lastFailureReason} Try rephrasing with the table or column you mean.`:'Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.',
+          signal.aborted ? 'The request took too long. Please try again.' : error instanceof Error&&/^(Use the requested|The requested|Verified request|Query exceeds|Join |Relationships |Multiple relationship|No approved relationship)/.test(error.message)?error.message:lastFailureReason?`I could not build a valid query for this with the approved tools. ${lastFailureReason} Try rephrasing with the table or column you mean.`:'Could not safely complete this query. Check tool approval, schema and connection. No empty result has been inferred.',
           errorCode(error, signal),
         );
       } finally {
