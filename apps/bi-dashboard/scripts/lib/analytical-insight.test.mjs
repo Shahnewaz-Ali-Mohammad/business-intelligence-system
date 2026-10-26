@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeAnalyticalInsight, groundedNarrative } from './analytical-insight.mjs';
+import { writeAnalyticalInsight, groundedNarrative, groundedDetailNarrative } from './analytical-insight.mjs';
 const summary = { population: '2001', scope: 'full matching records', numeric: [{ title: 'Amount', statistics: { average: '1001', median: '1001', minimum: '1', maximum: '2001', missing: '0' } }] };
+test('detail wording cannot infer open or unresolved status from missing updates or numeric codes', () => {
+  const text = 'The ticket has low priority. It has not been updated, indicating it may still be open or unresolved. The ticket is open.';
+  assert.equal(groundedDetailNarrative(text, [{ TicketStatusID: 1 }]), 'The ticket has low priority. It has not been updated.');
+  assert.equal(groundedDetailNarrative('The ticket is open.', [{ Status: 'Open' }]), 'The ticket is open.');
+});
 test('AI receives full statistics, not record previews', async () => {
   const text = await writeAnalyticalInsight({ question: 'Explain the amounts', summary }, async (messages) => {
     const facts = JSON.parse(messages[1].content);
@@ -51,10 +56,29 @@ test('single aggregate answers do not mistake one result for one source row', as
   const text = await writeAnalyticalInsight({ question: 'How many tickets?', summary: { scope: 'matching result groups', population: '1', numeric: [{ title: 'Tickets record count', statistics: { minimum: '2001' } }] } }, async () => { throw new Error('Should not require an AI call'); });
   assert.equal(text, 'Tickets record count: 2,001.');
 });
-test('specific records answer with their actual fields, not single-row averages', async () => {
-  const text = await writeAnalyticalInsight({ question: 'Ticket 0001 details', summary, records: [{ TicketId: '0001', Amount: '1', Status: 'Open', LinkId: null }] }, async () => { throw new Error('No AI call needed for exact details'); });
-  assert.equal(text, 'TicketId: 0001; Amount: 1; Status: Open; LinkId: not available.');
+test('small detail results use AI with exact facts instead of dumping database fields', async () => {
+  let called = false;
+  const records = [{ 'dbo.Tickets:TicketNo': '0001', Amount: '1', Status: 'Open', TicketStatusID: 1, AssignedBy: 10480 }];
+  const text = await writeAnalyticalInsight({ question: 'Ticket 0001 details', summary: { ...summary, population: 1 }, records }, async messages => {
+    called = true;
+    const facts = JSON.parse(messages[1].content);
+    assert.deepEqual(facts.exactRequestedRecords, [{ 'dbo.Tickets:TicketNo': '0001', Amount: '1', Status: 'Open' }]);
+    assert.match(facts.detailScope, /not missing in the database/);
+    assert.match(messages[0].content, /not a field-by-field dump/);
+    assert.match(messages[0].content, /do not decode status/i);
+    return { narrative: 'Ticket 0001 is open. This single result does not support broader comparisons.' };
+  });
+  assert.equal(called, true);
+  assert.match(text, /Ticket 0001 is open/);
+  assert.doesNotMatch(text, /dbo\.|not available/);
   assert.ok(!/average|median|100%/.test(text));
+});
+test('small-result AI failures do not fall back to raw fields or single-row statistics', async () => {
+  const received = [];
+  const text = await writeAnalyticalInsight({ question: 'Full report', summary: { ...summary, population: 1 }, records: [{ 'dbo.Tickets:TicketId': '0001' }], onText: text => received.push(text) }, async () => { throw new Error('Unavailable'); });
+  assert.doesNotMatch(text, /dbo\.|0001|average 1,001/);
+  assert.match(text, /does not establish broader trends/);
+  assert.equal(received.at(-1), text);
 });
 
 test('insights appear word by word while the model is still generating', async () => {

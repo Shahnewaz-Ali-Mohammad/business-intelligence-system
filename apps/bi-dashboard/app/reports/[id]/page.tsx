@@ -18,6 +18,7 @@ import {WorkspaceResult,type WorkspaceAnswer} from '@/components/data-sources/wo
 import { ReportSchedule } from '@/components/data-sources/report-schedule';
 import { ColumnMenu } from '@/components/dashboard/tables/column-menu';
 import { projectColumns } from '@/lib/dashboard/column-visibility.mjs';
+import { loadReport } from '@/lib/dashboard/load-report.mjs';
 
 type ReportRow = {
   id: number;
@@ -60,9 +61,16 @@ async function logExport(reportId: number, fileName: string, fileContent: string
 
 export default function ReportDetailPage() {
   const params = useParams<{ id: string }>();
+  return <ReportDetail key={params.id} id={params.id} />;
+}
+
+function ReportDetail({ id }: { id: string }) {
+  const params = { id };
   const router = useRouter();
   const searchParams = useSearchParams();
   const [report, setReport] = useState<ReportRow | null | undefined>(undefined);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [siblingReports, setSiblingReports] = useState<SiblingReport[]>([]);
@@ -73,16 +81,19 @@ export default function ReportDetailPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`/api/reports/${params.id}`, { signal: controller.signal })
-      .then((res) => res.json())
+    loadReport(params.id, { signal: controller.signal })
       .then((body: { report: ReportRow | null; siblingReports?: SiblingReport[] }) => {
         if (controller.signal.aborted) return;
         setReport(body.report);
         setSiblingReports(body.siblingReports ?? []);
       })
-      .catch(() => { if (!controller.signal.aborted) setReport(null); });
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setLoadError(error instanceof Error ? error.message : 'The report could not be loaded. Please retry.');
+        setReport(null);
+      });
     return () => controller.abort();
-  }, [params.id, router]);
+  }, [params.id, router, loadAttempt]);
 
   useEffect(() => {
     if (!report || String(report.id) !== params.id) return;
@@ -135,10 +146,14 @@ export default function ReportDetailPage() {
 
   if (report === null) {
     return (
-      <WorkspacePage active="Reports" title="Report not found" subtitle="">
-        <p className="text-sm text-zinc-500">
-          This report does not exist, or was saved by a different account. Sign in with the account that generated it.
+      <WorkspacePage active="Reports" title={loadError ? 'Could not load report' : 'Report not found'} subtitle="">
+        <p role={loadError ? 'alert' : undefined} className="text-sm text-zinc-500">
+          {loadError || 'This report does not exist, or was saved by a different account. Sign in with the account that generated it.'}
         </p>
+        <div className="mt-4 flex items-center gap-4">
+          <Button variant="outline" onClick={() => { setReport(undefined); setLoadError(null); setLoadAttempt(value => value + 1); }}>Retry</Button>
+          <Link href="/login" className="text-sm text-rose-700">Sign in</Link>
+        </div>
       </WorkspacePage>
     );
   }

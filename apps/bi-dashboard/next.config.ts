@@ -1,6 +1,7 @@
 import type { NextConfig } from 'next';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PHASE_DEVELOPMENT_SERVER } from 'next/constants.js';
 
 const appRoot = dirname(fileURLToPath(import.meta.url));
 // FIX 2026-09-29: this used to pin Turbopack's root to bi-dashboard itself
@@ -27,4 +28,10 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default function config(phase: string): NextConfig {
+  return {
+    ...nextConfig,
+    // Keep verification builds separate from the running development server.
+    distDir: phase === PHASE_DEVELOPMENT_SERVER ? '.next-development' : '.next',
+  };
+}

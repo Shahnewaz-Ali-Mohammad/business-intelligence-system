@@ -326,6 +326,7 @@ export function compileTool(
     // Text identifiers may contain both numeric-looking and prefixed values.
     // Binding a number against varchar forces SQL Server to convert every row.
     const type = fields.get(field)?.dataType || "";
+    if(numericType(type)&&typeof value==='string'&&!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim()))throw new Error('Numeric field '+field+' requires a numeric value. Use the approved readable reference field for a text label.');
     values.push(/(?:char|text|clob|enum|set|uuid|uniqueidentifier)/i.test(type) ? String(value) : value);
     return dialect === "postgres"
       ? `$${values.length}`

@@ -46,6 +46,8 @@ export type WorkspaceAnswer = {
   graphMetric?: string;
   graphCategory?: string;
   sourceId?: string;
+  databaseName?: string;
+  sourceTable?: string;
   graphResult?: { rows: Record<string, unknown>[]; category: string; metric: string; hasMore: boolean; scope: string };
   totalCount?: number;
 };
@@ -318,6 +320,7 @@ export function WorkspaceResult({
   }
   return (
     <ReportCard title={answer.title || "Report"}>
+      {answer.databaseName ? <p className="mb-3 break-words text-xs text-zinc-500">Source: {answer.databaseName}{answer.sourceTable ? ` · ${answer.sourceTable}` : ''}</p> : null}
       <div className="flex flex-wrap items-center gap-2">
         <ColumnMenu columns={keys} hidden={hiddenColumns} onChange={next => { if (answer.procedure) setHiddenResultColumns(previous => ({ ...previous, [activeResult]: next })); else setHiddenColumns(next); setSaved(undefined); }}/>
         {procedureSets && procedureSets.length > 1 && <select aria-label="Report result table" className="h-9 max-w-full rounded-md border bg-white px-2 text-sm" value={activeResult} onChange={event => { setActiveResult(Number(event.target.value)); setProcedurePage(1); setSaved(undefined); }}>{procedureSets.map((set, index) => <option key={index} value={index}>Result {index + 1} · {set.rowCount.toLocaleString()} rows</option>)}</select>}

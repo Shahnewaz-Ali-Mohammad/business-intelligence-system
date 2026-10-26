@@ -1,3 +1,5 @@
+import {groundReferenceLabels} from '@/lib/tool-setup/reference-binding.mjs';
+import {labelRecovery} from '@/lib/tool-setup/label-recovery.mjs';
 import {validateExecutionRequest} from '@/lib/tool-setup/execution-request.mjs';
 import {candidateTools} from '@/lib/tool-setup/chat-planning.mjs';
 import { ChatOpenAI } from '@langchain/openai';
@@ -11,6 +13,7 @@ import {compileTool} from '@/lib/tool-setup/model.mjs';
 import {savedReportTools} from '@/lib/tool-setup/saved-report-tools.mjs';
 import {recordNarrative,requestedRecordArguments,validateRecordPopulation} from '@/lib/tool-setup/record-presentation.mjs';
 import {reportContext} from '@/lib/tool-setup/report-context.mjs';
+import {executeOnce} from '@/lib/tool-setup/request-execution.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMcpTools } from '@langchain/mcp-adapters';
@@ -264,7 +267,8 @@ export async function POST(
         // What the AI reads: database-computed statistics over the FULL
         // result, never row dumps (rows only for tiny results; aggregate
         // groups are themselves database summaries).
-        const completedExecutions: {toolId: string; query: string}[] = [];
+        const completedExecutions: {toolId: string; query: string; result: Awaited<ReturnType<typeof executeTool>>; summary: Awaited<ReturnType<typeof summarizeTool>> | null}[] = [];
+        const executionCache = new Map();
         let executionFailed=false;
         let executionFailureReason='';
         const tableName = (base: string) => catalog.objects.find((object: { id: string; name?: string }) => object.id === base)?.name || base;
@@ -279,6 +283,7 @@ export async function POST(
           let latest = await approvedNow(chosen.id);
           if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
           let parameters = { query: addRequestedCalculations(input.message,latest.definition,queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)),catalog) };
+          parameters.query=groundReferenceLabels(latest.definition,catalog,parameters.query);
           // If the chosen query tool cannot run this plan (for example the
           // fields are only reachable from another table's tool), run the same
           // plan on the approved query tool that can.
@@ -306,9 +311,8 @@ export async function POST(
             if (!target) throw error;
             const plan = latest.definition.capabilities ? JSON.parse(parameters.query) : {};
             const own = (f: string) => f.startsWith(wanted + ':');
-            const keepWhere = !plan.where || JSON.stringify(plan.where).match(/"field":"([^"]+)"/g)?.every((m: string) => own(m.slice(9, -1)));
             latest = await approvedNow(target.id);
-            parameters = { query: addRequestedCalculations(input.message, latest.definition, JSON.stringify(latest.definition.mode === 'rows' ? { columns: '*', ...(keepWhere && plan.where ? { where: plan.where } : {}) } : { ...plan }), catalog) };
+            parameters = { query: addRequestedCalculations(input.message, latest.definition, JSON.stringify(latest.definition.mode === 'rows' ? { ...plan, columns: Array.isArray(plan.columns)&&plan.columns.some(own)?plan.columns:'*' } : { ...plan }), catalog) };
             devLog('rerouted', { reason: 'named table', to: target.definition.name });
           }
           assertNamedColumns(input.message,latest.definition,parameters.query);
@@ -316,20 +320,29 @@ export async function POST(
           devLog('tool-call', {tool: latest.definition.name, parameters});
           // Statistics are best-effort: if they cannot be computed, the agent
           // still gets a small preview instead of a failed call.
+          const { result: preview, summary } = await executeOnce(executionCache, JSON.stringify([latest.id, latest.version, parameters.query]), async () => {
+          const preview = await executeTool(source.config, latest.definition, catalog, parameters, 200, 0, { maxLimit: 200 });
+          run.state({ preview: {
+            title: catalog.objects.find((object: { id: string }) => object.id === latest.definition.base)?.name || 'Results',
+            mode: latest.definition.mode,
+            ...(preview.hasMore ? {} : { totalCount: preview.rows.length }),
+            rows: preview.rows.slice(0, 8),
+          } });
           let summary: Awaited<ReturnType<typeof summarizeTool>> | null = null;
           try { summary = await summarizeTool(source.config, latest.definition, catalog, parameters); }
           catch (error) { console.error('[workspace tool] statistics failed:', error instanceof Error ? error.message : error); }
+          return { result: preview, summary };
+          });
+          const labelEvidence=await labelRecovery({message:input.message,definition:latest.definition,query:parameters.query,result:preview,approvedTools,catalog,execute:async(tool:{id:string},query:string)=>{const current=await approvedNow(tool.id);return executeTool(source.config,current.definition,catalog,{query},12);}});
+          if(labelEvidence.length)throw new Error('Use the verified label matches to interpret the employee wording and retry the requested report: '+JSON.stringify(labelEvidence)+'. The literal phrase matched no rows; that does not establish that the business category is absent.');
           const population = summary ? Number(summary.population) || 0 : 0;
-          const preview = !summary || latest.definition.mode === 'aggregate' || population <= 5
-            ? await executeTool(source.config, latest.definition, catalog, parameters, 50)
-            : null;
-          completedExecutions.push({toolId: latest.id, query: parameters.query});
+          completedExecutions.push({toolId: latest.id, query: parameters.query, result: preview, summary});
           run.toolEnd(call, { rows: summary ? population : preview?.rows.length });
           return {
             tool: latest.definition.name,
             mode: latest.definition.mode,
             summary,
-            ...(preview ? { rows: preview.rows, rowsAreComplete: !preview.hasMore } : {}),
+            rows: preview.rows.slice(0, 50), rowsAreComplete: !preview.hasMore && preview.rows.length <= 50,
             note: summary
               ? `Grain: ${summary.scope}. Available figures are computed by the database over ${population.toLocaleString()} matching ${latest.definition.mode === 'aggregate' ? 'groups' : 'records'}. The user sees the rows in the table; do not list them.`
               : 'Full-population statistics are unavailable. Only a bounded preview is available; do not infer a total, average, median, extrema, or absence of records for the full dataset from this preview. The user sees the rows in the table; do not list them.',
@@ -359,10 +372,10 @@ export async function POST(
             const exposed = await loadMcpTools('bi-workspace-tools', client);
             for (const t of exposed as {name:string;schema:unknown;verboseParsingErrors?:boolean}[]) { t.verboseParsingErrors = true; if (t.name.includes('aggregate')) devLog('schema '+t.name, JSON.stringify(t.schema).slice(0,30000)); }
             const reusableNames=new Set(tools.filter(t=>t.definition.capabilities).map(t=>mcpToolName(t.sourceId,t.definition.name)));
-            const approvedFields=new Set(tools.flatMap(t=>t.definition.capabilities?.fields||[]));
+            const approvedFields=new Set(approvedTools.flatMap(t=>t.definition.capabilities?.fields||[]));
             const valueFields=catalog.objects.flatMap((o:{id:string;columns:{name:string;dataType:string}[]})=>o.columns.filter(c=>/char|text/i.test(c.dataType)&&approvedFields.has(o.id+':'+c.name)).map(c=>o.id+':'+c.name));
             const findValues=async(field:string,search?:string)=>{
-              const candidates=tools.filter(t=>t.definition.mode==='aggregate'&&t.definition.capabilities?.fields.includes(field));
+              const candidates=approvedTools.filter(t=>t.definition.mode==='aggregate'&&t.definition.capabilities?.fields.includes(field));
               const chosen=candidates.find(t=>field.startsWith(t.definition.base+':'))||candidates[0];
               if(!chosen)throw new Error('No approved capability supports this reference field.');
               const latest=await approvedNow(chosen.id);
@@ -412,9 +425,8 @@ export async function POST(
         const query = completed.query;
         // The chat shows at most 200 rows; the saved report pages through
         // every row and Export Excel downloads all of them.
-        const result = await executeTool(source.config, current.definition, catalog, { query }, 200, 0, { maxLimit: 200 });
-        let summary;
-        try { summary = await summarizeTool(source.config, current.definition, catalog, { query }); } catch { summary = undefined; }
+        const result = completed.result;
+        const summary = completed.summary ?? undefined;
         // Same insight step as the original chat: the answer is written from
         // database statistics over the FULL result (writeAnalyticalInsight),
         // never replaced by a fixed placeholder sentence.
@@ -433,6 +445,8 @@ export async function POST(
           narrativeText = 'No records match the requested filters.';
         } else if (summary?.matchedRecords && summary.numeric.length && summary.numeric.every((n:{statistics:{present:unknown}})=>Number(n.statistics.present)===0)) {
           narrativeText=`${summary.matchedRecords.toLocaleString()} matching records were found, but the requested amount values are missing. A total cannot be calculated from those values.`;
+        } else if(current.definition.mode==='rows'&&summary&&!summary.numeric.length&&(result.hasMore||result.rows.length>5)){
+          narrativeText=countLine;
         } else {
           run.progress('Writing the insight');
           // The count line goes first so the insight only ever adds to it.
@@ -459,6 +473,8 @@ export async function POST(
           summary,
           sourceId: input.sourceId,
           toolName: current.definition.name,
+          databaseName: source.config.database,
+          sourceTable: current.definition.base,
           toolId: current.id,
           query,
           page: 1,

@@ -94,8 +94,7 @@ export function applyRangeToQuery(query, range, isDateField) {
     if (!node.field || !isDateField(node.field)) return node;
     if (['gte', 'gt'].includes(node.operator)) { changed = true; return { ...node, operator: 'gte', value: range.start }; }
     if (['lt', 'lte'].includes(node.operator)) { changed = true; return { ...node, operator: 'lt', value: range.end }; }
-    if (node.operator === 'between') { changed = true; return { field: node.field, operator: 'between', value: [range.start, dayBefore(range.end)] }; }
-    if (node.operator === 'eq') { changed = true; return { and: [{ field: node.field, operator: 'gte', value: range.start }, { field: node.field, operator: 'lt', value: range.end }] }; }
+    if (['between', 'eq'].includes(node.operator)) { changed = true; return { and: [{ field: node.field, operator: 'gte', value: range.start }, { field: node.field, operator: 'lt', value: range.end }] }; }
     return node;
   };
   if (plan.where) plan.where = visit(plan.where);
@@ -113,9 +112,18 @@ export function applyRangeToProcedure(values, parameters, range) {
   if (!range) return values;
   const next = { ...values };
   for (const p of parameters || []) {
-    if (p.output || !/date|time/i.test(p.baseType || p.type)) continue;
+    if (p.output || !/^(date|datetime|datetime2|datetimeoffset|smalldatetime)$/i.test(p.baseType || p.type)) continue;
     if (/(start|from|begin|fdate)/i.test(p.name)) next[p.name] = range.start;
     else if (/(end|to\b|todate|tdate|_to$)/i.test(p.name)) next[p.name] = dayBefore(range.end);
   }
   return next;
+}
+
+/** Rolling dates are explicit inputs, not omitted procedure defaults. */
+export function procedureRangeArguments(values, parameters, omitted = [], range) {
+  const overrides = range ? applyRangeToProcedure({}, parameters, range) : {};
+  return {
+    values: { ...values, ...overrides },
+    omitted: omitted.filter(name => !Object.hasOwn(overrides, name)),
+  };
 }
