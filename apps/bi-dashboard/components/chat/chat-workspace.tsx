@@ -195,6 +195,8 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   // "/schedule" with no question: pick a procedure, then schedule its result.
   const [pickerSchedule, setPickerSchedule] = useState<ScheduleDraft | null>(null);
   const [schedulesPanel, setSchedulesPanel] = useState(false);
+  // "/run <sentence>": the report form opens filled in from the sentence.
+  const [pickerFill, setPickerFill] = useState('');
   // A "/schedule" draft survives the reload of the conversation that follows
   // a new answer: it is attached to the newest answer when messages load.
   const pendingScheduleRef = useRef<ScheduleDraft | null>(null);
@@ -757,10 +759,10 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         ) : null}
       </div>
 
-      {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={pickerSchedule ? '' : input.replace(/^\s*\/run\b\s*/i, '/')} sessionId={sessionId} onClose={() => { setProcedurePicker(false); setPickerSchedule(null); setInput(''); }} onResult={answer => {
+      {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={pickerSchedule ? '' : input.replace(/^\s*\/run\b\s*/i, '/')} sessionId={sessionId} fillText={pickerFill || undefined} onClose={() => { setProcedurePicker(false); setPickerSchedule(null); setPickerFill(''); setInput(''); }} onResult={answer => {
         setMessages(current => [...current, { role: 'user', text: `/${answer.procedure?.name || answer.title}`, createdAt: new Date().toISOString() }, { role: 'assistant', text: answer.narrative, workspaceAnswer: answer, ...(pickerSchedule ? { scheduleDraft: pickerSchedule } : {}), createdAt: new Date().toISOString() }]);
         pendingScheduleRef.current = pickerSchedule;
-        setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setPickerSchedule(null); setInput('');
+        setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setPickerSchedule(null); setPickerFill(''); setInput('');
         router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${answer.sessionId}`);
         window.dispatchEvent(new Event('bi:chat-session-created'));
       }}/>}
@@ -805,7 +807,15 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
           else { setPickerSchedule(draft); setProcedurePicker(true); setInput(''); }
           return;
         }
-        if (databaseWorkspace && input.trimStart().startsWith('/')) { event.preventDefault(); setProcedurePicker(true); return; }
+        if (databaseWorkspace && input.trimStart().startsWith('/')) {
+          event.preventDefault();
+          // A sentence after /run ("/run collection summary for Dhaka, last month") fills the form;
+          // a single word just searches the list.
+          const sentence = command.replace(/^\/(?:run\b)?\s*/i, '');
+          if (/\s/.test(sentence)) { setPickerFill(sentence); setInput(''); }
+          setProcedurePicker(true);
+          return;
+        }
         handleSubmit(event);
       }} className="shrink-0 border-t border-zinc-200/80 bg-white/90 p-4">
         <div className="flex items-end gap-3 rounded-lg border border-zinc-200 bg-white p-3 transition-shadow focus-within:border-rose-300 focus-within:ring-2 focus-within:ring-rose-100">
