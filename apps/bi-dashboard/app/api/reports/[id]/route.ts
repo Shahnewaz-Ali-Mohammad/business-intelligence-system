@@ -1,9 +1,10 @@
+import { requireAccess, denied } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ report: null }, { status: 401 });
 
   const { id } = await params;
@@ -47,7 +48,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ updated: false, reason: 'not logged in' }, { status: 401 });
 
   const { id } = await params;
@@ -90,7 +91,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ deleted: false, reason: 'not logged in' }, { status: 401 });
 
   const { id } = await params;
@@ -103,7 +104,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Sign in to save graph settings.' }, { status: 401 });
   const { id } = await params;
   const body = await req.json().catch(() => null);

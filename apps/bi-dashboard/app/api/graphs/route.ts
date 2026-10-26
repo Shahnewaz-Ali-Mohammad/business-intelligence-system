@@ -1,3 +1,4 @@
+import { requireAccess, denied } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { ChatOpenAI } from '@langchain/openai';
@@ -22,7 +23,7 @@ function configuredWarehouseUrl() {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess('data.all'); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Sign in to generate a graph.' }, { status: 401 });
   const calls = (recent.get(user.id) || []).filter((t) => Date.now() - t < 60000);
   if (calls.length >= 30) return NextResponse.json({ error: 'Please wait a moment before generating another graph.' }, { status: 429 });

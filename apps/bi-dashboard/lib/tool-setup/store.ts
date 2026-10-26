@@ -152,22 +152,22 @@ export async function saveServer(
   );
   return id;
 }
-/** Saved connections in the owner's other workspaces (no secrets returned). */
-export async function listReusableServers(ownerUserId: string, workspaceId: string) {
+/** Saved connections in other workspaces (no secrets returned). Only admins reach this. */
+export async function listReusableServers(_userId: string, workspaceId: string) {
   const [rows] = await getAppDb().execute(
-    "SELECT v.id,v.name,v.encrypted_config,w.name AS workspace_name FROM bi_tool_servers v JOIN workspaces w ON w.id=v.workspace_id WHERE w.owner_user_id=? AND v.workspace_id<>? ORDER BY w.name,v.name",
-    [ownerUserId, workspaceId],
+    "SELECT v.id,v.name,v.encrypted_config,w.name AS workspace_name FROM bi_tool_servers v JOIN workspaces w ON w.id=v.workspace_id WHERE v.workspace_id<>? ORDER BY w.name,v.name",
+    [workspaceId],
   );
   return (rows as (ServerRow & { workspace_name: string })[]).map((row) => {
     const config: SourceConfig = JSON.parse(decryptConnectionString(row.encrypted_config));
     return { id: row.id, name: row.name, workspace: row.workspace_name, dialect: config.dialect, host: config.host, port: config.port };
   });
 }
-/** Copies a saved connection from another workspace of the same owner; the stored secret never leaves the server. */
-export async function reuseServer(ownerUserId: string, workspaceId: string, serverId: string) {
+/** Copies a saved connection from another workspace; the stored secret never leaves the server. Only admins reach this. */
+export async function reuseServer(_userId: string, workspaceId: string, serverId: string) {
   const [rows] = await getAppDb().execute(
-    "SELECT v.name,v.encrypted_config FROM bi_tool_servers v JOIN workspaces w ON w.id=v.workspace_id WHERE v.id=? AND w.owner_user_id=?",
-    [serverId, ownerUserId],
+    "SELECT v.name,v.encrypted_config FROM bi_tool_servers v JOIN workspaces w ON w.id=v.workspace_id WHERE v.id=?",
+    [serverId],
   );
   const row = (rows as ServerRow[])[0];
   if (!row) throw new Error("Saved connection not found.");

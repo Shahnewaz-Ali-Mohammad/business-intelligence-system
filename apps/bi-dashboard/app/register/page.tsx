@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/components/auth/auth-provider';
@@ -15,6 +15,15 @@ export default function RegisterPage() {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Accounts come from an admin's invite link; the very first account sets the system up.
+  const [invite] = useState(() => (typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('invite') || ''));
+  const [mode, setMode] = useState<'loading' | 'first-admin' | 'invite' | 'invite-required' | 'invite-invalid'>('loading');
+  useEffect(() => {
+    fetch(`/api/auth/register${invite ? `?invite=${encodeURIComponent(invite)}` : ''}`)
+      .then((r) => r.json())
+      .then((body: { mode: typeof mode; email?: string }) => { setMode(body.mode); if (body.email) setEmail(body.email); })
+      .catch(() => setMode('invite-required'));
+  }, [invite]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -24,7 +33,7 @@ export default function RegisterPage() {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, displayName }),
+        body: JSON.stringify({ email, password, displayName, invite: invite || undefined }),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -47,10 +56,13 @@ export default function RegisterPage() {
           </div>
           <div>
             <h1 className="text-lg font-bold text-zinc-800">Create an account</h1>
-            <p className="text-xs text-zinc-500">Save your chat history and generated reports</p>
+            <p className="text-xs text-zinc-500">{mode === 'first-admin' ? 'First account: you will be the Admin and CEO' : mode === 'invite' ? 'You were invited by your admin' : 'Accounts are created by invitation'}</p>
           </div>
         </div>
 
+        {mode === 'loading' ? <p className="text-sm text-zinc-500">Loading...</p> : mode === 'invite-required' || mode === 'invite-invalid' ? (
+          <p className="text-sm text-zinc-600">{mode === 'invite-invalid' ? 'This invite link is invalid, already used or expired.' : 'You need an invite link to create an account.'} Ask your admin to send you one.</p>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="mb-1 block text-xs font-semibold text-zinc-600">Name (optional)</label>
@@ -66,17 +78,18 @@ export default function RegisterPage() {
             <input
               type="email"
               required
+              readOnly={mode === 'invite'}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-semibold text-zinc-600">Password (min 8 characters)</label>
+            <label className="mb-1 block text-xs font-semibold text-zinc-600">Password (at least 10 characters, with a letter and a number)</label>
             <input
               type="password"
               required
-              minLength={8}
+              minLength={10}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
@@ -87,6 +100,7 @@ export default function RegisterPage() {
             {submitting ? 'Creating account...' : 'Create account'}
           </Button>
         </form>
+        )}
 
         <p className="mt-5 text-center text-sm text-zinc-500">
           Already have an account?{' '}

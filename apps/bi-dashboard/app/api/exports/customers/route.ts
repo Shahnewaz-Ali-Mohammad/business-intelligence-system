@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied } from '@/lib/access/guard';
 // Whole-customer-base financials .xlsx export (top_customers/
 // customer_summary topics). FIX 2026-10-04: same correction as
 // app/api/exports/tickets and app/api/exports/customer-list -- this was
@@ -52,7 +54,8 @@ const HEADERS = [
 ];
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(['reports.export', 'data.all']); if (denied(guard)) return guard; const user = guard.user;
+  void audit(user.id, 'export', new URL(req.url).pathname);
   if (!user) {
     return new Response('Sign in to export data.', { status: 401 });
   }

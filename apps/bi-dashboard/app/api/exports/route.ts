@@ -1,3 +1,4 @@
+import { requireAccess, denied } from '@/lib/access/guard';
 // Real export history: a row is written here only when a user actually
 // clicks an Export button on a report. The row also stores the exported
 // file's own content, so a later re-download from the Exports page always
@@ -9,7 +10,7 @@ import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ exports: [] });
 
   const db = getAppDb();
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess('reports.export'); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ logged: false, reason: 'not logged in' });
 
   try {

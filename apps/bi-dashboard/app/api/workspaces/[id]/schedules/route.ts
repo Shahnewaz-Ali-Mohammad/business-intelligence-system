@@ -1,3 +1,4 @@
+import { requireAccess, denied } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getAppDb } from '@/lib/db/app-db';
@@ -7,7 +8,7 @@ export const runtime = 'nodejs';
 
 /** The signed-in user's scheduled reports in this workspace (optionally one database). */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess('reports.schedule'); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ schedules: [] }, { status: 401 });
   const { id } = await params;
   const sourceId = req.nextUrl.searchParams.get('sourceId');

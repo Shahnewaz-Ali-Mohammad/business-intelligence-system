@@ -1,3 +1,4 @@
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {namedKeyLinks} from '@/lib/tool-setup/named-key-links.mjs';
 import { NextRequest, NextResponse } from "next/server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -21,12 +22,12 @@ export async function POST(
       { status: 403 },
     );
   const { id } = await params;
-  const user = await getCurrentUser();
+  const guard = await requireAccess('setup.manage'); if (denied(guard)) return guard; const user = guard.user;
   const workspace = user && (await getWorkspace(id));
   if (
     !user ||
     !workspace ||
-    workspace.ownerUserId !== user.id ||
+    !canOpenWorkspace(guard.access) ||
     id === "isp-default"
   )
     return NextResponse.json(

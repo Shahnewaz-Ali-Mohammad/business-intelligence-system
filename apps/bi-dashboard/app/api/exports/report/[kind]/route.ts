@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied } from '@/lib/access/guard';
 // Full-dataset .xlsx export for ranked-customer and semantic-layer reports
 // (ticket/customer lists have their own routes). Re-runs the report's own
 // stored query page by page (5,000 rows per database call, so no single
@@ -27,7 +29,8 @@ const BATCH = 5000;
 const num = (v: unknown) => (v === null || v === undefined || v === '' ? 0 : Number(v));
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ kind: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(['reports.export', 'data.all']); if (denied(guard)) return guard; const user = guard.user;
+  void audit(user.id, 'export', new URL(req.url).pathname);
   if (!user) return new Response('Sign in to export data.', { status: 401 });
   const { kind } = await params;
   const sp = new URL(req.url).searchParams;

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth/session';
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { readResultPage, requestCancel, PAGE_ROWS } from '@/lib/tool-setup/procedure-run-store.mjs';
 import { procedureRunStatus } from '@/lib/tool-setup/procedure-runs';
@@ -8,9 +8,11 @@ import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
 export const runtime = 'nodejs';
 
 async function ownedRun(id: string, runId: string) {
-  const user = await getCurrentUser();
-  const workspace = user && await getWorkspace(id);
-  if (!user || workspace?.ownerUserId !== user.id) return null;
+  const guard = await requireAccess('procedures.run');
+  if (denied(guard)) return null;
+  const user = guard.user;
+  const workspace = await getWorkspace(id);
+  if (!workspace || !canOpenWorkspace(guard.access)) return null;
   const run = await procedureRunStatus(id, runId);
   return run && String(run.userId) === String(user.id) ? run : null;
 }

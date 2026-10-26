@@ -11,6 +11,8 @@ import { writeAnalyticalInsight } from '../../scripts/lib/analytical-insight.mjs
 import { nextRunAt } from './schedule-time.mjs';
 import { addNotification } from './notifications.mjs';
 import { rerunIspReport } from './run-isp-scheduled';
+import { loadAccess, audit } from '@/lib/access/access-db';
+import { runWithAccess, currentAccess, scopeProcedureValues } from '@/lib/access/data-scope.mjs';
 import { presetRange, applyRangeToQuery, procedureRangeArguments } from './schedule-intent.mjs';
 
 /**
@@ -66,7 +68,7 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
   }
   if (!answer?.workspaceId || !answer.sourceId) throw new Error('This report has no saved question or query to run again.');
   const workspace = await getWorkspace(answer.workspaceId);
-  if (!workspace || String(workspace.ownerUserId) !== String(report.user_id)) throw new Error('The report’s workspace is no longer available.');
+  if (!workspace) throw new Error('The report’s workspace is no longer available.');
   // Dated in the schedule's own timezone, e.g. "2026-10-18 13:30".
   const timezone = (data.schedule as { timezone?: string } | undefined)?.timezone || 'UTC';
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(runAt)).map((p) => [p.type, p.value]));
@@ -86,7 +88,11 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
     if (!procedure) throw new Error('The stored procedure no longer exists.');
     const approvals = await readApprovals(answer.sourceId);
     authorizeProcedureRun(procedure, approvals[String(procedure.id)], { hash: procedure.hash, allowBusinessWrites: false });
-    const { values, omitted } = procedureRangeArguments(answer.procedure.values, procedure.parameters, answer.procedure.omitted || [], range);
+    const ranged = procedureRangeArguments(answer.procedure.values, procedure.parameters, answer.procedure.omitted || [], range);
+    const access = currentAccess();
+    // Department rules apply to scheduled runs exactly as to manual ones.
+    const values = scopeProcedureValues({ procedure, values: ranged.values, access, policy: access?.allData ? null : await access?.policyFor?.(source.config) });
+    const omitted = ranged.omitted;
     const run = await createRun(answer.workspaceId, { sourceId: answer.sourceId, userId: report.user_id, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters, hash: procedure.hash }, values, omitted, allowBusinessWrites: false, reportTitle: baseTitle, scheduledFrom: report.id });
     const narrative = `Running ${procedure.schema}.${procedure.name}…`;
     const runAnswer = { ...answer, title, narrative, rows: [], procedure: { ...answer.procedure, values, omitted, runId: run.id } };
@@ -145,7 +151,15 @@ export async function runDueReports(now = Date.now()) {
     );
     if (!(claimed as { affectedRows: number }).affectedRows) continue;
     try {
-      const outcome = await rerunReport(report, now);
+      // Runs with the owner's CURRENT role and departments, never the ones
+      // they had when the schedule was created.
+      const [owners] = await db.execute('SELECT disabled_at FROM users WHERE id=?', [report.user_id]);
+      const owner = (owners as { disabled_at: unknown }[])[0];
+      if (!owner || owner.disabled_at) throw new Error('The owner of this schedule no longer has an active account.');
+      const access = await loadAccess(report.user_id);
+      if (!access.permissions.includes('reports.schedule')) throw new Error('The owner of this schedule is no longer allowed to schedule reports.');
+      const outcome = await runWithAccess(access, () => rerunReport(report, now));
+      void audit(report.user_id, 'schedule.run', String(report.id), { status: outcome.status, reportId: outcome.reportId });
       if (outcome.status === 'completed') await db.execute("UPDATE generated_reports SET data = JSON_SET(data, '$.schedule.lastStatus', ?, '$.schedule.lastReportId', ?, '$.schedule.lastError', NULL) WHERE id = ?", [outcome.status, outcome.reportId, report.id]);
       outcomes.push({ reportId: report.id, status: outcome.status, newReportId: outcome.reportId });
     } catch (error) {

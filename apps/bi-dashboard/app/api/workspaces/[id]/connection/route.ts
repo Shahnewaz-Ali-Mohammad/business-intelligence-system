@@ -1,3 +1,4 @@
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Saves a workspace's source-database connection (encrypted at rest, see
 // lib/workspaces/secrets.ts) and immediately runs schema introspection
 // against it so the onboarding UI can show the customer's real schema
@@ -24,14 +25,13 @@ const ConnectionSchema = z.object({
 });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Sign in required.' }, { status: 401 });
-  }
+  const guard = await requireAccess('setup.manage');
+  if (denied(guard)) return guard;
+  const user = guard.user;
   const { id: workspaceId } = await params;
 
   const workspace = await getWorkspace(workspaceId);
-  if (!workspace || workspace.ownerUserId !== user.id) {
+  if (!workspace || !canOpenWorkspace(guard.access)) {
     return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 });
   }
 

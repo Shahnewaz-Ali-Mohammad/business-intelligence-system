@@ -1,3 +1,4 @@
+import { requireAccess, denied } from '@/lib/access/guard';
 // Saves one chat message into a specific conversation (chat_sessions row).
 // Session grouping lives in /api/chat-sessions; this endpoint only appends.
 import { NextRequest, NextResponse } from 'next/server';
@@ -5,7 +6,7 @@ import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ saved: false, reason: 'not logged in' });
 
   try {
@@ -73,7 +74,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ error: 'Not signed in.' }, { status: 401 });
   const { messageId, reportId } = await req.json().catch(() => ({}));
   if (!Number.isSafeInteger(messageId) || !Number.isSafeInteger(reportId)) return NextResponse.json({ error: 'Message and report IDs are required.' }, { status: 400 });

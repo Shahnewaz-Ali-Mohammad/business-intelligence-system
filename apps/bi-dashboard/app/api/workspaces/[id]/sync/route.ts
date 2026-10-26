@@ -1,3 +1,4 @@
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Runs the dlt sync (pysync/sync_workspace.py, open source, does the real
 // work) for a workspace's saved connection. This route is pure glue: spawn
 // the script, wait, record the outcome -- no sync logic lives here.
@@ -8,14 +9,13 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getWorkspace, getConnection, recordSyncRun } from '@/lib/workspaces/workspaceDb';
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Sign in required.' }, { status: 401 });
-  }
+  const guard = await requireAccess('setup.manage');
+  if (denied(guard)) return guard;
+  const user = guard.user;
   const { id: workspaceId } = await params;
 
   const workspace = await getWorkspace(workspaceId);
-  if (!workspace || workspace.ownerUserId !== user.id) {
+  if (!workspace || !canOpenWorkspace(guard.access)) {
     return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 });
   }
 

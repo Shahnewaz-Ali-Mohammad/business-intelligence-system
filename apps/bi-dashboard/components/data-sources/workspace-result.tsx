@@ -23,6 +23,7 @@ import {
 } from "recharts";
 import { ReportCard } from '@/components/chat/report-card';
 import { Button } from '@/components/ui/button';
+import { useAuth, can } from '@/components/auth/auth-provider';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, buildWorkbookBase64, triggerDownload } from '@/lib/download';
 export type WorkspaceAnswer = {
   procedure?: { id: number; name: string; runId?: string; values: Record<string, unknown>; omitted?: string[]; resultSets?: { columns: string[]; rows: Record<string, unknown>[] }[]; output?: Record<string, unknown>; returnValue?: number | null; rowsAffected?: number[]; messages?: string[] };
@@ -137,6 +138,7 @@ export function WorkspaceResult({
   }
   const pageCount = totalCount !== undefined ? Math.max(1, Math.ceil(totalCount / REPORT_PAGE_SIZE)) : undefined;
   const [busy, setBusy] = useState(false);
+  const { user } = useAuth();
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<number>();
   const [scheduling, setScheduling] = useState(!!scheduleDraft && !isReport);
@@ -324,11 +326,11 @@ export function WorkspaceResult({
       <div className="flex flex-wrap items-center gap-2">
         <ColumnMenu columns={keys} hidden={hiddenColumns} onChange={next => { if (answer.procedure) setHiddenResultColumns(previous => ({ ...previous, [activeResult]: next })); else setHiddenColumns(next); setSaved(undefined); }}/>
         {procedureSets && procedureSets.length > 1 && <select aria-label="Report result table" className="h-9 max-w-full rounded-md border bg-white px-2 text-sm" value={activeResult} onChange={event => { setActiveResult(Number(event.target.value)); setProcedurePage(1); setSaved(undefined); }}>{procedureSets.map((set, index) => <option key={index} value={index}>Result {index + 1} · {set.rowCount.toLocaleString()} rows</option>)}</select>}
-        {(answer.toolId || answer.procedure) && <Button size="sm" className="gap-2" disabled={busy || !!saved || (!!runId && run?.status !== 'completed')} onClick={save}><Save size={14} />{saved ? 'Saved' : busy ? 'Saving...' : 'Save Report'}</Button>}
+        {(answer.toolId || answer.procedure) && can(user, 'reports.save') && <Button size="sm" className="gap-2" disabled={busy || !!saved || (!!runId && run?.status !== 'completed')} onClick={save}><Save size={14} />{saved ? 'Saved' : busy ? 'Saving...' : 'Save Report'}</Button>}
         {answer.procedure && isReport && <div className="flex items-center gap-2 text-xs"><button type="button" title="Previous page" disabled={procedurePage <= 1} onClick={() => setProcedurePage(p => p - 1)}><ChevronLeft size={16}/></button>Page {procedurePage} of {pageCount}<button type="button" title="Next page" disabled={procedurePage >= (pageCount || 1)} onClick={() => setProcedurePage(p => p + 1)}><ChevronRight size={16}/></button></div>}
         <a href={`/reports?workspace=${encodeURIComponent(id)}${answer.sourceId ? `&source=${encodeURIComponent(answer.sourceId)}` : ''}`} className="inline-flex h-9 items-center justify-center rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50">Saved Reports</a>
-        {(keys.length > 0 || answer.procedure) && <Button variant="outline" size="sm" className="gap-2" onClick={() => void exportAll()} disabled={busy || (!!runId && run?.status !== 'completed') || (!answer.procedure && !visibleKeys.length)}><Download size={14} />Export Excel</Button>}
-        {runId && <Button variant="outline" size="sm" className="gap-2" disabled={busy || run?.status !== 'completed'} onClick={() => void exportAll('pdf')}><FileText size={14}/>Export PDF</Button>}
+        {(keys.length > 0 || answer.procedure) && can(user, 'reports.export') && <Button variant="outline" size="sm" className="gap-2" onClick={() => void exportAll()} disabled={busy || (!!runId && run?.status !== 'completed') || (!answer.procedure && !visibleKeys.length)}><Download size={14} />Export Excel</Button>}
+        {runId && can(user, 'reports.export') && <Button variant="outline" size="sm" className="gap-2" disabled={busy || run?.status !== 'completed'} onClick={() => void exportAll('pdf')}><FileText size={14}/>Export PDF</Button>}
         {answer.toolId && isReport && (
           <>
             <button
@@ -366,7 +368,7 @@ export function WorkspaceResult({
             <ChartColumn size={16} /> {graph ? "Hide Graph" : "Generate Graph"}
           </button>
         )}
-        {!isReport && (answer.toolId || answer.procedure) && !scheduling && !scheduled && (
+        {!isReport && (answer.toolId || answer.procedure) && can(user, 'reports.schedule') && !scheduling && !scheduled && (
           <Button size="sm" variant="outline" className="gap-2" disabled={busy} onClick={() => setScheduling(true)}><CalendarClock size={14} />Schedule</Button>
         )}
         {saved && (

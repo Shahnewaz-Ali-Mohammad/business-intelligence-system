@@ -1,6 +1,7 @@
 import { getAppDb } from '@/lib/db/app-db';
 import { addNotification } from './notifications.mjs';
 import { presetRange } from './schedule-intent.mjs';
+import { currentAccess, AccessDenied } from '@/lib/access/data-scope.mjs';
 
 // Original chat (ISP warehouse) answers are re-run by asking the chat backend
 // the same question again, so a scheduled run gives exactly what the chat
@@ -49,6 +50,8 @@ async function postToScheduledChat(userId: number, narrative: string, artifact: 
 
 /** Re-runs one scheduled original-chat report; returns the new report id. */
 export async function rerunIspReport(report: ReportRow, runAt: number, title: string, baseTitle: string) {
+  // The original chat has no department rules yet: CEO (all data) only.
+  if (!currentAccess()?.allData) throw new AccessDenied('The original chat is available to the CEO only until department rules are set up for it.');
   const saved = report.data.ispQuestion as IspQuestion;
   const schedule = report.data.schedule as { timezone?: string; dateRange?: string } | undefined;
   const question = questionForRun(saved, schedule?.dateRange, schedule?.timezone || 'UTC', runAt);

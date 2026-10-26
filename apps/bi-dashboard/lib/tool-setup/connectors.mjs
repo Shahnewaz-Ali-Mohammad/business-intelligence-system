@@ -1,4 +1,5 @@
 import {namedKeyLinks} from './named-key-links.mjs';
+import { scopeForQuery } from '../access/data-scope.mjs';
 import pg from "pg";
 import mysql from "mysql2/promise";
 import mssql from "mssql";
@@ -282,6 +283,8 @@ export async function executeTool(
   offset = 0,
   options = {},
 ) {
+  // Department access rules for the signed-in person (refuses when absent).
+  parameters = await scopeForQuery(config, tool, catalog, parameters);
   const compiled = compileTool(
     tool,
     catalog,
@@ -330,6 +333,7 @@ export async function executeTool(
  * what the report shows.
  */
 export async function streamToolRows(config, tool, catalog, parameters, onBatch, batchSize = 5000) {
+  parameters = await scopeForQuery(config, tool, catalog, parameters);
   return withDatabase(config, async (query) => {
     let offset = 0;
     let total = 0;
@@ -383,6 +387,7 @@ async function summarizeRecords(config, compiled, columns) {
   };
 }
 export async function summarizeTool(config, tool, catalog, parameters = {}) {
+  parameters = await scopeForQuery(config, tool, catalog, parameters);
   const compiled = compileTool(tool, catalog, config.dialect, parameters);
   const columns = new Map(
     catalog.objects.flatMap((o) =>

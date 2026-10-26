@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied } from '@/lib/access/guard';
 // Authenticated proxy in front of the internal chat backend (readonly-api.mjs,
 // port 4100 by default). The browser used to call that port directly via a
 // NEXT_PUBLIC_ env var -- meaning ANY visitor, logged in or not, could query
@@ -59,7 +61,8 @@ function isRateLimited(userId: number): boolean {
 const REQUEST_TIMEOUT_MS = 155_000;
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(['chat.use', 'data.all']); if (denied(guard)) return guard; const user = guard.user;
+  void audit(user.id, 'question', 'original chat');
   if (!user) {
     return NextResponse.json({ error: 'Sign in to use the chat assistant.' }, { status: 401 });
   }

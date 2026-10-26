@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {groundReferenceLabels} from '@/lib/tool-setup/reference-binding.mjs';
 import {labelRecovery} from '@/lib/tool-setup/label-recovery.mjs';
 import {validateExecutionRequest} from '@/lib/tool-setup/execution-request.mjs';
@@ -79,12 +81,12 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const user = await getCurrentUser();
+  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; const user = guard.user;
   const workspace = user && (await getWorkspace(id));
   if (
     !user ||
     !workspace ||
-    workspace.ownerUserId !== user.id ||
+    !canOpenWorkspace(guard.access) ||
     id === "isp-default"
   )
     return NextResponse.json(
@@ -473,6 +475,8 @@ export async function POST(
           summary,
           sourceId: input.sourceId,
           toolName: current.definition.name,
+          // Shown under the answer so a Manager knows the figures cover their departments only.
+          dataScope: guard.access.allData ? null : `Showing data for: ${guard.access.departmentNames.join(', ') || 'no department'}`,
           databaseName: source.config.database,
           sourceTable: current.definition.base,
           toolId: current.id,
@@ -482,6 +486,7 @@ export async function POST(
           totalCount: summary ? Number(summary.population) || result.rows.length : undefined,
         };
         run.finish(await saveAnswer(answer));
+        void audit(user.id, 'question', input.message.slice(0, 255), { workspaceId: id, sourceId: input.sourceId, tool: current.definition.name, rows: answer.totalCount ?? result.rows.length, scope: answer.dataScope });
       } catch (error) {
         console.error('[workspace chat] query failed:', error instanceof Error ? error.message : error);
         devLog('failed', error instanceof Error ? error.stack || error.message : String(error));

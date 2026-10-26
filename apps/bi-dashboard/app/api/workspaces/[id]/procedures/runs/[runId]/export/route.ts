@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { Readable } from 'node:stream';
 import { getCurrentUser } from '@/lib/auth/session';
@@ -20,9 +22,10 @@ type WorkbookBuilder = { sheet: (name: string, headers: string[]) => SheetWriter
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string; runId: string }> }) {
   const { id, runId } = await params;
-  const user = await getCurrentUser();
+  const guard = await requireAccess(['procedures.run', 'reports.export']); if (denied(guard)) return guard; const user = guard.user;
+  void audit(user.id, 'export', new URL(req.url).pathname);
   const workspace = user && await getWorkspace(id);
-  if (!user || workspace?.ownerUserId !== user.id) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
+  if (!user || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
   const reportId = Number(req.nextUrl.searchParams.get('reportId'));
   if (!Number.isSafeInteger(reportId) || reportId <= 0) return NextResponse.json({ error: 'Save this report before exporting.' }, { status: 400 });
   const [reports] = await getAppDb().execute("SELECT JSON_UNQUOTE(JSON_EXTRACT(data, '$.workspaceToolAnswer.procedure.runId')) AS runId FROM generated_reports WHERE id=? AND user_id=?", [reportId, user.id]);

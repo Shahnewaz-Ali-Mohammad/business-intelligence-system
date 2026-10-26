@@ -23,11 +23,11 @@ export interface WorkspaceConnection {
   databaseName: string;
 }
 
-export async function listWorkspaces(userId: number): Promise<Workspace[]> {
+/** Every workspace: workspaces are shared across the organisation. */
+export async function listWorkspaces(): Promise<Workspace[]> {
   const [rows] = await getAppDb().execute(
     `select id, name, owner_user_id as ownerUserId, ai_system_prompt as aiSystemPrompt, created_at as createdAt
-       from workspaces where owner_user_id = ? order by created_at desc`,
-    [userId]
+       from workspaces order by created_at desc`
   );
   return rows as Workspace[];
 }
@@ -127,7 +127,7 @@ export async function recordSyncRun(
   );
 }
 
-export async function deleteWorkspace(workspaceId: string, ownerUserId: number): Promise<boolean> {
+export async function deleteWorkspace(workspaceId: string): Promise<boolean> {
   // Scoped to owner_user_id in the WHERE clause, not just checked beforehand --
   // makes it impossible for one request to delete a workspace it doesn't own
   // even if a caller forgets to check first. Cascades to workspace_connections,
@@ -135,8 +135,8 @@ export async function deleteWorkspace(workspaceId: string, ownerUserId: number):
   // ON DELETE CASCADE (see database/bi_app_schema.sql) -- deleting the
   // workspace row is enough, no need to delete children manually.
   const [result] = await getAppDb().execute(
-    `delete from workspaces where id = ? and owner_user_id = ?`,
-    [workspaceId, ownerUserId]
+    `delete from workspaces where id = ? and id <> 'isp-default'`,
+    [workspaceId]
   );
   return (result as { affectedRows: number }).affectedRows > 0;
 }

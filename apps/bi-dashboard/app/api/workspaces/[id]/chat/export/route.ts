@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Full .xlsx export of a workspace answer: re-runs the exact approved tool
 // and query plan behind the report and writes EVERY matching row, not just
 // the rows shown in chat or on the current report page.
@@ -19,9 +21,10 @@ export const maxDuration = 300;
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const user = await getCurrentUser();
+  const guard = await requireAccess(['chat.use', 'reports.export']); if (denied(guard)) return guard; const user = guard.user;
+  void audit(user.id, 'export', new URL(req.url).pathname);
   const workspace = user && (await getWorkspace(id));
-  if (!user || workspace?.ownerUserId !== user.id) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
+  if (!user || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
   const sp = new URL(req.url).searchParams;
   const toolId = sp.get('toolId');
   const query = sp.get('query') || '';

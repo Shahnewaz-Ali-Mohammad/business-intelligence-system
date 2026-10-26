@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied } from '@/lib/access/guard';
 // Whole-customer-LIST .xlsx export -- same fix as app/api/exports/tickets
 // (see that file's own comment for the full reasoning: Excel-only by this
 // app's own existing rule, re-queries fresh via a real cursor, accumulates
@@ -47,7 +49,8 @@ const HEADERS = [
 ];
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(['reports.export', 'data.all']); if (denied(guard)) return guard; const user = guard.user;
+  void audit(user.id, 'export', new URL(req.url).pathname);
   if (!user) {
     return new Response('Sign in to export data.', { status: 401 });
   }

@@ -1,3 +1,4 @@
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Human-in-the-loop confirmation: the review screen sends back the
 // (possibly edited) YAML, which becomes the workspace's confirmed_yaml --
 // the only field any future query/chat layer for this workspace is ever
@@ -13,14 +14,13 @@ import { getWorkspace, confirmYaml } from '@/lib/workspaces/workspaceDb';
 const BodySchema = z.object({ confirmedYaml: z.string().min(1) });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Sign in required.' }, { status: 401 });
-  }
+  const guard = await requireAccess('setup.manage');
+  if (denied(guard)) return guard;
+  const user = guard.user;
   const { id: workspaceId } = await params;
 
   const workspace = await getWorkspace(workspaceId);
-  if (!workspace || workspace.ownerUserId !== user.id) {
+  if (!workspace || !canOpenWorkspace(guard.access)) {
     return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 });
   }
 

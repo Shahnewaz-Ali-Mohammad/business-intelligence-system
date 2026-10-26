@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth/session';
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
+import { scopeProcedureValues } from '@/lib/access/data-scope.mjs';
+import { audit } from '@/lib/access/access-db';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getSource } from '@/lib/tool-setup/store';
 import { sensitiveOutput } from '@/lib/tool-setup/connectors.mjs';
@@ -13,20 +15,25 @@ import { getAppDb } from '@/lib/db/app-db';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-async function context(id: string, sourceId: string) {
-  const user = await getCurrentUser();
-  const workspace = user && await getWorkspace(id);
-  if (!user || workspace?.ownerUserId !== user.id) throw new Error('Workspace unavailable.');
+/** Running needs procedures.run; reviewing and approving procedures is setup work. */
+async function context(id: string, sourceId: string, need: 'procedures.run' | 'setup.manage' | 'either') {
+  const guard = await requireAccess();
+  if (denied(guard)) throw new Error('Sign in to continue.');
+  const { user, access } = guard;
+  const allowed = need === 'either' ? access.permissions.includes('procedures.run') || access.permissions.includes('setup.manage') : access.permissions.includes(need);
+  if (!allowed) throw new Error('Your role does not allow this.');
+  const workspace = await getWorkspace(id);
+  if (!workspace || !canOpenWorkspace(access)) throw new Error('Workspace unavailable.');
   const source = await getSource(id, sourceId);
   if (source.config.dialect !== 'sqlserver') throw new Error('Report procedure execution currently supports SQL Server databases only.');
-  return { user, source };
+  return { user, source, access };
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const sourceId = req.nextUrl.searchParams.get('sourceId') || '';
-    const { source } = await context(id, sourceId);
+    const { source } = await context(id, sourceId, 'either');
     const requestedId = Number(req.nextUrl.searchParams.get('procedureId'));
     const procedures = await procedureMetadata(source.config, Number.isSafeInteger(requestedId) && requestedId > 0 ? requestedId : undefined);
     const approvals = await readApprovals(sourceId);
@@ -41,7 +48,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!body || !Number.isSafeInteger(body.procedureId) || body.procedureId <= 0 || typeof body.sourceId !== 'string' || !['approve', 'run'].includes(body.action)) return NextResponse.json({ error: 'Invalid report request.' }, { status: 400 });
   if (body.sessionId != null && (!Number.isSafeInteger(body.sessionId) || body.sessionId <= 0)) return NextResponse.json({ error: 'Invalid chat session.' }, { status: 400 });
   try {
-    const { user, source } = await context(id, body.sourceId);
+    const { user, source, access } = await context(id, body.sourceId, body.action === 'approve' ? 'setup.manage' : 'procedures.run');
     if (body.action === 'run' && body.sessionId) {
       const [sessions] = await getAppDb().execute("SELECT id FROM chat_sessions WHERE id=? AND user_id=? AND warehouse_id=? AND NOT EXISTS(SELECT 1 FROM chat_messages m WHERE m.session_id=chat_sessions.id AND JSON_UNQUOTE(JSON_EXTRACT(m.report_data, '$.workspaceToolAnswer.sourceId'))<>?)", [body.sessionId, user.id, id, body.sourceId]);
       if (!(sessions as unknown[]).length) throw new Error('This conversation belongs to another workspace or database.');
@@ -56,6 +63,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     const approvals = await readApprovals(body.sourceId);
     authorizeProcedureRun(procedure, approvals[String(procedure.id)], body);
+    // Department access: the CEO runs freely; others only with the department
+    // parameter forced to their own value.
+    body.values = scopeProcedureValues({ procedure, values: body.values || {}, access, policy: access.allData ? null : await access.policyFor?.(source.config) });
+    void audit(user.id, 'procedure.run', `${procedure.schema}.${procedure.name}`, { workspaceId: id, sourceId: body.sourceId });
     // The procedure runs in a background worker that streams every row to
     // storage; the chat answer is created now and completed by the worker.
     const title = `${procedure.schema}.${procedure.name}`;

@@ -15,7 +15,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Check, Database, Download, FileSpreadsheet, LogIn, Plus, Save, Send, Sparkles, User, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useAuth } from '@/components/auth/auth-provider';
+import { useAuth, can } from '@/components/auth/auth-provider';
 import { getReportTable } from '@/lib/dashboard/report-table';
 import { XLSX_MIME_TYPE, base64ToBlob, buildXlsxBase64, triggerDownload } from '@/lib/download';
 import type { ChatResponse, DashboardData } from '@/lib/dashboard/metrics';
@@ -593,6 +593,17 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
     }
   }
 
+  // The original chat reads company-wide figures with no department rules
+  // yet, so only roles that see all data can use it.
+  if (user && !databaseWorkspace && !can(user, 'data.all')) {
+    return (
+      <div className="flex h-full min-h-0 flex-col items-center justify-center rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-600">
+        <p className="font-medium text-zinc-800">The original workspace is available to the CEO only.</p>
+        <p className="mt-1">Open one of the workspaces in the sidebar; you will see your department’s data there.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="bi-chat flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
       <div className="shrink-0 border-b border-zinc-200/70 bg-white/70 px-5 py-4">
@@ -671,6 +682,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                 <div className="min-w-0 flex-1 sm:mr-12">
                 <div className="bi-message min-w-0 max-w-full rounded-lg border border-zinc-200/80 bg-white px-4 py-3 text-sm leading-7 text-zinc-700">
                   <p className="whitespace-pre-line break-words">{message.text}</p>
+                  {(message.workspaceAnswer as { dataScope?: string | null } | undefined)?.dataScope ? <p className="mt-1 text-xs text-zinc-500">{(message.workspaceAnswer as { dataScope?: string }).dataScope}</p> : null}
                   {message.retry && !loading ? (
                     <button type="button" className="mt-2 rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50" onClick={() => { const question = message.retry!; if (databaseWorkspace) void submitDatabaseQuestion(question); else { setInput(question); } }}>
                       Try again
@@ -755,13 +767,17 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
       {schedulesPanel && <SchedulesPanel workspaceId={databaseWorkspace?.id ?? 'isp-default'} sourceId={databaseWorkspace?.sourceId ?? ''} onClose={() => setSchedulesPanel(false)} />}
       {input.trimStart().startsWith('/') && !procedurePicker && (
         <div className="mx-3 mb-2 flex flex-wrap gap-2 text-xs text-zinc-600">
-          {databaseWorkspace ? <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/run</b> run a stored procedure</span> : null}
-          <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedule</b> question + when, e.g. “/schedule customers per package every Monday 9am for last week”</span>
-          <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedules</b> see and manage schedules</span>
+          {databaseWorkspace && can(user, 'procedures.run') ? <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/run</b> run a stored procedure</span> : null}
+          {can(user, 'reports.schedule') ? <><span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedule</b> question + when, e.g. “/schedule customers per package every Monday 9am for last week”</span>
+          <span className="rounded-md border border-zinc-200 bg-white px-2 py-1"><b>/schedules</b> see and manage schedules</span></> : <span className="rounded-md border border-zinc-200 bg-white px-2 py-1">No commands are available for your role.</span>}
         </div>
       )}
       <form onSubmit={event => {
         const command = input.trim();
+        // Commands the person's role does not allow are explained, not run (the server refuses them too).
+        const refuse = (text: string) => { event.preventDefault(); setMessages((prev) => [...prev, { role: 'assistant', text, createdAt: new Date().toISOString() }]); setInput(''); };
+        if (/^\/schedules?\b/i.test(command) && !can(user, 'reports.schedule')) { refuse('Your role does not include scheduling reports.'); return; }
+        if (databaseWorkspace && /^\/(?!schedules?\b)\S/i.test(command) && !can(user, 'procedures.run')) { refuse('Your role does not include running stored procedures.'); return; }
         // Slash commands work the same in every chat; /run only where stored procedures exist.
         if (/^\/schedules\b/i.test(command)) { event.preventDefault(); setSchedulesPanel(true); setInput(''); return; }
         if (!databaseWorkspace && /^\/schedule\b/i.test(command)) {
@@ -796,7 +812,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
           <textarea
             value={input}
             aria-label="Your question"
-            onChange={(event) => { setInput(event.target.value); const typed = event.target.value.trimStart(); if (databaseWorkspace && typed.startsWith('/') && !/^\/s(c(h(e(d(u(l(e(s)?)?)?)?)?)?)?)?$|^\/schedules?\b/i.test(typed) && typed.length > 1) setProcedurePicker(true); }}
+            onChange={(event) => { setInput(event.target.value); const typed = event.target.value.trimStart(); if (databaseWorkspace && can(user, 'procedures.run') && typed.startsWith('/') && !/^\/s(c(h(e(d(u(l(e(s)?)?)?)?)?)?)?)?$|^\/schedules?\b/i.test(typed) && typed.length > 1) setProcedurePicker(true); }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();

@@ -8,6 +8,7 @@
 // lightweight IP-based rate limit is still applied since this triggers a
 // real database query per call.
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAccess, denied } from '@/lib/access/guard';
 
 const DASHBOARD_API_INTERNAL_URL = process.env.DASHBOARD_API_INTERNAL_URL ?? 'http://localhost:4100/api/dashboard';
 
@@ -26,6 +27,9 @@ function isRateLimited(key: string): boolean {
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export async function GET(req: NextRequest) {
+  // Company-wide ISP figures: CEO (all data) only.
+  const guard = await requireAccess('data.all');
+  if (denied(guard)) return guard;
   const clientKey = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? 'unknown';
   if (isRateLimited(clientKey)) {
     return NextResponse.json({ error: 'Too many requests -- please wait a moment.' }, { status: 429 });

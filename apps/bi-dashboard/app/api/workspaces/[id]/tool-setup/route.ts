@@ -1,3 +1,5 @@
+import { requireAccess, denied } from "@/lib/access/guard";
+import { enterAccess } from "@/lib/access/data-scope.mjs";
 import {missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {selectedScope} from '@/lib/tool-setup/scenario-selection.mjs';
 import {startGeneration, generationStatus, cancelGeneration, resumeGeneration} from '@/lib/tool-setup/generation-jobs';
@@ -89,11 +91,13 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("removeAllTools"), sourceId: id }),
   z.object({ action: z.literal("reuseConnection"), serverId: id }),
 ]);
+/** Tool setup is admin work; its test runs see sample rows of the database being set up. */
 async function access(workspaceId: string) {
-  const user = await getCurrentUser();
-  if (!user) return false;
+  const guard = await requireAccess("setup.manage");
+  if (denied(guard)) return false;
+  enterAccess({ ...guard.access, setupPreview: true });
   const workspace = await getWorkspace(workspaceId);
-  return workspace?.ownerUserId === user.id && workspaceId !== "isp-default";
+  return !!workspace && workspaceId !== "isp-default";
 }
 function failure(error: unknown, stage: string) {
   const code = (error as { code?: string }).code;

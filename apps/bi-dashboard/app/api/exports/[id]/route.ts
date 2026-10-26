@@ -1,3 +1,4 @@
+import { requireAccess, denied } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppDb } from '@/lib/db/app-db';
 import { getCurrentUser } from '@/lib/auth/session';
@@ -8,7 +9,7 @@ export const runtime = 'nodejs';
 
 /** ?download=1 sends the file itself; without it, the export record. */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ export: null }, { status: 401 });
 
   const { id } = await params;
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ deleted: false, reason: 'not logged in' }, { status: 401 });
 
   const { id } = await params;

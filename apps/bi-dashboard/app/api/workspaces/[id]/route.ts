@@ -1,3 +1,5 @@
+import { audit } from '@/lib/access/access-db';
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {getAppDb} from '@/lib/db/app-db';
 // Single-workspace operations -- currently just delete. Kept separate from
 // app/api/workspaces/route.ts (list/create) since that one has no [id]
@@ -7,10 +9,9 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getWorkspace, deleteWorkspace } from '@/lib/workspaces/workspaceDb';
 
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Sign in required.' }, { status: 401 });
-  }
+  const guard = await requireAccess('setup.manage');
+  if (denied(guard)) return guard;
+  const user = guard.user;
   const { id: workspaceId } = await params;
 
   // The seeded row representing the existing, real ISP production system --
@@ -21,7 +22,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'The existing ISP system cannot be removed from here.' }, { status: 400 });
   }
 
-  const deleted = await deleteWorkspace(workspaceId, user.id);
+  const deleted = await deleteWorkspace(workspaceId);
+  void audit(user.id, 'workspace.delete', workspaceId);
   if (!deleted) {
     return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 });
   }
@@ -30,11 +32,11 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
 
 export async function PATCH(request:Request,{params}:{params:Promise<{id:string}>}){
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return NextResponse.json({error:'Cross-origin request blocked.'},{status:403});
- const user=await getCurrentUser();if(!user)return NextResponse.json({error:'Sign in required.'},{status:401});
+ const guard=await requireAccess('setup.manage');if(denied(guard))return guard;const user=guard.user;
  const {id}=await params;const workspace=await getWorkspace(id);
- if(!workspace||workspace.ownerUserId!==user.id||id==='isp-default')return NextResponse.json({error:'Workspace unavailable.'},{status:403});
+ if(!workspace||!canOpenWorkspace(guard.access)||id==='isp-default')return NextResponse.json({error:'Workspace unavailable.'},{status:403});
  const input=await request.json().catch(()=>null);const name=typeof input?.name==='string'?input.name.trim():'';
  if(!name||name.length>200)return NextResponse.json({error:'Enter a workspace name between 1 and 200 characters.'},{status:400});
- await getAppDb().execute('UPDATE workspaces SET name=? WHERE id=? AND owner_user_id=?',[name,id,user.id]);
+ await getAppDb().execute('UPDATE workspaces SET name=? WHERE id=?',[name,id]);
  return NextResponse.json({id,name});
 }

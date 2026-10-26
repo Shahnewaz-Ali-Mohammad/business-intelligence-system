@@ -1,3 +1,4 @@
+import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 // Re-introspects the workspace's saved connection and asks the model to
 // draft a candidate semantic model from it. Never auto-confirmed -- see
 // confirm-model/route.ts, the only place that writes what the chat/query
@@ -9,14 +10,13 @@ import { draftSemanticModel } from '@/lib/workspaces/draftSemanticModel';
 import { introspectPostgres } from '../../../../../../bi-warehouse/src/introspection/introspectPostgres.mjs';
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Sign in required.' }, { status: 401 });
-  }
+  const guard = await requireAccess('setup.manage');
+  if (denied(guard)) return guard;
+  const user = guard.user;
   const { id: workspaceId } = await params;
 
   const workspace = await getWorkspace(workspaceId);
-  if (!workspace || workspace.ownerUserId !== user.id) {
+  if (!workspace || !canOpenWorkspace(guard.access)) {
     return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 });
   }
 

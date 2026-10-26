@@ -2,7 +2,12 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
-export type AuthUser = { id: number; email: string; displayName: string | null };
+export type AuthUser = { id: number; email: string; displayName: string | null; roles?: string[]; permissions?: string[]; departments?: string[] };
+
+/** True when the signed-in person's role allows this. The server checks again. */
+export function can(user: AuthUser | null, permission: string) {
+  return !!user?.permissions?.includes(permission);
+}
 
 type AuthContextValue = {
   user: AuthUser | null;

@@ -1,3 +1,4 @@
+import { requireAccess, denied } from '@/lib/access/guard';
 // Persists generated report/artifact pages (chat intent "create_new_page")
 // for the logged-in user.
 import { NextRequest, NextResponse } from 'next/server';
@@ -8,7 +9,7 @@ import { SAVE_ROW_CAP, capRowArraysForSave } from '@/lib/dashboard/report-save';
 const PAGE_SIZE = 6; // standardized with Sessions list (was 5)
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess(); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ reports: [], total: 0 });
 
   const page = Math.max(1, Number(req.nextUrl.searchParams.get('page')) || 1);
@@ -57,7 +58,7 @@ export async function GET(req: NextRequest) {
 // future row-level field without another hand-written case.
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
+  const guard = await requireAccess('reports.save'); if (denied(guard)) return guard; const user = guard.user;
   if (!user) return NextResponse.json({ saved: false, reason: 'not logged in' });
 
   try {
