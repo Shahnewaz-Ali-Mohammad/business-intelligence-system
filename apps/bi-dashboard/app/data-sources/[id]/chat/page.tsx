@@ -3,11 +3,13 @@ import { Suspense, use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { WorkspacePage } from "@/components/workspace/workspace-page";
+import { useAuth, can } from "@/components/auth/auth-provider";
 import { ChatWorkspace } from "@/components/chat/chat-workspace";
 type Source = { id: string; database: string };
 function DatabaseChat({ id }: { id: string }) {
   const search = useSearchParams();
   const router = useRouter();
+  const { user } = useAuth();
   const [sources, setSources] = useState<Source[]>([]);
   const [resolvedSource, setResolvedSource] = useState("");
   const [error, setError] = useState("");
@@ -15,13 +17,20 @@ function DatabaseChat({ id }: { id: string }) {
   const [name, setName] = useState("Chat Workspace");
   const session = search.get("session");
   const requestedSource = search.get("source");
+  // Remembered so "Chat" reopens this workspace next time.
+  useEffect(() => { try { localStorage.setItem("bi:lastWorkspace", id); } catch {} }, [id]);
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const response = await fetch(`/api/workspaces/${id}/tool-setup`);
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Workspace unavailable.");
+        // The workspace list (open to every role that can chat) carries its databases;
+        // Tool setup details are for admins only.
+        const response = await fetch('/api/workspaces');
+        const list = await response.json();
+        if (!response.ok) throw new Error(list.error || "Workspace unavailable.");
+        const workspace = (list.workspaces || []).find((w: { id: string }) => w.id === id);
+        if (!workspace) throw new Error("Workspace unavailable.");
+        const data = { sources: (workspace.databases || []).map((d: { id: string; name: string }) => ({ id: d.id, database: d.name })) };
         let sourceId = requestedSource || "";
         if (session) {
           const r = await fetch(`/api/chat-sessions/${session}`);
@@ -33,9 +42,8 @@ function DatabaseChat({ id }: { id: string }) {
         }
         if (!sourceId && data.sources.length) sourceId = data.sources[0].id;
         if (sourceId && !data.sources.some((s: Source) => s.id === sourceId)) throw new Error("This saved database is no longer available.");
-        const workspaces = await fetch('/api/workspaces').then((r) => r.json());
         if (!cancelled) {
-          setName(workspaces.workspaces?.find((w: { id: string }) => w.id === id)?.name || "Chat Workspace");
+          setName(workspace.name || "Chat Workspace");
           setSources(data.sources); setResolvedSource(sourceId); setError(""); setLoaded(true);
           if (sourceId && !requestedSource) router.replace(`/data-sources/${id}/chat?source=${encodeURIComponent(sourceId)}${session ? `&session=${encodeURIComponent(session)}` : ''}`, { scroll: false });
         }
@@ -57,7 +65,7 @@ function DatabaseChat({ id }: { id: string }) {
             {sources.map((item) => <option key={item.id} value={item.id}>{item.database}</option>)}
           </select>
         </label>}
-        <Link href={`/data-sources/${id}/tools`} className="text-sm font-medium text-rose-700 hover:underline">Database setup</Link>
+        {can(user, 'setup.manage') ? <Link href={`/data-sources/${id}/tools`} className="text-sm font-medium text-rose-700 hover:underline">Database setup</Link> : null}
       </div>}
       {error ? <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p> : source ? <div className="min-h-0 flex-1"><ChatWorkspace key={`${id}:${source.id}`} databaseWorkspace={{ id, sourceId: source.id, database: source.database, name }} /></div> : <p className="text-sm text-zinc-500">{!loaded ? 'Loading workspace...' : sources.length ? 'Choose a connected database.' : 'Connect a database in Tool setup.'}</p>}
     </div>

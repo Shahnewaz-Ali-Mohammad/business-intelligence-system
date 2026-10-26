@@ -76,7 +76,8 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
   const searchParams = useSearchParams();
   const [workspaceList, setWorkspaceList] = useState<{ userId: number; rows: { id: string; name: string; databases?: { id: string; name: string }[] }[]; error?: string } | null>(null);
   const currentChatSessionId = searchParams.get('session');
-  const currentWorkspaceId = pathname.match(/^\/data-sources\/([^/]+)/)?.[1] || searchParams.get('workspace') || 'isp-default';
+  // The original workspace is current only when it is actually open (never a default).
+  const currentWorkspaceId = pathname.match(/^\/data-sources\/([^/]+)/)?.[1] || searchParams.get('workspace') || (pathname === '/chat' && (searchParams.get('original') || searchParams.get('session')) ? 'isp-default' : '');
   const currentSourceId = searchParams.get('source');
   const scope = new URLSearchParams();
   if (currentWorkspaceId) scope.set('workspace', currentWorkspaceId);
@@ -281,7 +282,7 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
             return (
               <Link
                 key={item.href}
-                href={item.label === 'Chat' ? currentWorkspaceId === 'isp-default' ? '/chat' : `/data-sources/${encodeURIComponent(currentWorkspaceId)}/chat${currentSourceId ? `?source=${encodeURIComponent(currentSourceId)}` : ''}` : ['Reports', 'Exports', 'Settings'].includes(item.label) ? `${item.href}?${scopeQuery}` : item.href}
+                href={item.label === 'Chat' ? !currentWorkspaceId ? '/chat' : currentWorkspaceId === 'isp-default' ? '/chat?original=1' : `/data-sources/${encodeURIComponent(currentWorkspaceId)}/chat${currentSourceId ? `?source=${encodeURIComponent(currentSourceId)}` : ''}` : ['Reports', 'Exports', 'Settings'].includes(item.label) ? `${item.href}${scopeQuery ? `?${scopeQuery}` : ''}` : item.href}
                 onClick={onNavigate}
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-semibold transition ${
                   selected
@@ -302,7 +303,7 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
               <p className="text-xs font-bold uppercase tracking-wide text-zinc-500">Workspaces</p>
               {can(user, 'setup.manage') ? <Link href="/data-sources" onClick={onNavigate} title="Create or manage workspaces" aria-label="Create or manage workspaces" className="rounded-md p-1 text-rose-700 hover:bg-rose-50"><Plus size={16} /></Link> : null}
             </div>
-            {can(user, 'data.all') ? <Link href="/chat" onClick={onNavigate} aria-current={currentWorkspaceId === 'isp-default' ? 'page' : undefined} className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm ${currentWorkspaceId === 'isp-default' ? 'bg-rose-50 font-semibold text-rose-800' : 'text-zinc-600 hover:bg-zinc-50'}`}><MessageSquareText size={16} />Original workspace</Link> : null}
+            {can(user, 'data.all') ? <Link href="/chat?original=1" onClick={onNavigate} aria-current={currentWorkspaceId === 'isp-default' ? 'page' : undefined} className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm ${currentWorkspaceId === 'isp-default' ? 'bg-rose-50 font-semibold text-rose-800' : 'text-zinc-600 hover:bg-zinc-50'}`}><MessageSquareText size={16} />Original workspace</Link> : null}
             {workspaceList?.userId !== user.id ? <p className="px-2 text-xs text-zinc-500">Loading...</p> : workspaceList.error ? <p role="alert" className="px-2 text-xs text-red-700">{workspaceList.error}</p> : workspaceList.rows.length === 0 ? <Link href="/data-sources" onClick={onNavigate} className="block px-2 text-sm text-rose-700">Create workspace</Link> : (
               <div className="max-h-64 space-y-1 overflow-y-auto">
                 {workspaceList.rows.filter((w) => w.id !== 'isp-default').map((w) => {
@@ -314,7 +315,7 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                       {workspaceRenameError&&<p role="alert" className="text-xs text-red-700">{workspaceRenameError}</p>}
                     </form> : <div className={`flex items-center rounded-md ${selected?'bg-rose-50':''}`}>
                       <Link href={`/data-sources/${encodeURIComponent(w.id)}/chat${selected&&currentSourceId?`?source=${encodeURIComponent(currentSourceId)}`:''}`} onClick={onNavigate} aria-current={selected?'page':undefined} title={w.name} className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 py-2 text-sm ${selected?'font-semibold text-rose-800':'text-zinc-600 hover:bg-zinc-50'}`}><MessageSquareText size={16} className="shrink-0"/><span className="min-w-0 break-words">{w.name}</span></Link>
-                      <button type="button" aria-label={`Rename ${w.name}`} title="Rename workspace" onClick={()=>{setRenamingWorkspace(w.id);setWorkspaceName(w.name);setWorkspaceRenameError('');}} className="mr-1 rounded-md p-2 text-zinc-500 hover:bg-white hover:text-rose-700"><Pencil size={14}/></button>
+                      {can(user, 'setup.manage') ? <button type="button" aria-label={`Rename ${w.name}`} title="Rename workspace" onClick={()=>{setRenamingWorkspace(w.id);setWorkspaceName(w.name);setWorkspaceRenameError('');}} className="mr-1 rounded-md p-2 text-zinc-500 hover:bg-white hover:text-rose-700"><Pencil size={14}/></button> : null}
                     </div>}
                   </div>;
                 })}

@@ -108,12 +108,12 @@ export default function DataSourcesPage() {
           )}
           {rows.map((row) => (
             <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-              <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}/tools`} className="min-w-0 flex-1 break-words text-sm font-medium text-zinc-800 hover:underline">
+              <Link href={row.id === 'isp-default' ? '/chat?original=1' : `/data-sources/${row.id}/tools`} className="min-w-0 flex-1 break-words text-sm font-medium text-zinc-800 hover:underline">
                 {row.name}
               </Link>
               <div className="flex items-center gap-4">
                 {row.id !== 'isp-default' && <Link href={`/data-sources/${row.id}/chat`} className="text-xs font-medium text-rose-700 hover:underline">Workspace chat</Link>}
-                <Link href={row.id === 'isp-default' ? '/chat' : `/data-sources/${row.id}/tools`} className="text-xs text-rose-800 hover:text-rose-900">
+                <Link href={row.id === 'isp-default' ? '/chat?original=1' : `/data-sources/${row.id}/tools`} className="text-xs text-rose-800 hover:text-rose-900">
                   Open &rarr;
                 </Link>
                 {row.id !== 'isp-default' && (

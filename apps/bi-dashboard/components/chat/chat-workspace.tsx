@@ -359,7 +359,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
     setSessionTitle(null);
     setSessionWarehouseId(null);
     sessionSetupRef.current = null;
-    router.push(databaseWorkspace ? `/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}` : '/chat');
+    router.push(databaseWorkspace ? `/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}` : '/chat?original=1');
   }
 
   async function submitDatabaseQuestion(message: string, scheduleDraft?: ScheduleDraft) {
