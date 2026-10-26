@@ -84,7 +84,8 @@ export async function loadAccess(userId: number): Promise<Access> {
     allData: permissions.includes('data.all'),
     dataRole: roles.some((r) => DATA_ROLES.includes(r)),
     policyFor: policyForConfig,
-    mfaSetupRequired: roles.some((r) => r === 'admin' || r === 'ceo') && !(await hasMfa(userId)),
+    // Two-step sign-in is optional unless BI_REQUIRE_MFA=on (then Admin and CEO must use it).
+    mfaSetupRequired: process.env.BI_REQUIRE_MFA === 'on' && roles.some((r) => r === 'admin' || r === 'ceo') && !(await hasMfa(userId)),
   };
 }
 

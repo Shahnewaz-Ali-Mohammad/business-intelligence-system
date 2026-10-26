@@ -8,7 +8,7 @@ import { newSecret, verifyCode, otpauthUrl } from './totp.mjs';
 // sign-in waits as a short-lived ticket until the 6-digit code is entered.
 
 export const MFA_REQUIRED_ROLES = ['admin', 'ceo'];
-export const mfaRequiredFor = (roles: string[]) => roles.some((r) => MFA_REQUIRED_ROLES.includes(r));
+export const mfaRequiredFor = (roles: string[]) => process.env.BI_REQUIRE_MFA === 'on' && roles.some((r) => MFA_REQUIRED_ROLES.includes(r));
 const hash = (token: string) => createHash('sha256').update(token).digest('hex');
 
 type Row = { secret: string; enabled_at: unknown; last_step: number | null };

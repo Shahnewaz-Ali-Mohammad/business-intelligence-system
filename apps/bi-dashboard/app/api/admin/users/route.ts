@@ -17,14 +17,14 @@ export async function GET() {
   if (denied(guard)) return guard; enterAccess(guard.access);
   const db = getAppDb();
   const [users] = await db.execute(`SELECT u.id, u.email, u.display_name, u.created_at, (SELECT disabled_at FROM user_status WHERE user_id=u.id) AS disabled_at,
-      (SELECT JSON_ARRAYAGG(r.role) FROM user_roles r WHERE r.user_id=u.id) AS roles,
-      (SELECT JSON_ARRAYAGG(d.department_id) FROM user_departments d WHERE d.user_id=u.id) AS departments,
+      (SELECT GROUP_CONCAT(r.role) FROM user_roles r WHERE r.user_id=u.id) AS roles,
+      (SELECT GROUP_CONCAT(d.department_id) FROM user_departments d WHERE d.user_id=u.id) AS departments,
       (SELECT MAX(s.created_at) FROM sessions s WHERE s.user_id=u.id) AS last_sign_in,
       (SELECT enabled_at FROM user_mfa m WHERE m.user_id=u.id) AS mfa_at
     FROM users u ORDER BY disabled_at IS NOT NULL, u.email`);
   const [invites] = await db.execute('SELECT id, email, roles, department_ids, expires_at, created_at FROM invitations WHERE used_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC');
   return NextResponse.json({
-    users: (users as Record<string, unknown>[]).map((u) => ({ id: u.id, email: u.email, displayName: u.display_name, createdAt: u.created_at, disabledAt: u.disabled_at, lastSignIn: u.last_sign_in, mfa: !!u.mfa_at, roles: parse(u.roles) || [], departmentIds: parse(u.departments) || [] })),
+    users: (users as Record<string, unknown>[]).map((u) => ({ id: u.id, email: u.email, displayName: u.display_name, createdAt: u.created_at, disabledAt: u.disabled_at, lastSignIn: u.last_sign_in, mfa: !!u.mfa_at, roles: u.roles ? String(u.roles).split(',') : [], departmentIds: u.departments ? String(u.departments).split(',').map(Number) : [] })),
     invitations: (invites as Record<string, unknown>[]).map((i) => ({ id: i.id, email: i.email, roles: parse(i.roles), departmentIds: parse(i.department_ids), expiresAt: i.expires_at })),
     roles: ROLE_NAMES.map((name) => ({ name, ...ROLES[name as keyof typeof ROLES] })),
     departments: await listDepartments(),
