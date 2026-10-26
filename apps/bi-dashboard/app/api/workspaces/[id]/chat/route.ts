@@ -5,11 +5,11 @@ import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import {groundReferenceLabels} from '@/lib/tool-setup/reference-binding.mjs';
 import {assertRelevantLabels,labelRecovery,relevantLabelEvidence} from '@/lib/tool-setup/label-recovery.mjs';
 import {validateExecutionRequest} from '@/lib/tool-setup/execution-request.mjs';
-import {candidateTools} from '@/lib/tool-setup/chat-planning.mjs';
+import {candidateTools,requiresDetailedReport} from '@/lib/tool-setup/chat-planning.mjs';
 import { ChatOpenAI } from '@langchain/openai';
 import { workspaceEntry } from '../../../../../scripts/chat/workspace-entry.mjs';
 import { writeAnalyticalInsight } from '../../../../../scripts/lib/analytical-insight.mjs';
-import {validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
+import {isAggregateRequest,validateReportSelection} from '@/lib/tool-setup/request-fields.mjs';
 import {resolveSavedRequest,missingReportDecision} from '@/lib/tool-setup/lookup-resolution.mjs';
 import {addRequestedCalculations,assertNamedColumns} from '@/lib/tool-setup/analysis-intent.mjs';
 import {devLog} from '@/lib/dev-log.mjs';
@@ -58,20 +58,72 @@ const Input = z
   })
   .strict();
 const turns = new Map<number, number[]>();
-// Used only when the insight writer is unavailable: describes the largest
-// groups directly from the database result instead of a placeholder.
-function groupedFallback(rows: Record<string, unknown>[], mode: string) {
+function readableField(value: string) {
+  return value
+    .replace(/^[^:]+:/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+function queryPlan(value: unknown) {
+  if (typeof value !== 'string') return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  try { return JSON.parse(value) as Record<string, unknown>; } catch { return null; }
+}
+function filterFields(node: unknown, fields = new Set<string>()) {
+  if (!node || typeof node !== 'object') return fields;
+  const filter = node as {field?: unknown; and?: unknown[]; or?: unknown[]; not?: unknown};
+  if (typeof filter.field === 'string') fields.add(filter.field);
+  for (const child of [...(filter.and || []), ...(filter.or || [])]) filterFields(child, fields);
+  filterFields(filter.not, fields);
+  return fields;
+}
+function preserveFollowUpFilters(message: string, current: string, previous: Record<string, unknown> | null) {
+  if (!previous?.where || !/^(?:just|only|now|and|also|what about|how about)\b|\b(?:those|these|them|ones|same)\b/i.test(message.trim())) return current;
+  const plan = queryPlan(current);
+  if (!plan) return current;
+  const currentFields = filterFields(plan.where);
+  const retained: unknown[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return;
+    const filter = node as {field?: unknown; and?: unknown[]; or?: unknown[]; not?: unknown};
+    if (typeof filter.field === 'string') { if (!currentFields.has(filter.field)) retained.push(filter); return; }
+    for (const child of [...(filter.and || []), ...(filter.or || [])]) visit(child);
+    if (filter.not) visit(filter.not);
+  };
+  visit(previous.where);
+  if (!retained.length) return current;
+  plan.where = {and: [...retained, ...(plan.where ? [plan.where] : [])]};
+  return JSON.stringify(plan);
+}
+function aggregateNarrative(rows: Record<string, unknown>[], mode: string, query: unknown) {
   if (mode !== 'aggregate' || !rows.length) return '';
   const keys = Object.keys(rows[0]);
   const numericKey = (k: string) => !k.includes(':') && rows.every((r) => r[k] == null || Number.isFinite(Number(r[k])));
   const metric = keys.find(numericKey) || keys.at(-1)!;
   const labels = keys.filter((k) => k.includes(':'));
-  const total = rows.reduce((n, r) => n + (Number(r[metric]) || 0), 0);
-  const top = [...rows].sort((a, b) => (Number(b[metric]) || 0) - (Number(a[metric]) || 0)).slice(0, 3);
+  const plan = queryPlan(query);
+  const operation = Array.isArray((plan as {metrics?: unknown[]})?.metrics)
+    ? String(((plan as {metrics: Array<{operation?: unknown}>}).metrics[0]?.operation) || '')
+    : '';
   const text = (v: unknown) => v == null ? 'Missing' : v instanceof Date ? v.toISOString().slice(0, 10) : String(v).replace(/T00:00:00(?:\.000)?Z$/, '');
   const name = (r: Record<string, unknown>) => labels.map((k) => text(r[k])).join(' / ') || 'All';
-  const share = (r: Record<string, unknown>) => (total ? ` (${(((Number(r[metric]) || 0) / total) * 100).toFixed(1)}%)` : '');
-  return `${rows.length.toLocaleString()} groups. Largest: ${top.map((r) => `${name(r)} ${Number(r[metric]).toLocaleString()}${share(r)}`).join(', ')}.`;
+  const value = (r: Record<string, unknown>) => Number(r[metric]) || 0;
+  const metricName = readableField(metric) || (operation === 'count' ? 'count' : 'value');
+  if (!labels.length && rows.length === 1) {
+    const formatted = value(rows[0]).toLocaleString();
+    if (metricName.startsWith('total ')) return `There are ${formatted} ${metricName.slice(6)}.`;
+    if (metricName === 'record count' || metricName === 'count') return `There are ${formatted} matching records.`;
+    return `The ${metricName} is ${formatted}.`;
+  }
+  const ranked = [...rows].sort((a, b) => value(b) - value(a));
+  const highest = ranked[0];
+  const lowest = ranked.at(-1)!;
+  const next = ranked.slice(1, 3);
+  const following = next.length
+    ? ` Next are ${next.map((row) => `${name(row)} with ${value(row).toLocaleString()}`).join(' and ')}.`
+    : '';
+  return `Across ${rows.length.toLocaleString()} groups, ${name(highest)} has the highest ${metricName} at ${value(highest).toLocaleString()}.${following} ${name(lowest)} has the lowest at ${value(lowest).toLocaleString()}.`;
 }
 function sourceName(setup: { sources: { id: string; name?: string; database?: string }[] }, sourceId: string) {
   const s = setup.sources.find((x) => x.id === sourceId);
@@ -112,6 +164,7 @@ export async function POST(
     );
   const input = parsed.data;
   let history = input.history;
+  let previousQuery: Record<string, unknown> | null = null;
   if (input.sessionId) {
     const [rows] = await getAppDb().execute(
       "SELECT id FROM chat_sessions WHERE id=? AND user_id=? AND warehouse_id=?",
@@ -131,6 +184,12 @@ export async function POST(
       content: string;
       report_data: string | object | null;
     }[];
+    for (const message of saved) {
+      const data = typeof message.report_data === 'string' ? JSON.parse(message.report_data) : message.report_data;
+      const prior = (data as {workspaceToolAnswer?: {query?: unknown}} | null)?.workspaceToolAnswer?.query;
+      const parsedPrior = queryPlan(prior);
+      if (parsedPrior) { previousQuery = parsedPrior; break; }
+    }
     for (const message of saved) {
       const data =
         typeof message.report_data === "string"
@@ -164,7 +223,8 @@ export async function POST(
       t.sourceId === input.sourceId &&
       t.status === "approved",
   );
-  const tools = candidateTools(input.message, approvedTools);
+  const requestedMode = requiresDetailedReport(input.message) ? 'rows' : isAggregateRequest(input.message) ? 'aggregate' : null;
+  const tools = candidateTools(input.message, approvedTools).filter((tool) => !requestedMode || tool.definition.mode === requestedMode);
   let lastFailureReason = '';
   // Stages of this answer (name and duration), saved with the message.
   let runSteps: () => { name: string; ms: number }[] = () => [];
@@ -294,6 +354,7 @@ export async function POST(
           if (!latest.definition.capabilities) validateReportSelection(input.message,latest.definition,tools);
           let parameters = { query: addRequestedCalculations(input.message,latest.definition,queryFor(latest.definition, requestedRecordArguments(input.message,latest.definition,args)),catalog) };
           parameters.query=groundReferenceLabels(latest.definition,catalog,parameters.query);
+          parameters.query=preserveFollowUpFilters(input.message,parameters.query,previousQuery);
           // If the chosen query tool cannot run this plan (for example the
           // fields are only reachable from another table's tool), run the same
           // plan on the approved query tool that can.
@@ -460,6 +521,9 @@ export async function POST(
           narrativeText=`${summary.matchedRecords.toLocaleString()} matching records were found, but the requested amount values are missing. A total cannot be calculated from those values.`;
         } else if(current.definition.mode==='rows'&&summary&&!summary.numeric.length&&(result.hasMore||result.rows.length>5)){
           narrativeText=countLine;
+        } else if (current.definition.mode === 'aggregate') {
+          narrativeText = aggregateNarrative(result.rows, current.definition.mode, query)
+            || 'The verified database summary is shown below.';
         } else {
           run.progress('Writing the insight');
           // The count line goes first so the insight only ever adds to it.
@@ -472,7 +536,6 @@ export async function POST(
             console.error('[workspace insight] unavailable:', error instanceof Error ? error.message : error);
           }
           if (!insight && agentResult.grounded && structured?.narrative && structured.intent !== 'ask_clarification') insight = structured.narrative;
-          if (!insight) insight = groupedFallback(result.rows, current.definition.mode);
           narrativeText = [countLine, insight].filter(Boolean).join(' ') || 'The verified database results are shown in the table below.';
         }
         if (!summary) narrativeText += ' Full-dataset summary statistics are unavailable; the displayed results are a preview and must not be treated as full-dataset statistics.';

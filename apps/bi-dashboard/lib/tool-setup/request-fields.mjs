@@ -15,7 +15,7 @@ export function mentionedFields(message,fields){
 export const identifierField=field=>/(?:id|no|number|key|code)$/i.test(field.split(':').at(-1));
 export function isAggregateRequest(message) {
  const intent = message.replace(/\b(?:do not|don't)\s+limit\b[^.!?]*/gi, '');
- return /\b(count|number of|total|totals|how many|average|sum|summary|summari[sz]e|breakdown|trend|statistics)\b/i.test(intent);
+ return /\b(count|number of|total|totals|how many|average|sum|summary|summari[sz]e|breakdown|trend|statistics|most|fewest|highest|lowest)\b/i.test(intent);
 }
 export function requestRequirements(message,registry){
  const definitions=registry.map(t=>t.definition||t);
