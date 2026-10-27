@@ -13,7 +13,7 @@ export function RequirePermission({ permission, children, message }: { permissio
   if (loading || !can(user, permission)) {
     // Shown inside the normal page frame, so the sidebar stays.
     return (
-      <WorkspacePage active="" title="Not available" subtitle="">
+      <WorkspacePage active="" title="Not available" subtitle="" scroll>
         {loading ? <p className="text-sm text-zinc-500">Loading...</p> : (
           <div className="rounded-lg border border-zinc-200 bg-white p-6 text-sm text-zinc-600">
             <p className="font-medium text-zinc-800">{message || 'Your role does not include this page.'}</p>

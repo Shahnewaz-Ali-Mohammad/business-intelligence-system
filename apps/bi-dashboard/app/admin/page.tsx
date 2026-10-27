@@ -3,7 +3,7 @@ import { AdminConsole } from '@/components/admin/admin-console';
 
 export default function AdminPage() {
   return (
-    <WorkspacePage active="Admin" title="Admin" subtitle="People, roles, departments, data access and the audit log.">
+    <WorkspacePage active="Admin" title="Admin" subtitle="People, roles, departments, workspace access and the audit log." scroll>
       <AdminConsole />
     </WorkspacePage>
   );
