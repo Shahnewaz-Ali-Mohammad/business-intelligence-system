@@ -33,11 +33,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const sourceId = req.nextUrl.searchParams.get('sourceId') || '';
-    const { source } = await context(id, sourceId, 'either');
+    const { source, access } = await context(id, sourceId, 'either');
     const requestedId = Number(req.nextUrl.searchParams.get('procedureId'));
     const procedures = await procedureMetadata(source.config, Number.isSafeInteger(requestedId) && requestedId > 0 ? requestedId : undefined);
     const approvals = await readApprovals(sourceId);
-    return NextResponse.json({ procedures: procedures.map(p => ({ ...p, definition: requestedId ? p.definition : '', approved: approvals[String(p.id)] === p.hash })) });
+    const visible = procedures
+      .map(p => ({ ...p, definition: requestedId ? p.definition : '', approved: approvals[String(p.id)] === p.hash }))
+      .filter(p => access.permissions.includes('setup.manage') || p.approved);
+    return NextResponse.json({ procedures: visible });
   } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : 'Could not list procedures.' }, { status: 400 }); }
 }
 
