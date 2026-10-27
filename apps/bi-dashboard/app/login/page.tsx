@@ -70,9 +70,10 @@ export default function LoginPage() {
         ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1 block text-xs font-semibold text-zinc-600">Email</label>
+            <label className="mb-1 block text-xs font-semibold text-zinc-600">Username</label>
             <input
-              type="email"
+              type="text"
+              autoComplete="username"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -83,6 +84,7 @@ export default function LoginPage() {
             <label className="mb-1 block text-xs font-semibold text-zinc-600">Password</label>
             <input
               type="password"
+              autoComplete="current-password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
