@@ -1,4 +1,5 @@
 "use client";
+import { RequirePermission } from "@/components/auth/require-permission";
 
 import { use, useCallback, useEffect, useState, useRef } from "react";
 import Link from "next/link";
@@ -72,7 +73,7 @@ const buttonClass =
 const primaryClass =
   "inline-flex items-center justify-center gap-2 rounded-md bg-rose-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-rose-800 disabled:opacity-40";
 
-export default function ToolSetupPage({
+function ToolSetupPageContent({
   params,
 }: {
   params: Promise<{ id: string }>;
@@ -1069,4 +1070,9 @@ export default function ToolSetupPage({
       </div>
     </WorkspacePage>
   );
+}
+
+/** Workspace setup is admin work. */
+export default function ToolSetupPage(props: Parameters<typeof ToolSetupPageContent>[0]) {
+  return <RequirePermission permission="setup.manage" message="Database and tool setup is for admins."><ToolSetupPageContent {...props} /></RequirePermission>;
 }

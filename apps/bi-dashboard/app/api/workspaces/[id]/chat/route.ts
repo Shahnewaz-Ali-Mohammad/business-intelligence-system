@@ -296,10 +296,10 @@ export async function POST(
         // tools. Approval, version and schema checks run before every call.
         const requestedLookup=resolveSavedRequest(input.message,setup.tools.filter(t=>t.sourceId===input.sourceId));
         if(requestedLookup&&requestedLookup.chosen.status!=='approved'){
-          run.finish(await saveAnswer({narrative:'A saved report already supports this lookup. Approve it in Settings, then retry.',rows:[],hasMore:false}));return;
+          run.finish(await saveAnswer({narrative:'A saved report already supports this lookup. Ask your admin to approve it, then retry.',rows:[],hasMore:false}));return;
         }
         if (!tools.length) {
-          run.finish(await saveAnswer({ narrative: approvedTools.length ? 'No approved tool supports the requested report type. A record list cannot be substituted with an aggregate, or vice versa.' : 'Approve tools for this database in Settings before asking data questions.', rows: [], hasMore: false }));
+          run.finish(await saveAnswer({ narrative: approvedTools.length ? 'No approved tool supports the requested report type. A record list cannot be substituted with an aggregate, or vice versa.' : 'This workspace has no approved reports yet. Ask your admin to set it up.', rows: [], hasMore: false }));
           return;
         }
         run.progress("Understanding your question");
@@ -469,7 +469,7 @@ export async function POST(
         const decision=missingReportDecision({message:input.message,gap,registry:setup.tools.filter(t=>t.sourceId===input.sourceId),completed:completedExecutions.length,failed:executionFailed});
         if(gap && !completedExecutions.length && decision.kind!=='missing'){
           if(decision.kind==='execution_error')throw new Error(executionFailureReason||'Report execution failed; no missing capability has been inferred.');
-          const narrative=decision.kind==='needs_approval'?'A saved report already supports this lookup. Approve it in Settings, then retry.':'Could not verify a missing report capability. No new tool generation is required based on this response; retry the existing report.';
+          const narrative=decision.kind==='needs_approval'?'A saved report already supports this lookup. Ask your admin to approve it, then retry.':'Could not verify a missing report capability. No new tool generation is required based on this response; retry the existing report.';
           run.text(narrative);run.finish(await saveAnswer({narrative,rows:[],hasMore:false}));return;
         }
         if(gap && decision.kind==='missing'){

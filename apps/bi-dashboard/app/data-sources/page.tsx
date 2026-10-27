@@ -1,4 +1,5 @@
 'use client';
+import { RequirePermission } from '@/components/auth/require-permission';
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -11,7 +12,7 @@ interface DataSourceRow {
   createdAt: string;
 }
 
-export default function DataSourcesPage() {
+function DataSourcesPageContent() {
   const router = useRouter();
   const [rows, setRows] = useState<DataSourceRow[]>([]);
   const [name, setName] = useState('');
@@ -133,4 +134,9 @@ export default function DataSourcesPage() {
       </section>
     </WorkspacePage>
   );
+}
+
+/** Workspace setup is admin work. */
+export default function DataSourcesPage() {
+  return <RequirePermission permission="setup.manage" message="Workspace setup is for admins."><DataSourcesPageContent /></RequirePermission>;
 }
