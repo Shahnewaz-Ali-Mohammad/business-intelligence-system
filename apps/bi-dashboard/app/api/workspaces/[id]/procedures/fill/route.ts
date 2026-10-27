@@ -40,7 +40,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (source.config.dialect !== 'sqlserver') return NextResponse.json({ error: 'Report procedures are supported for SQL Server databases only.' }, { status: 400 });
     let chosenId = procedureId;
     if (!chosenId) {
-      const available = (await procedureMetadata(source.config)).filter((p) => p.allowed);
+      // The list holds names only; whether the chosen one may run is checked below with its full details.
+      const available = await procedureMetadata(source.config);
       if (!available.length) return NextResponse.json({ error: 'No report procedures are available for this database.' }, { status: 404 });
       const pick = await model().withStructuredOutput(z.object({ procedureId: z.number().int().nullable() })).invoke(pickPrompt(text, available.slice(0, 300)));
       chosenId = available.some((p) => p.id === pick.procedureId) ? Number(pick.procedureId) : undefined;
