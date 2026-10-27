@@ -33,7 +33,5 @@ export function accessError(error: unknown) {
   return error instanceof AccessDenied ? NextResponse.json({ error: error.message, code: 'access_denied' }, { status: 403 }) : null;
 }
 
-/** Workspaces are shared across the organisation; data roles and admins can open them. */
-export function canOpenWorkspace(access: Access) {
-  return access.dataRole || access.permissions.includes('setup.manage');
-}
+/** Who may open a workspace: its departments' people, the CEO and admins (see access-db). */
+export { canOpenWorkspace } from './access-db';

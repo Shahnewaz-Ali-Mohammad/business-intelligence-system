@@ -28,7 +28,7 @@ export async function POST(
   if (
     !user ||
     !workspace ||
-    !canOpenWorkspace(guard.access) ||
+    !(await canOpenWorkspace(guard.access, id)) ||
     id === "isp-default"
   )
     return NextResponse.json(

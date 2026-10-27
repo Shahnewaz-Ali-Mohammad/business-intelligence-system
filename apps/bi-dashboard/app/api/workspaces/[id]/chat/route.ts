@@ -139,7 +139,7 @@ export async function POST(
   if (
     !user ||
     !workspace ||
-    !canOpenWorkspace(guard.access) ||
+    !(await canOpenWorkspace(guard.access, id)) ||
     id === "isp-default"
   )
     return NextResponse.json(
@@ -549,8 +549,6 @@ export async function POST(
           summary,
           sourceId: input.sourceId,
           toolName: current.definition.name,
-          // Shown under the answer so a Manager knows the figures cover their departments only.
-          dataScope: guard.access.allData ? null : `Showing data for: ${guard.access.departmentNames.join(', ') || 'no department'}`,
           databaseName: source.config.database,
           sourceTable: current.definition.base,
           toolId: current.id,
@@ -560,7 +558,7 @@ export async function POST(
           totalCount: summary ? Number(summary.population) || result.rows.length : undefined,
         };
         run.finish(await saveAnswer(answer));
-        void audit(user.id, 'question', input.message.slice(0, 255), { workspaceId: id, sourceId: input.sourceId, tool: current.definition.name, rows: answer.totalCount ?? result.rows.length, scope: answer.dataScope });
+        void audit(user.id, 'question', input.message.slice(0, 255), { workspaceId: id, sourceId: input.sourceId, tool: current.definition.name, rows: answer.totalCount ?? result.rows.length });
       } catch (error) {
         if (accessDeniedMessage || error instanceof AccessDenied) {
           const message = accessDeniedMessage || (error as Error).message;

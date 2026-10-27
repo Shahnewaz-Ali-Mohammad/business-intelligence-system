@@ -12,7 +12,7 @@ async function ownedRun(id: string, runId: string) {
   if (denied(guard)) return null;
   const user = guard.user;
   const workspace = await getWorkspace(id);
-  if (!workspace || !canOpenWorkspace(guard.access)) return null;
+  if (!workspace || !(await canOpenWorkspace(guard.access, id))) return null;
   const run = await procedureRunStatus(id, runId);
   return run && String(run.userId) === String(user.id) ? run : null;
 }

@@ -18,16 +18,8 @@ export type Access = {
   mfaSetupRequired?: boolean;
   /** True while the access tables are not installed (everyone keeps full access). */
   notInstalled?: boolean;
-  /** Reads the data access rules for a database connection. */
-  policyFor?: (config: { dialect?: string; host: string; port: number; database?: string }) => Promise<DataPolicy | null>;
 };
 export type Department = { id: number; name: string; parentId: number | null };
-export type DataPolicy = {
-  departmentField?: string;
-  departmentValues?: Record<string, string[]>;
-  tables?: Record<string, 'department' | 'shared' | 'restricted'>;
-  procedures?: Record<string, { parameter: string }>;
-};
 
 const TABLES = ['user_status', 'departments', 'user_roles', 'user_departments', 'invitations', 'data_policies', 'audit_log', 'user_mfa', 'pending_logins'];
 let ready = false;
@@ -64,7 +56,7 @@ export async function loadAccess(userId: number): Promise<Access> {
   if (!(await accessReady())) {
     // Roles not installed yet: same full access everyone had before roles existed.
     const roles = ['admin', 'ceo'];
-    return { userId, roles, permissions: permissionsFor(roles), assignedDepartmentIds: [], departmentIds: [], departmentNames: [], allData: true, dataRole: true, notInstalled: true, policyFor: async () => null };
+    return { userId, roles, permissions: permissionsFor(roles), assignedDepartmentIds: [], departmentIds: [], departmentNames: [], allData: true, dataRole: true, notInstalled: true };
   }
   const db = getAppDb();
   const [roleRows] = await db.execute('SELECT role FROM user_roles WHERE user_id=?', [userId]);
@@ -83,7 +75,6 @@ export async function loadAccess(userId: number): Promise<Access> {
     departmentNames: departments.filter((d) => covered.includes(d.id)).map((d) => d.name),
     allData: permissions.includes('data.all'),
     dataRole: roles.some((r) => DATA_ROLES.includes(r)),
-    policyFor: policyForConfig,
     // Two-step sign-in is optional unless BI_REQUIRE_MFA=on (then Admin and CEO must use it).
     mfaSetupRequired: process.env.BI_REQUIRE_MFA === 'on' && roles.some((r) => r === 'admin' || r === 'ceo') && !(await hasMfa(userId)),
   };
@@ -94,33 +85,52 @@ async function hasMfa(userId: number) {
   return (rows as unknown[]).length > 0;
 }
 
-export const sourceKey = (config: { dialect?: string; host: string; port: number; database?: string }) =>
-  `${config.dialect || 'sqlserver'}://${String(config.host).toLowerCase()}:${config.port}/${String(config.database || '').toLowerCase()}`;
-
-const policyCache = new Map<string, { at: number; policy: DataPolicy | null }>();
-export async function policyForConfig(config: Parameters<typeof sourceKey>[0]): Promise<DataPolicy | null> {
-  const key = sourceKey(config);
-  const hit = policyCache.get(key);
-  if (hit && Date.now() - hit.at < 15000) return hit.policy;
-  if (!(await accessReady())) return null;
-  const [rows] = await getAppDb().execute('SELECT policy FROM data_policies WHERE source_key=? LIMIT 1', [key]);
-  const raw = (rows as { policy: unknown }[])[0]?.policy;
-  const policy = raw == null ? null : ((typeof raw === 'string' ? JSON.parse(raw) : raw) as DataPolicy);
-  policyCache.set(key, { at: Date.now(), policy });
-  return policy;
-}
-export async function getPolicy(sourceId: string): Promise<DataPolicy | null> {
-  if (!(await accessReady())) return null;
-  const [rows] = await getAppDb().execute('SELECT policy FROM data_policies WHERE source_id=?', [sourceId]);
-  const raw = (rows as { policy: unknown }[])[0]?.policy;
-  return raw == null ? null : ((typeof raw === 'string' ? JSON.parse(raw) : raw) as DataPolicy);
-}
-export async function savePolicy(sourceId: string, key: string, policy: DataPolicy, userId: number) {
-  await getAppDb().execute(
-    'INSERT INTO data_policies (source_id, source_key, policy, updated_by) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE source_key=VALUES(source_key), policy=VALUES(policy), updated_by=VALUES(updated_by)',
-    [sourceId, key, JSON.stringify(policy), userId],
+/**
+ * Workspaces each person may open. Workspaces are given to departments by
+ * the admin; the CEO (all data) and admins (setting the system up) open every
+ * workspace. Managers also get the workspaces of departments below theirs.
+ * Returns 'all' or the allowed workspace ids.
+ */
+export async function allowedWorkspaces(access: Access): Promise<'all' | Set<string>> {
+  if (access.allData || access.permissions.includes('setup.manage')) return 'all';
+  if (!access.dataRole || !access.departmentIds.length || !(await workspaceAccessReady())) return new Set();
+  const [rows] = await getAppDb().query(
+    `SELECT DISTINCT workspace_id FROM workspace_departments WHERE department_id IN (${access.departmentIds.map(() => '?').join(',')})`,
+    access.departmentIds,
   );
-  policyCache.clear();
+  return new Set((rows as { workspace_id: string }[]).map((r) => r.workspace_id));
+}
+export async function canOpenWorkspace(access: Access, workspaceId: string) {
+  const allowed = await allowedWorkspaces(access);
+  // The original (ISP) workspace has no department: CEO only.
+  if (workspaceId === 'isp-default') return access.allData;
+  return allowed === 'all' || allowed.has(workspaceId);
+}
+let workspaceTableReady = false;
+let workspaceCheckedAt = 0;
+/** The workspace-to-department table is installed separately (database/workspace-access-migration.sql). */
+export async function workspaceAccessReady() {
+  if (workspaceTableReady || Date.now() - workspaceCheckedAt < 30000) return workspaceTableReady;
+  workspaceCheckedAt = Date.now();
+  const [rows] = await getAppDb().execute("SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'workspace_departments'");
+  workspaceTableReady = Number((rows as { n: number }[])[0].n) === 1;
+  return workspaceTableReady;
+}
+export async function workspaceDepartments(): Promise<Map<string, number[]>> {
+  const map = new Map<string, number[]>();
+  if (!(await workspaceAccessReady())) return map;
+  const [rows] = await getAppDb().execute('SELECT workspace_id, department_id FROM workspace_departments');
+  for (const r of rows as { workspace_id: string; department_id: number }[]) map.set(r.workspace_id, [...(map.get(r.workspace_id) || []), Number(r.department_id)]);
+  return map;
+}
+export async function setWorkspaceDepartments(workspaceId: string, departmentIds: number[]) {
+  const db = await getAppDb().getConnection();
+  try {
+    await db.beginTransaction();
+    await db.execute('DELETE FROM workspace_departments WHERE workspace_id=?', [workspaceId]);
+    for (const id of departmentIds) await db.execute('INSERT INTO workspace_departments (workspace_id, department_id) VALUES (?, ?)', [workspaceId, id]);
+    await db.commit();
+  } catch (error) { await db.rollback(); throw error; } finally { db.release(); }
 }
 
 /** Records who did what. Never blocks the request it describes. */

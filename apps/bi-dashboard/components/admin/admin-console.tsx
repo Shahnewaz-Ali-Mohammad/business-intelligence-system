@@ -4,13 +4,13 @@ import { useState } from 'react';
 import { useAuth, can } from '@/components/auth/auth-provider';
 import { UsersPanel } from './users-panel';
 import { DepartmentsPanel } from './departments-panel';
-import { DataAccessPanel } from './data-access-panel';
+import { WorkspacesPanel } from './workspaces-panel';
 import { AuditPanel } from './audit-panel';
 
 const TABS = [
   { id: 'users', label: 'Users', permission: 'users.manage' },
   { id: 'departments', label: 'Departments', permission: 'users.manage' },
-  { id: 'data', label: 'Data access', permission: 'users.manage' },
+  { id: 'workspaces', label: 'Workspace access', permission: 'users.manage' },
   { id: 'audit', label: 'Audit log', permission: 'audit.view' },
 ] as const;
 
@@ -33,7 +33,7 @@ export function AdminConsole() {
       </div>
       {current === 'users' && <UsersPanel />}
       {current === 'departments' && <DepartmentsPanel />}
-      {current === 'data' && <DataAccessPanel />}
+      {current === 'workspaces' && <WorkspacesPanel />}
       {current === 'audit' && <AuditPanel />}
     </div>
   );

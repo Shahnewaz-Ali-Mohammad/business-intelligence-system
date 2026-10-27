@@ -35,7 +35,7 @@ export async function PATCH(request:Request,{params}:{params:Promise<{id:string}
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return NextResponse.json({error:'Cross-origin request blocked.'},{status:403});
  const guard=await requireAccess('setup.manage');if(denied(guard))return guard;const user=guard.user;
  const {id}=await params;const workspace=await getWorkspace(id);
- if(!workspace||!canOpenWorkspace(guard.access)||id==='isp-default')return NextResponse.json({error:'Workspace unavailable.'},{status:403});
+ if(!workspace||!(await canOpenWorkspace(guard.access, id))||id==='isp-default')return NextResponse.json({error:'Workspace unavailable.'},{status:403});
  const input=await request.json().catch(()=>null);const name=typeof input?.name==='string'?input.name.trim():'';
  if(!name||name.length>200)return NextResponse.json({error:'Enter a workspace name between 1 and 200 characters.'},{status:400});
  await getAppDb().execute('UPDATE workspaces SET name=? WHERE id=?',[name,id]);

@@ -1,5 +1,6 @@
 import { enterAccess } from '@/lib/access/data-scope.mjs';
-import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
+import { requireAccess, denied } from '@/lib/access/guard';
+import { allowedWorkspaces } from '@/lib/access/access-db';
 // Workspace list/create -- the entry point for onboarding a new customer
 // database alongside the existing (hardcoded, untouched) ISP system. Every
 // route under app/api/workspaces/* requires a signed-in user, same as the
@@ -15,10 +16,10 @@ const CreateWorkspaceSchema = z.object({ name: z.string().min(1).max(200) });
 export async function GET() {
   const guard = await requireAccess();
   if (denied(guard)) return guard; enterAccess(guard.access);
-  // Workspaces are shared across the organisation; what each person sees
-  // inside them is limited by their department.
-  if (!canOpenWorkspace(guard.access)) return NextResponse.json({ workspaces: [] });
-  const workspaces = await listWorkspaces();
+  // Only the workspaces this person may open: their departments' workspaces
+  // (CEO and admins: all). The original workspace is CEO only.
+  const allowed = await allowedWorkspaces(guard.access);
+  const workspaces = (await listWorkspaces()).filter((w) => (w.id === 'isp-default' ? guard.access.allData : allowed === 'all' || allowed.has(w.id)));
   let sources: { id: string; database_name: string; workspace_id: string }[] = [];
   try {
     const [rows] = await getAppDb().execute('SELECT src.id,src.database_name,srv.workspace_id FROM bi_tool_sources src JOIN bi_tool_servers srv ON srv.id=src.server_id JOIN workspaces w ON w.id=srv.workspace_id ORDER BY src.database_name,src.id');

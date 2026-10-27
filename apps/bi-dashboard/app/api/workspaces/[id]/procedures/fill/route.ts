@@ -31,7 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const guard = await requireAccess('procedures.run'); if (denied(guard)) return guard; enterAccess(guard.access);
   const { id } = await params;
   const workspace = await getWorkspace(id);
-  if (!workspace || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
+  if (!workspace || !(await canOpenWorkspace(guard.access, id))) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   const { sourceId, text, timezone, procedureId } = parsed.data;

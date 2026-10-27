@@ -25,7 +25,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const guard = await requireAccess(['chat.use', 'reports.export']); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   void audit(user.id, 'export', new URL(req.url).pathname);
   const workspace = user && (await getWorkspace(id));
-  if (!user || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
+  if (!user || !(await canOpenWorkspace(guard.access, id))) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
   const sp = new URL(req.url).searchParams;
   const toolId = sp.get('toolId');
   const query = sp.get('query') || '';

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
-import { scopeProcedureValues } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getSource } from '@/lib/tool-setup/store';
@@ -22,7 +21,7 @@ async function context(id: string, sourceId: string, need: 'procedures.run' | 'e
   const allowed = need === 'either' ? access.permissions.includes('procedures.run') || access.permissions.includes('setup.manage') : access.permissions.includes(need);
   if (!allowed) throw new Error('Your role does not allow this.');
   const workspace = await getWorkspace(id);
-  if (!workspace || !canOpenWorkspace(access)) throw new Error('Workspace unavailable.');
+  if (!workspace || !(await canOpenWorkspace(access, id))) throw new Error('Workspace unavailable.');
   const source = await getSource(id, sourceId);
   if (source.config.dialect !== 'sqlserver') throw new Error('Report procedure execution currently supports SQL Server databases only.');
   return { user, source, access };
@@ -55,9 +54,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!procedure || !procedure.allowed) throw new Error(procedure?.reason || 'Procedure unavailable.');
     if (procedure.parameters.some(p => sensitiveOutput(p.name))) throw new Error('Procedures requiring credentials or secret parameters are not supported for reporting.');
     authorizeProcedureRun(procedure, null, body);
-    // Department access: the CEO runs freely; others only with the department
-    // parameter forced to their own value.
-    body.values = scopeProcedureValues({ procedure, values: body.values || {}, access, policy: access.allData ? null : await access.policyFor?.(source.config) });
     void audit(user.id, 'procedure.run', `${procedure.schema}.${procedure.name}`, { workspaceId: id, sourceId: body.sourceId });
     // The procedure runs in a background worker that streams every row to
     // storage; the chat answer is created now and completed by the worker.

@@ -11,8 +11,8 @@ import { writeAnalyticalInsight } from '../../scripts/lib/analytical-insight.mjs
 import { nextRunAt } from './schedule-time.mjs';
 import { addNotification } from './notifications.mjs';
 import { rerunIspReport } from './run-isp-scheduled';
-import { loadAccess, audit, disabledAtSql } from '@/lib/access/access-db';
-import { runWithAccess, currentAccess, scopeProcedureValues } from '@/lib/access/data-scope.mjs';
+import { loadAccess, audit, disabledAtSql, canOpenWorkspace } from '@/lib/access/access-db';
+import { runWithAccess } from '@/lib/access/data-scope.mjs';
 import { presetRange, applyRangeToQuery, procedureRangeArguments } from './schedule-intent.mjs';
 
 /**
@@ -88,9 +88,7 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
     if (!procedure) throw new Error('The stored procedure no longer exists.');
     authorizeProcedureRun(procedure, null, { hash: procedure.hash, allowBusinessWrites: false });
     const ranged = procedureRangeArguments(answer.procedure.values, procedure.parameters, answer.procedure.omitted || [], range);
-    const access = currentAccess();
-    // Department rules apply to scheduled runs exactly as to manual ones.
-    const values = scopeProcedureValues({ procedure, values: ranged.values, access, policy: access?.allData ? null : await access?.policyFor?.(source.config) });
+    const values = ranged.values;
     const omitted = ranged.omitted;
     const run = await createRun(answer.workspaceId, { sourceId: answer.sourceId, userId: report.user_id, procedure: { id: procedure.id, schema: procedure.schema, name: procedure.name, parameters: procedure.parameters, hash: procedure.hash }, values, omitted, allowBusinessWrites: false, reportTitle: baseTitle, scheduledFrom: report.id });
     const narrative = `Running ${procedure.schema}.${procedure.name}…`;
@@ -157,6 +155,10 @@ export async function runDueReports(now = Date.now()) {
       if (!owner || owner.disabled_at) throw new Error('The owner of this schedule no longer has an active account.');
       const access = await loadAccess(report.user_id);
       if (!access.permissions.includes('reports.schedule')) throw new Error('The owner of this schedule is no longer allowed to schedule reports.');
+      // The owner must still be allowed into the report's workspace.
+      const data = typeof report.data === 'string' ? JSON.parse(report.data) : report.data;
+      const workspaceId = (data?.workspaceToolAnswer?.workspaceId as string | undefined) || (data?.ispQuestion ? 'isp-default' : undefined);
+      if (!workspaceId || !(await canOpenWorkspace(access, workspaceId))) throw new Error('The owner of this schedule no longer has access to its workspace.');
       const outcome = await runWithAccess(access, () => rerunReport(report, now));
       void audit(report.user_id, 'schedule.run', String(report.id), { status: outcome.status, reportId: outcome.reportId });
       if (outcome.status === 'completed') await db.execute("UPDATE generated_reports SET data = JSON_SET(data, '$.schedule.lastStatus', ?, '$.schedule.lastReportId', ?, '$.schedule.lastError', NULL) WHERE id = ?", [outcome.status, outcome.reportId, report.id]);

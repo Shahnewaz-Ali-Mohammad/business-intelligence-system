@@ -684,7 +684,6 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
                 <div className="min-w-0 flex-1 sm:mr-12">
                 <div className="bi-message min-w-0 max-w-full rounded-lg border border-zinc-200/80 bg-white px-4 py-3 text-sm leading-7 text-zinc-700">
                   <p className="whitespace-pre-line break-words">{message.text}</p>
-                  {(message.workspaceAnswer as { dataScope?: string | null } | undefined)?.dataScope ? <p className="mt-1 text-xs text-zinc-500">{(message.workspaceAnswer as { dataScope?: string }).dataScope}</p> : null}
                   {message.retry && !loading ? (
                     <button type="button" className="mt-2 rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50" onClick={() => { const question = message.retry!; if (databaseWorkspace) void submitDatabaseQuestion(question); else { setInput(question); } }}>
                       Try again

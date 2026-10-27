@@ -32,7 +32,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id: workspaceId } = await params;
 
   const workspace = await getWorkspace(workspaceId);
-  if (!workspace || !canOpenWorkspace(guard.access)) {
+  if (!workspace || !(await canOpenWorkspace(guard.access, workspaceId))) {
     return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 });
   }
 

@@ -12,7 +12,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   const guard = await requireAccess('chat.use'); if (denied(guard)) return guard; enterAccess(guard.access); const user = guard.user;
   const workspace = user && await getWorkspace(id);
-  if (!user || !canOpenWorkspace(guard.access)) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
+  if (!user || !(await canOpenWorkspace(guard.access, id))) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 403 });
   const parsed = z.object({ toolId: z.string().uuid(), query: z.string().max(20000), groupBy: z.string().min(1).max(500) }).strict().safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'Invalid graph request.' }, { status: 400 });
   try {
