@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coerceValue, proposalToForm, todayIn } from './procedure-fill.mjs';
+import { coerceValue, proposalToForm, todayIn, namedValues, mergeProposals } from './procedure-fill.mjs';
 
 const P = (name, type, extra = {}) => ({ name, type, baseType: type, ...extra });
 
@@ -30,4 +30,14 @@ test('today is taken in the person\'s timezone', () => {
   const now = Date.parse('2026-01-31T20:00:00Z');
   assert.equal(todayIn('Asia/Dhaka', now).date, '2026-02-01');
   assert.equal(todayIn('UTC', now).date, '2026-01-31');
+});
+
+test('ids written after a parameter name are picked up when the AI leaves them out', () => {
+  const params = [P('@POPID', 'int'), P('@StartDate', 'datetime'), P('@POPTypeID', 'int'), P('@Zone_Id', 'int')];
+  const named = namedValues('collection summary for POP 12 in zone #5 last month', params);
+  assert.deepEqual(named, [{ name: '@POPID', value: '12' }, { name: '@Zone_Id', value: '5' }]);
+  const merged = mergeProposals({ values: [{ name: '@POPID', value: null }, { name: '@StartDate', value: '2026-09-01' }] }, named);
+  assert.equal(merged.values.find((v) => v.name === '@POPID').value, '12');
+  assert.equal(merged.values.find((v) => v.name === '@StartDate').value, '2026-09-01');
+  assert.deepEqual(namedValues('collection summary last month', params), []);
 });

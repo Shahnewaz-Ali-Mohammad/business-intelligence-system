@@ -6,7 +6,7 @@ import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getSource } from '@/lib/tool-setup/store';
 import { procedureMetadata } from '@/lib/tool-setup/procedure-metadata';
-import { proposalToForm, pickPrompt, fillPrompt, todayIn } from '@/lib/tool-setup/procedure-fill.mjs';
+import { proposalToForm, pickPrompt, fillPrompt, todayIn, namedValues, mergeProposals } from '@/lib/tool-setup/procedure-fill.mjs';
 import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
 
 export const runtime = 'nodejs';
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const proposal = await model()
       .withStructuredOutput(z.object({ values: z.array(z.object({ name: z.string(), value: z.string().nullable() })) }))
       .invoke(fillPrompt(text, procedure, todayIn(timezone || 'UTC')));
-    const form = proposalToForm(procedure.parameters, proposal);
+    const form = proposalToForm(procedure.parameters, mergeProposals(proposal, namedValues(text, procedure.parameters)));
     return NextResponse.json({ matched: true, procedureId: procedure.id, name: `${procedure.schema}.${procedure.name}`, ...form });
   } catch (error) {
     console.error('[procedure fill] failed:', error instanceof Error ? error.message : error);
