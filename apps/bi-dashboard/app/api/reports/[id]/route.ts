@@ -1,3 +1,4 @@
+import { canOpenWorkspace } from '@/lib/access/access-db';
 import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,6 +24,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   // chart_spec is NULL for a report saved (or never edited) before this
   // column existed -- the page falls back to deriving a default chart from
   // `data` itself in that case, so a null here is expected, not an error.
+  // Reports follow workspace access: a saved report from a workspace the
+  // person can no longer open is not shown.
+  const saved = parseJsonColumn(row.data) as { workspaceToolAnswer?: { workspaceId?: string } } | null;
+  if (!(await canOpenWorkspace(guard.access, saved?.workspaceToolAnswer?.workspaceId || 'isp-default'))) return NextResponse.json({ report: null, error: 'You no longer have access to this report\u2019s workspace.' }, { status: 403 });
   const report = {
     ...row,
     filters: parseJsonColumn(row.filters),

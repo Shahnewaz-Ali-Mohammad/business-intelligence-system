@@ -1,3 +1,4 @@
+import { canOpenWorkspace } from '@/lib/access/access-db';
 import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { requireAccess, denied } from '@/lib/access/guard';
 // Persists generated report/artifact pages (chat intent "create_new_page")
@@ -19,6 +20,8 @@ export async function GET(req: NextRequest) {
   const db = getAppDb();
   const workspace = req.nextUrl.searchParams.get('workspace');
   const source = req.nextUrl.searchParams.get('source');
+  // Reports follow workspace access: none from a workspace the person can no longer open.
+  if (!(await canOpenWorkspace(guard.access, workspace || 'isp-default'))) return NextResponse.json({ reports: [], total: 0, page, pageSize: PAGE_SIZE });
   const clauses = ['r.user_id = ?'];
   const bindings: (string | number)[] = [user.id];
   if (!workspace || workspace === 'isp-default') {

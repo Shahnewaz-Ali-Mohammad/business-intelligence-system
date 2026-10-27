@@ -46,7 +46,7 @@ try {
   run = await readRun(workspaceId, runId);
   if (!run || run.status !== 'queued') process.exit(0);
   run = await writeRun(workspaceId, { ...run, status: 'running', workerPid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now(), progress: 'Running the procedure' });
-  const [sources] = await db.execute("SELECT s.database_name,v.encrypted_config,JSON_EXTRACT(s.catalog_json, '$.reportProcedureApprovals') AS approvals FROM bi_tool_sources s JOIN bi_tool_servers v ON v.id=s.server_id JOIN workspaces w ON w.id=v.workspace_id WHERE s.id=? AND v.workspace_id=? AND w.owner_user_id=?", [run.sourceId, workspaceId, run.userId]);
+  const [sources] = await db.execute("SELECT s.database_name,v.encrypted_config,JSON_EXTRACT(s.catalog_json, '$.reportProcedureApprovals') AS approvals FROM bi_tool_sources s JOIN bi_tool_servers v ON v.id=s.server_id JOIN workspaces w ON w.id=v.workspace_id WHERE s.id=? AND v.workspace_id=?", [run.sourceId, workspaceId]);
   if (!sources[0]) throw new Error('Database source unavailable.');
   const config = { ...JSON.parse(decryptConnectionString(sources[0].encrypted_config)), database: sources[0].database_name };
 
