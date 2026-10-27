@@ -196,7 +196,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
   const [pickerSchedule, setPickerSchedule] = useState<ScheduleDraft | null>(null);
   const [schedulesPanel, setSchedulesPanel] = useState(false);
   // "/run <sentence>": the report form opens filled in from the sentence.
-  const [pickerFill, setPickerFill] = useState('');
+  const [pickerFill, setPickerFill] = useState<{ text: string; key: number } | null>(null);
   // A "/schedule" draft survives the reload of the conversation that follows
   // a new answer: it is attached to the newest answer when messages load.
   const pendingScheduleRef = useRef<ScheduleDraft | null>(null);
@@ -758,10 +758,10 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         ) : null}
       </div>
 
-      {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={pickerSchedule ? '' : input.replace(/^\s*\/run\b\s*/i, '/')} sessionId={sessionId} fillText={pickerFill || undefined} onClose={() => { setProcedurePicker(false); setPickerSchedule(null); setPickerFill(''); setInput(''); }} onResult={answer => {
+      {databaseWorkspace && procedurePicker && <ProcedurePicker key={`${databaseWorkspace.id}:${databaseWorkspace.sourceId}`} workspaceId={databaseWorkspace.id} sourceId={databaseWorkspace.sourceId} search={pickerSchedule ? '' : input.replace(/^\s*\/run\b\s*/i, '/')} sessionId={sessionId} fill={pickerFill || undefined} onClose={() => { setProcedurePicker(false); setPickerSchedule(null); setPickerFill(null); setInput(''); }} onResult={answer => {
         setMessages(current => [...current, { role: 'user', text: `/${answer.procedure?.name || answer.title}`, createdAt: new Date().toISOString() }, { role: 'assistant', text: answer.narrative, workspaceAnswer: answer, ...(pickerSchedule ? { scheduleDraft: pickerSchedule } : {}), createdAt: new Date().toISOString() }]);
         pendingScheduleRef.current = pickerSchedule;
-        setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setPickerSchedule(null); setPickerFill(''); setInput('');
+        setSessionId(answer.sessionId || null); setSessionTitle(answer.title || 'Report'); setProcedurePicker(false); setPickerSchedule(null); setPickerFill(null); setInput('');
         router.replace(`/data-sources/${databaseWorkspace.id}/chat?source=${encodeURIComponent(databaseWorkspace.sourceId)}&session=${answer.sessionId}`);
         window.dispatchEvent(new Event('bi:chat-session-created'));
       }}/>}
@@ -779,6 +779,8 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
         const refuse = (text: string) => { event.preventDefault(); setMessages((prev) => [...prev, { role: 'assistant', text, createdAt: new Date().toISOString() }]); setInput(''); };
         if (/^\/schedules?\b/i.test(command) && !can(user, 'reports.schedule')) { refuse('Your role does not include scheduling reports.'); return; }
         if (databaseWorkspace && /^\/(?!schedules?\b)\S/i.test(command) && !can(user, 'procedures.run')) { refuse('Your role does not include running stored procedures.'); return; }
+        // With a report open, what is typed in the chat box gives that report's values.
+        if (databaseWorkspace && procedurePicker && command && !command.startsWith('/')) { event.preventDefault(); setPickerFill({ text: command, key: Date.now() }); setInput(''); return; }
         // Slash commands work the same in every chat; /run only where stored procedures exist.
         if (/^\/schedules\b/i.test(command)) { event.preventDefault(); setSchedulesPanel(true); setInput(''); return; }
         if (!databaseWorkspace && /^\/schedule\b/i.test(command)) {
@@ -811,7 +813,7 @@ export function ChatWorkspace({ initialData = null, databaseWorkspace }: { initi
           // A sentence after /run ("/run collection summary for Dhaka, last month") fills the form;
           // a single word just searches the list.
           const sentence = command.replace(/^\/(?:run\b)?\s*/i, '');
-          if (/\s/.test(sentence)) { setPickerFill(sentence); setInput(''); }
+          if (/\s/.test(sentence)) { setPickerFill({ text: sentence, key: Date.now() }); setInput(''); }
           setProcedurePicker(true);
           return;
         }

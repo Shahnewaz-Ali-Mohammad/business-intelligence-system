@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coerceValue, proposalToForm, todayIn, namedValues, mergeProposals } from './procedure-fill.mjs';
+import { coerceValue, proposalToForm, todayIn, namedValues, mergeProposals, ruleValues } from './procedure-fill.mjs';
 
 const P = (name, type, extra = {}) => ({ name, type, baseType: type, ...extra });
 
@@ -40,4 +40,14 @@ test('ids written after a parameter name are picked up when the AI leaves them o
   assert.equal(merged.values.find((v) => v.name === '@POPID').value, '12');
   assert.equal(merged.values.find((v) => v.name === '@StartDate').value, '2026-09-01');
   assert.deepEqual(namedValues('collection summary last month', params), []);
+});
+
+test('without the AI: periods, explicit ranges and ids still fill the form', () => {
+  const params = [P('@StartDate', 'datetime'), P('@EndDate', 'datetime'), P('@STATUS', 'int'), P('@FromDate', 'date'), P('@ToDate', 'date')];
+  const now = Date.parse('2026-10-27T06:00:00Z');
+  const last = Object.fromEntries(ruleValues('popwise customer summary last month status 1', params, 'Asia/Dhaka', now).map((v) => [v.name, v.value]));
+  assert.deepEqual(last, { '@STATUS': '1', '@StartDate': '2026-09-01T00:00', '@EndDate': '2026-09-30T23:59', '@FromDate': '2026-09-01', '@ToDate': '2026-09-30' });
+  const explicit = Object.fromEntries(ruleValues('from 1 Jan 2026 to 15 Jan 2026', params, 'UTC', now).map((v) => [v.name, v.value]));
+  assert.equal(explicit['@StartDate'], '2026-01-01T00:00');
+  assert.equal(explicit['@EndDate'], '2026-01-15T23:59');
 });

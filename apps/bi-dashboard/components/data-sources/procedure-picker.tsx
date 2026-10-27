@@ -19,10 +19,14 @@ function TableInput({ parameter, rows, onChange, disabled }: { parameter: Parame
   const columns = parameter.tableColumns || [];
   return <div className="space-y-2 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr>{columns.map(column => <th className="min-w-36 p-1" key={column.name}>{column.name} <span className="font-normal text-zinc-500">{column.type}</span></th>)}<th/></tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map(column => <td className="p-1" key={column.name}><ScalarInput id={`tvp-${parameter.name}-${index}-${column.name}`} parameter={column} value={row[column.name]} disabled={disabled || row[column.name] === null} onChange={value => onChange(rows.map((r, i) => i === index ? { ...r, [column.name]: value } : r))}/>{column.nullable && <label className="flex items-center gap-1"><input type="checkbox" disabled={disabled} checked={row[column.name] === null} onChange={e => onChange(rows.map((r, i) => i === index ? { ...r, [column.name]: e.target.checked ? null : '' } : r))}/>NULL</label>}</td>)}<td><button type="button" title="Remove input row" aria-label={`Remove input row ${index + 1}`} disabled={disabled} onClick={() => onChange(rows.filter((_, i) => i !== index))}><Trash2 size={16}/></button></td></tr>)}</tbody></table><Button type="button" size="sm" variant="outline" disabled={disabled || rows.length >= 10000} onClick={() => onChange([...rows, Object.fromEntries(columns.map(c => [c.name, c.nullable ? null : '']))])}><Plus size={14}/>Add row</Button></div>;
 }
-type Fill = { matched: boolean; message?: string; procedureId?: number; values?: Record<string, unknown>; modes?: Record<string, ParameterMode>; filled?: string[]; missing?: string[] };
+type Fill = { matched: boolean; message?: string; procedureId?: number; values?: Record<string, unknown>; modes?: Record<string, ParameterMode>; filled?: string[]; missing?: string[]; ready?: boolean };
 
-/** `fillText`: a sentence typed in chat; the matching report opens with its form filled in from it. */
-export function ProcedurePicker({ workspaceId, sourceId, search, sessionId, fillText, onClose, onResult }: { workspaceId: string; sourceId: string; search: string; sessionId: number | null; fillText?: string; onClose: () => void; onResult: (answer: WorkspaceAnswer) => void }) {
+/**
+ * `fill`: what the person typed in the chat box. With no report chosen yet it
+ * picks the report and fills its form; with a report chosen it fills that
+ * report's form. When every value is there, the report runs straight away.
+ */
+export function ProcedurePicker({ workspaceId, sourceId, search, sessionId, fill: typed, onClose, onResult }: { workspaceId: string; sourceId: string; search: string; sessionId: number | null; fill?: { text: string; key: number }; onClose: () => void; onResult: (answer: WorkspaceAnswer) => void }) {
   const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [selected, setSelected] = useState<Procedure | null>(null);
   const [filter, setFilter] = useState(search.replace(/^\//, ''));
@@ -36,8 +40,10 @@ export function ProcedurePicker({ workspaceId, sourceId, search, sessionId, fill
   const [error, setError] = useState('');
   const [fillNote, setFillNote] = useState('');
   // A sentence typed into the search box and sent with Enter fills the form too.
-  const [typedFill, setTypedFill] = useState('');
-  const sentence = typedFill || fillText;
+  const [typedFill, setTypedFill] = useState<{ text: string; key: number } | null>(null);
+  const request = typedFill && (!typed || typedFill.key > typed.key) ? typedFill : typed;
+  const selectedRef = useRef<Procedure | null>(null);
+  selectedRef.current = selected;
   const endpoint = `/api/workspaces/${workspaceId}/procedures`;
   useEffect(() => {
     const controller = new AbortController();
@@ -50,24 +56,31 @@ export function ProcedurePicker({ workspaceId, sourceId, search, sessionId, fill
   }, [endpoint, sourceId]);
   // Reads the typed sentence, picks the report and fills its form. Nothing runs until Generate Report.
   useEffect(() => {
-    if (!sentence) return;
+    if (!request?.text) return;
+    const current = selectedRef.current;
     const controller = new AbortController();
     Promise.resolve().then(() => { setBusy(true); setFillNote('Filling the report form from your message…'); })
-      .then(() => fetch(`${endpoint}/fill`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId, text: sentence, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) }))
+      .then(() => fetch(`${endpoint}/fill`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId, text: request.text, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, ...(current ? { procedureId: current.id } : {}) }) }))
       .then(async (response) => { const body = await response.json() as Fill & { error?: string }; if (!response.ok) throw new Error(body.error); return body; })
       .then(async (fill) => {
         if (controller.signal.aborted) return;
         if (!fill.matched || !fill.procedureId) { setFillNote(fill.message || 'No report matched. Pick one from the list.'); setBusy(false); return; }
-        await choose({ id: fill.procedureId } as Procedure, fill);
+        const loaded = await choose({ id: fill.procedureId } as Procedure, fill);
         const filled = (fill.filled || []).map((n) => n.replace(/^@/, ''));
         const missing = (fill.missing || []).map((n) => n.replace(/^@/, ''));
-        setFillNote(`Filled from your message${filled.length ? `: ${filled.join(', ')}` : ''}.${missing.length ? ` Please fill: ${missing.join(', ')}.` : ''} Check the values, then press Generate Report.`);
+        if (fill.ready && loaded) {
+          // Everything is there: run it and answer in the chat.
+          setFillNote(`Running with ${filled.length ? filled.join(', ') : 'the procedure defaults'}…`);
+          await submit(loaded, fill.values || {}, { ...Object.fromEntries(loaded.parameters.map(p => [p.name, p.output ? 'output' : p.hasDefault && !p.tableType ? 'default' : 'value'])), ...(fill.modes || {}) });
+          return;
+        }
+        setFillNote(`${filled.length ? `Filled: ${filled.join(', ')}. ` : ''}${missing.length ? `Still needed: ${missing.join(', ')} — type them in the chat box and press Enter, or fill them below.` : 'Check the values, then press Generate Report.'}`);
       })
       .catch((e) => { if (!controller.signal.aborted) { setFillNote(''); setError(e instanceof Error ? e.message : 'Could not fill the form.'); setBusy(false); } });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sentence, endpoint, sourceId]);
-  async function choose(procedure: Procedure, fill?: Fill) {
+  }, [request?.key, endpoint, sourceId]);
+  async function choose(procedure: Procedure, fill?: Fill): Promise<Procedure | null> {
     setBusy(true); setError(''); setAllowBusinessWrites(false);
     try {
       const response = await fetch(`${endpoint}?sourceId=${encodeURIComponent(sourceId)}&procedureId=${procedure.id}`);
@@ -77,11 +90,15 @@ export function ProcedurePicker({ workspaceId, sourceId, search, sessionId, fill
       if (!current) throw new Error('Procedure unavailable.');
       setSelected(current);
       setModes({ ...Object.fromEntries(current.parameters.map(p => [p.name, p.output ? 'output' : p.hasDefault && !p.tableType ? 'default' : 'value'])), ...(fill?.modes || {}) });
-      setValues({ ...Object.fromEntries(current.parameters.map(p => [p.name, p.tableType ? [] : ''])), ...(fill?.values || {}) });
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not load parameters.'); } finally { setBusy(false); }
+      // A second message keeps what earlier messages filled and adds to it.
+      setValues((previous) => ({ ...Object.fromEntries(current.parameters.map(p => [p.name, p.tableType ? [] : ''])), ...(selectedRef.current?.id === current.id ? Object.fromEntries(Object.entries(previous).filter(([, v]) => v !== '')) : {}), ...(fill?.values ? Object.fromEntries(Object.entries(fill.values).filter(([, v]) => v !== '')) : {}) }));
+      if (!fill) setFillNote('Type the values in the chat box and press Enter (for example “last month, status 1”), or fill them below.');
+      return current;
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not load parameters.'); return null; } finally { setBusy(false); }
   }
-  async function submit() {
-    if (!selected) return;
+  async function submit(procedure: Procedure | null = selected, valuesNow = values, modesNow = modes) {
+    if (!procedure) return;
+    const selected = procedure; const values = valuesNow; const modes = modesNow;
     setBusy(true); setError('');
     const controller = new AbortController(); abortRef.current = controller;
     try {
@@ -96,7 +113,7 @@ export function ProcedurePicker({ workspaceId, sourceId, search, sessionId, fill
     <div className="mb-3 flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">{selected ? `${selected.schema}.${selected.name}` : 'Stored procedure reports'}</h3><button type="button" aria-label="Close report picker" title="Close" disabled={busy} onClick={onClose}><X size={18}/></button></div>
     {error && <p role="alert" className="mb-3 text-sm text-red-700">{error}</p>}
     {fillNote && <p role="status" className="mb-3 rounded-md border border-rose-100 bg-rose-50 p-2 text-sm text-rose-900">{fillNote}</p>}
-    {!selected ? <><label className="mb-2 flex items-center gap-2 rounded-md border p-2"><Search size={16}/><input autoFocus aria-label="Search stored procedures, or describe the report and press Enter" placeholder="Search, or describe the report (e.g. collection summary for POP 12 last month) and press Enter" value={filter} onChange={e => setFilter(e.target.value)} onKeyDown={e => { const text = filter.replace(/^\/?(?:run\b)?\s*/i, '').trim(); if (e.key === 'Enter' && /\s/.test(text)) { e.preventDefault(); setTypedFill(text); } }} className="min-w-0 flex-1 text-sm outline-none"/></label>
+    {!selected ? <><label className="mb-2 flex items-center gap-2 rounded-md border p-2"><Search size={16}/><input autoFocus aria-label="Search stored procedures, or describe the report and press Enter" placeholder="Search, or describe the report (e.g. collection summary for POP 12 last month) and press Enter" value={filter} onChange={e => setFilter(e.target.value)} onKeyDown={e => { const text = filter.replace(/^\/?(?:run\b)?\s*/i, '').trim(); if (e.key === 'Enter' && /\s/.test(text)) { e.preventDefault(); setTypedFill({ text, key: Date.now() }); } }} className="min-w-0 flex-1 text-sm outline-none"/></label>
       {pending ? <p role="status" className="text-sm text-zinc-500">Loading procedures…</p> : <div className="max-h-56 overflow-auto">{procedures.filter(p => `${p.schema}.${p.name}`.toLowerCase().includes(filter.toLowerCase())).map(p => <button type="button" disabled={busy} key={p.id} onClick={() => void choose(p)} className="block w-full break-all rounded-md px-3 py-2 text-left text-sm hover:bg-rose-50">{p.schema}.{p.name}</button>)}{!procedures.length && !error && <p className="text-sm text-zinc-500">No executable procedures were found for this database account.</p>}</div>}</> : <>
       {!selected.allowed && <p className="mb-3 text-sm text-amber-800">{selected.reason}</p>}
       {selected.allowed && selected.requiresWriteConsent && <p className="mb-3 text-sm text-amber-800">{selected.reason}</p>}

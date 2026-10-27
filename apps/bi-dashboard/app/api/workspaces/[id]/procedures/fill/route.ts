@@ -6,7 +6,7 @@ import { enterAccess } from '@/lib/access/data-scope.mjs';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getSource } from '@/lib/tool-setup/store';
 import { procedureMetadata } from '@/lib/tool-setup/procedure-metadata';
-import { proposalToForm, pickPrompt, fillPrompt, todayIn, namedValues, mergeProposals } from '@/lib/tool-setup/procedure-fill.mjs';
+import { proposalToForm, pickPrompt, fillPrompt, todayIn, namedValues, mergeProposals, ruleValues } from '@/lib/tool-setup/procedure-fill.mjs';
 import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
 
 export const runtime = 'nodejs';
@@ -19,7 +19,7 @@ const Body = z.object({
   procedureId: z.number().int().positive().optional(),
 }).strict();
 
-const model = () => new ChatOpenAI({ model: process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0, timeout: 20000, maxRetries: 1 });
+const model = () => new ChatOpenAI({ model: process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0, timeout: 15000, maxRetries: 0 });
 
 /**
  * Reads a chat message and proposes which available report procedure to run
@@ -49,11 +49,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     const [procedure] = await procedureMetadata(source.config, chosenId);
     if (!procedure?.allowed) return NextResponse.json({ matched: false, message: procedure?.reason || 'That report is unavailable.' });
-    const proposal = await model()
-      .withStructuredOutput(z.object({ values: z.array(z.object({ name: z.string(), value: z.string().nullable() })) }))
-      .invoke(fillPrompt(text, procedure, todayIn(timezone || 'UTC')));
-    const form = proposalToForm(procedure.parameters, mergeProposals(proposal, namedValues(text, procedure.parameters)));
-    return NextResponse.json({ matched: true, procedureId: procedure.id, name: `${procedure.schema}.${procedure.name}`, ...form });
+    // Values found by rules (ids, "last month", "from … to …") always count;
+    // the AI adds what rules cannot read. If the AI fails, the rules still fill the form.
+    const rules = ruleValues(text, procedure.parameters, timezone || 'UTC');
+    let proposal: { values: { name: string; value: string | null }[] } = { values: [] };
+    // When the rules already give every value, answer at once without the AI.
+    const needed = procedure.parameters.filter((p) => !p.output && !p.tableType && !p.hasDefault).map((p) => p.name.toLowerCase());
+    const byRules = new Set(rules.concat(namedValues(text, procedure.parameters)).map((v) => v.name.toLowerCase()));
+    if (!needed.every((n) => byRules.has(n))) try {
+      proposal = await model()
+        .withStructuredOutput(z.object({ values: z.array(z.object({ name: z.string(), value: z.string().nullable() })) }))
+        .invoke(fillPrompt(text, procedure, todayIn(timezone || 'UTC')));
+    } catch (error) { console.error('[procedure fill] AI unavailable, using rules only:', error instanceof Error ? error.message : error); }
+    const form = proposalToForm(procedure.parameters, mergeProposals(proposal, [...namedValues(text, procedure.parameters), ...rules]));
+    // Ready to run straight away when every value is there and it cannot change data.
+    return NextResponse.json({ matched: true, procedureId: procedure.id, name: `${procedure.schema}.${procedure.name}`, ...form, ready: !form.missing.length && !procedure.requiresWriteConsent });
   } catch (error) {
     console.error('[procedure fill] failed:', error instanceof Error ? error.message : error);
     return NextResponse.json({ error: 'Could not fill the report form. Fill it in by hand.' }, { status: 502 });

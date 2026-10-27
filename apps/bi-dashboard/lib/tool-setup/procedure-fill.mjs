@@ -1,3 +1,4 @@
+import { presetRange } from '../schedules/schedule-intent.mjs';
 // Fills a stored procedure's parameter form from what the person typed in
 // chat ("collection summary for Dhaka zone, January 2026"). The AI only
 // proposes values; this module checks each one against the parameter's SQL
@@ -96,6 +97,51 @@ export function mergeProposals(proposal, named) {
     else if (values[at].value == null || values[at].value === '') values[at] = n;
   }
   return { values };
+}
+
+const PRESETS = [
+  [/\blast\s+7\s+days\b|\bpast\s+week\b/i, 'last_7_days'], [/\blast\s+month\b|\bprevious\s+month\b/i, 'last_month'],
+  [/\bthis\s+month\b|\bcurrent\s+month\b/i, 'this_month'], [/\blast\s+week\b/i, 'last_week'], [/\bthis\s+week\b/i, 'this_week'],
+  [/\byesterday\b/i, 'yesterday'], [/\btoday\b/i, 'today'], [/\bthis\s+year\b/i, 'this_year'],
+];
+const isStart = (name) => /(start|from|begin|frm)/i.test(name);
+const isEnd = (name) => /(end|to(?:date)?$|till|until|upto)/i.test(name.replace(/^@/, ''));
+const dayBefore = (date) => { const d = new Date(`${date}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+function parseDay(text) {
+  const t = String(text).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const m = t.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+  const parsed = Date.parse(`${t} 00:00 UTC`);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString().slice(0, 10);
+}
+
+/**
+ * Values found without the AI: ids after a parameter name ("POP 12"),
+ * rolling periods ("last month") and explicit ranges ("from 1 Jan 2026 to
+ * 15 Jan 2026") for start/end date parameters. Used when the AI is slow or
+ * unavailable, and to fill what it leaves out.
+ */
+export function ruleValues(text, parameters, timezone = 'UTC', now = Date.now()) {
+  const values = namedValues(text, parameters);
+  const dates = parameters.filter((p) => !p.output && /date|time/i.test(String(p.baseType || p.type)));
+  let start = null; let end = null;
+  const range = String(text).match(/\bfrom\s+(.+?)\s+(?:to|till|until|-)\s+(.+?)(?:$|[,;]|\s+for\b|\s+status\b)/i);
+  if (range) { start = parseDay(range[1]); end = parseDay(range[2]); }
+  if (!start || !end) {
+    const preset = PRESETS.find(([pattern]) => pattern.test(text))?.[1];
+    const r = preset ? presetRange(preset, timezone, now) : null;
+    if (r) { start = r.start; end = dayBefore(r.end); }
+  }
+  if (start && end) {
+    for (const p of dates) {
+      if (values.some((v) => v.name === p.name)) continue;
+      const datetime = !/^date$/i.test(String(p.baseType || p.type));
+      if (isStart(p.name)) values.push({ name: p.name, value: datetime ? `${start}T00:00` : start });
+      else if (isEnd(p.name)) values.push({ name: p.name, value: datetime ? `${end}T23:59` : end });
+    }
+  }
+  return values;
 }
 
 /** Instructions for picking the procedure. */
