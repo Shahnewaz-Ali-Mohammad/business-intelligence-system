@@ -4,7 +4,7 @@ import { getSource, getTool } from '@/lib/tool-setup/store';
 import { discoverDatabase, executeTool, summarizeTool } from '@/lib/tool-setup/connectors.mjs';
 import { recordNarrative } from '@/lib/tool-setup/record-presentation.mjs';
 import { authorizeProcedureRun } from '@/lib/tool-setup/report-procedures.mjs';
-import { procedureMetadata, readApprovals } from '@/lib/tool-setup/procedure-metadata';
+import { procedureMetadata } from '@/lib/tool-setup/procedure-metadata';
 import { createRun, readRun, writeRun } from '@/lib/tool-setup/procedure-run-store.mjs';
 import { launchProcedureRun } from '@/lib/tool-setup/procedure-runs';
 import { writeAnalyticalInsight } from '../../scripts/lib/analytical-insight.mjs';
@@ -82,12 +82,11 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
   const source = await getSource(answer.workspaceId, answer.sourceId);
 
   if (answer.procedure) {
-    // Same checks as a manual run: still approved, unchanged, and read-only
+    // Same checks as a manual run: still available, unchanged, and read-only
     // (procedures that need write permission are never run unattended).
     const [procedure] = await procedureMetadata(source.config, answer.procedure.id);
     if (!procedure) throw new Error('The stored procedure no longer exists.');
-    const approvals = await readApprovals(answer.sourceId);
-    authorizeProcedureRun(procedure, approvals[String(procedure.id)], { hash: procedure.hash, allowBusinessWrites: false });
+    authorizeProcedureRun(procedure, null, { hash: procedure.hash, allowBusinessWrites: false });
     const ranged = procedureRangeArguments(answer.procedure.values, procedure.parameters, answer.procedure.omitted || [], range);
     const access = currentAccess();
     // Department rules apply to scheduled runs exactly as to manual ones.

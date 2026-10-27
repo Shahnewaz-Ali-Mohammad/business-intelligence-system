@@ -6,7 +6,7 @@ import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getSource } from '@/lib/tool-setup/store';
 import { sensitiveOutput } from '@/lib/tool-setup/connectors.mjs';
 import { authorizeProcedureRun } from '@/lib/tool-setup/report-procedures.mjs';
-import { procedureMetadata, readApprovals } from '@/lib/tool-setup/procedure-metadata';
+import { procedureMetadata } from '@/lib/tool-setup/procedure-metadata';
 import { createRun } from '@/lib/tool-setup/procedure-run-store.mjs';
 import { launchProcedureRun, pruneProcedureRuns } from '@/lib/tool-setup/procedure-runs';
 import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
@@ -15,8 +15,7 @@ import { getAppDb } from '@/lib/db/app-db';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-/** Running needs procedures.run; reviewing and approving procedures is setup work. */
-async function context(id: string, sourceId: string, need: 'procedures.run' | 'setup.manage' | 'either') {
+async function context(id: string, sourceId: string, need: 'procedures.run' | 'either') {
   const guard = await requireAccess();
   if (denied(guard)) throw new Error('Sign in to continue.');
   const { user, access } = guard;
@@ -33,14 +32,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const sourceId = req.nextUrl.searchParams.get('sourceId') || '';
-    const { source, access } = await context(id, sourceId, 'either');
+    const { source } = await context(id, sourceId, 'either');
     const requestedId = Number(req.nextUrl.searchParams.get('procedureId'));
     const procedures = await procedureMetadata(source.config, Number.isSafeInteger(requestedId) && requestedId > 0 ? requestedId : undefined);
-    const approvals = await readApprovals(sourceId);
-    const visible = procedures
-      .map(p => ({ ...p, definition: requestedId ? p.definition : '', approved: approvals[String(p.id)] === p.hash }))
-      .filter(p => access.permissions.includes('setup.manage') || p.approved);
-    return NextResponse.json({ procedures: visible });
+    return NextResponse.json({ procedures: procedures.map(p => ({ ...p, definition: requestedId ? p.definition : '', approved: true })) });
   } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : 'Could not list procedures.' }, { status: 400 }); }
 }
 
@@ -48,10 +43,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const { id } = await params;
   const body = await req.json().catch(() => null);
-  if (!body || !Number.isSafeInteger(body.procedureId) || body.procedureId <= 0 || typeof body.sourceId !== 'string' || !['approve', 'run'].includes(body.action)) return NextResponse.json({ error: 'Invalid report request.' }, { status: 400 });
+  if (!body || !Number.isSafeInteger(body.procedureId) || body.procedureId <= 0 || typeof body.sourceId !== 'string' || body.action !== 'run') return NextResponse.json({ error: 'Invalid report request.' }, { status: 400 });
   if (body.sessionId != null && (!Number.isSafeInteger(body.sessionId) || body.sessionId <= 0)) return NextResponse.json({ error: 'Invalid chat session.' }, { status: 400 });
   try {
-    const { user, source, access } = await context(id, body.sourceId, body.action === 'approve' ? 'setup.manage' : 'procedures.run');
+    const { user, source, access } = await context(id, body.sourceId, 'procedures.run');
     if (body.action === 'run' && body.sessionId) {
       const [sessions] = await getAppDb().execute("SELECT id FROM chat_sessions WHERE id=? AND user_id=? AND warehouse_id=? AND NOT EXISTS(SELECT 1 FROM chat_messages m WHERE m.session_id=chat_sessions.id AND JSON_UNQUOTE(JSON_EXTRACT(m.report_data, '$.workspaceToolAnswer.sourceId'))<>?)", [body.sessionId, user.id, id, body.sourceId]);
       if (!(sessions as unknown[]).length) throw new Error('This conversation belongs to another workspace or database.');
@@ -59,13 +54,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const [procedure] = await procedureMetadata(source.config, body.procedureId);
     if (!procedure || !procedure.allowed) throw new Error(procedure?.reason || 'Procedure unavailable.');
     if (procedure.parameters.some(p => sensitiveOutput(p.name))) throw new Error('Procedures requiring credentials or secret parameters are not supported for reporting.');
-    if (body.action === 'approve') {
-      if (body.reviewed !== true || body.hash !== procedure.hash) throw new Error('Review the current procedure definition first.');
-      await getAppDb().execute("UPDATE bi_tool_sources SET catalog_json=JSON_SET(catalog_json, '$.reportProcedureApprovals', JSON_SET(COALESCE(JSON_EXTRACT(catalog_json, '$.reportProcedureApprovals'), JSON_OBJECT()), ?, ?)) WHERE id=?", [`$.\"${procedure.id}\"`, procedure.hash, body.sourceId]);
-      return NextResponse.json({ approved: true });
-    }
-    const approvals = await readApprovals(body.sourceId);
-    authorizeProcedureRun(procedure, approvals[String(procedure.id)], body);
+    authorizeProcedureRun(procedure, null, body);
     // Department access: the CEO runs freely; others only with the department
     // parameter forced to their own value.
     body.values = scopeProcedureValues({ procedure, values: body.values || {}, access, policy: access.allData ? null : await access.policyFor?.(source.config) });

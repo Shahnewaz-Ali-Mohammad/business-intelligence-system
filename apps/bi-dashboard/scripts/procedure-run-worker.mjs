@@ -1,4 +1,4 @@
-// Runs one approved stored-procedure report in the background. Rows are
+// Runs one permitted stored-procedure report in the background. Rows are
 // streamed to disk as they arrive (no row, size, table or time limit), the
 // run status is updated while it works, and the chat answer is completed
 // when it finishes.
@@ -64,10 +64,7 @@ try {
 
   const [current] = await loadProcedureMetadata(config, run.procedure.id);
   if (!current) throw new Error('Procedure is no longer available.');
-  const [approvalRows] = await db.execute("SELECT JSON_EXTRACT(catalog_json, '$.reportProcedureApprovals') AS approvals FROM bi_tool_sources WHERE id=?", [run.sourceId]);
-  const rawApprovals = approvalRows[0]?.approvals;
-  const approvals = typeof rawApprovals === 'string' ? JSON.parse(rawApprovals) : rawApprovals || {};
-  authorizeProcedureRun(current, approvals[String(current.id)], { hash: run.procedure.hash, allowBusinessWrites: run.allowBusinessWrites });
+  authorizeProcedureRun(current, null, { hash: run.procedure.hash, allowBusinessWrites: run.allowBusinessWrites });
   if (await cancelRequested(workspaceId, runId)) { controller.abort(); throw new Error('Report cancelled before execution.'); }
   const result = await streamReportProcedure(config, current, run.values, run.omitted || [], {
     signal: controller.signal,

@@ -17,7 +17,7 @@ test('business writes, dynamic calls and global temporary tables require per-run
     const procedure = { ...reviewed, hash: 'current' };
     assert.throws(() => authorizeProcedureRun(procedure, 'current', { hash: 'current' }), /authorization/);
     assert.doesNotThrow(() => authorizeProcedureRun(procedure, 'current', { hash: 'current', allowBusinessWrites: true }));
-    assert.throws(() => authorizeProcedureRun(procedure, 'old', { hash: 'current', allowBusinessWrites: true }), /approve/);
+    assert.doesNotThrow(() => authorizeProcedureRun(procedure, null, { hash: 'current', allowBusinessWrites: true }));
     assert.throws(() => authorizeProcedureRun(procedure, 'current', { hash: 'old', allowBusinessWrites: true }), /changed/);
   }
 });
@@ -31,7 +31,7 @@ test('defaults are discovered only in the parameter declaration, not the body', 
   assert.deepEqual(procedureDefaults("CREATE PROC x @Amount decimal(20,6)=12.000001, @Label nvarchar(50)=N'a,b', @Required int AS BEGIN SET @Required=2; END", parameters), { '@Amount': true, '@Label': true });
   assert.deepEqual(validateProcedureValues([{ name: '@Optional', type: 'int' }, { name: '@Result', type: 'int', output: true }], {}, ['@Optional']), [undefined, undefined]);
 });
-test('definition approval becomes stale whenever the body changes', () => {
+test('procedure definitions have a new hash whenever the body changes', () => {
   assert.notEqual(procedureHash('SELECT 1'), procedureHash('SELECT 2'));
 });
 test('structured table parameters validate columns, nullability and data types', () => {

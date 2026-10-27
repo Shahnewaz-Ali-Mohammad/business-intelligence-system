@@ -62,9 +62,8 @@ export function reviewProcedure(definition) {
 
 export const procedureHash = definition => createHash('sha256').update(definition || '').digest('hex');
 
-export function authorizeProcedureRun(procedure, approvalHash, request) {
+export function authorizeProcedureRun(procedure, _approvalHash, request) {
   if (!procedure.allowed) throw new Error(procedure.reason || 'Procedure unavailable.');
-  if (approvalHash !== procedure.hash) throw new Error('Review and approve this procedure before running it.');
   if (request.hash !== procedure.hash) throw new Error('The procedure changed. Reopen its parameter form.');
   if (procedure.requiresWriteConsent && request.allowBusinessWrites !== true) throw new Error('This procedure may modify business records or call other procedures. Explicit authorization is required for this run.');
 }
