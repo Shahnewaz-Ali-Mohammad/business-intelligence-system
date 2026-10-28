@@ -41,7 +41,7 @@ function DesignedReports() {
     fetch('/api/designs').then((r) => r.json()).then((d) => { setRows(d.designs || []); if (d.notInstalled) setNote('The Report Designer is not installed yet. Import database/report-designer-migration.sql in phpMyAdmin.'); if (d.error) setNote(d.error); }).catch(() => setRows([]));
   }, []);
   return (
-    <WorkspacePage active="Designer" title="Designed reports" subtitle="Reports built on the canvas from a conversation. Open one to keep designing." scroll
+    <WorkspacePage active="Design report" title="Designed reports" subtitle="Reports built on the canvas from a conversation. Open one to keep designing." scroll
       action={<Link href="/reports" className="text-sm font-medium text-rose-700 hover:underline">Saved chat reports</Link>}>
       {search.get('new') && <WorkspacePicker />}
       {note && <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{note}</p>}

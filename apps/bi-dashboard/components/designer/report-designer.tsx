@@ -28,7 +28,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 export function ReportDesigner({ designId }: { designId: string }) {
   return (
     <main className="flex h-screen overflow-hidden bg-[#f5f6f8] text-zinc-800 print:block print:h-auto print:overflow-visible print:bg-white">
-      <div className="print:hidden"><Suspense fallback={null}><WorkspaceSidebar active="Designer" defaultCollapsed /></Suspense></div>
+      <div className="print:hidden"><Suspense fallback={null}><WorkspaceSidebar active="Design report" defaultCollapsed /></Suspense></div>
       <Designer designId={designId} />
     </main>
   );
