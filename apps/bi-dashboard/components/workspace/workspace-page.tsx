@@ -7,12 +7,14 @@ export function WorkspacePage({
   subtitle,
   action,
   scroll = false,
+  portal = false,
   children,
 }: {
   active: string;
   title: string;
   subtitle: string;
   action?: ReactNode;
+  portal?: boolean;
   // Most workspace pages (chat, dashboard) manage their own internal
   // fixed-height scroll regions and rely on this outer container staying
   // exactly viewport-height with no scrollbar of its own. Simple
@@ -22,12 +24,11 @@ export function WorkspacePage({
   scroll?: boolean;
   children: ReactNode;
 }) {
+  const isPortal = portal || active === 'Customer Support';
   return (
     <main className="h-screen overflow-hidden bg-[#f5f6f8] text-zinc-800">
       <div className="flex h-screen overflow-hidden">
-        <Suspense fallback={null}>
-          <WorkspaceSidebar active={active} />
-        </Suspense>
+        {!isPortal && <Suspense fallback={null}><WorkspaceSidebar active={active} /></Suspense>}
         <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <header className="flex min-h-20 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 sm:px-6">
             <div className="flex min-w-0 items-center gap-2">
@@ -35,10 +36,8 @@ export function WorkspacePage({
                   itself is a fixed, always-visible column at lg and up, so
                   this stays hidden there instead of sitting next to it
                   doing nothing. */}
-              <SidebarToggle />
-              <Suspense fallback={null}>
-                <MobileSidebarTrigger active={active} />
-              </Suspense>
+              {!isPortal && <SidebarToggle />}
+              {!isPortal && <Suspense fallback={null}><MobileSidebarTrigger active={active} /></Suspense>}
               <div className="min-w-0">
                 <h1 className="text-xl font-semibold">{title}</h1>
                 <p className="truncate text-sm text-zinc-500">{subtitle}</p>
