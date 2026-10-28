@@ -12,7 +12,7 @@ function DesignedReports() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [note, setNote] = useState('');
   useEffect(() => {
-    fetch('/api/designs').then((r) => r.json()).then((d) => { setRows(d.designs || []); if (d.notInstalled) setNote('The Report Designer is not installed yet. Import database/report-designer-migration.sql in phpMyAdmin.'); if (d.error) setNote(d.error); }).catch(() => setRows([]));
+    fetch('/api/designs').then((r) => r.json()).then((d) => { setRows((d.designs || []).filter((x: Row) => x.blocks > 0)); if (d.notInstalled) setNote('The Report Designer is not installed yet. Import database/report-designer-migration.sql in phpMyAdmin.'); if (d.error) setNote(d.error); }).catch(() => setRows([]));
   }, []);
   return (
     <WorkspacePage active="Design report" title="Designed reports" subtitle="Reports built on the canvas from a conversation. Open one to keep designing." scroll

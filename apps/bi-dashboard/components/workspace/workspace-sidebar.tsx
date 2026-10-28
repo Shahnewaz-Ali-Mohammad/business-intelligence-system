@@ -78,6 +78,14 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [designs, setDesigns] = useState<{ id: number; title: string; workspaceId: string; blocks: number }[] | null>(null);
+  const [lastWorkspace] = useState(() => { try { return typeof window === 'undefined' ? '' : localStorage.getItem('bi:lastWorkspace') || ''; } catch { return ''; } });
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    fetch('/api/designs').then((r) => r.json()).then((d) => { if (!cancelled) setDesigns(d.designs || []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [user, pathname]);
   const [workspaceList, setWorkspaceList] = useState<{ userId: number; rows: { id: string; name: string; databases?: { id: string; name: string }[] }[]; error?: string } | null>(null);
   const currentChatSessionId = searchParams.get('session');
   // The original workspace is current only when it is actually open (never a default).
@@ -263,6 +271,11 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
     }
   }
 
+  const realWorkspaces = (workspaceList?.rows || []).filter((w) => w.id !== 'isp-default');
+  const designWorkspace = currentWorkspaceId && currentWorkspaceId !== 'isp-default' ? currentWorkspaceId
+    : realWorkspaces.find((w) => w.id === lastWorkspace)?.id || realWorkspaces[0]?.id || '';
+  const savedDesigns = (designs || []).filter((d) => d.blocks > 0 && (!currentWorkspaceId || d.workspaceId === currentWorkspaceId));
+  const openDesignId = pathname.match(/^\/reports\/designed\/(\d+)/)?.[1];
   const hasMoreSessions = (recentSessions?.length ?? 0) < sessionsTotal;
 
   return (
@@ -280,13 +293,13 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
 
       <div className="space-y-5 px-3.5 py-5">
         <nav className="space-y-1.5">
-          {navItems.filter((item) => (!item.permission || can(user, item.permission)) && (item.label !== 'Design report' || (currentWorkspaceId && currentWorkspaceId !== 'isp-default'))).map((item) => {
+          {navItems.filter((item) => (!item.permission || can(user, item.permission)) && (item.label !== 'Design report' || !!designWorkspace)).map((item) => {
             const Icon = item.icon;
             const selected = active === item.label && !(item.label === 'Chat' && pathname.startsWith('/data-sources/'));
             return (
               <Link
                 key={item.href}
-                href={item.label === 'Design report' ? `/data-sources/${encodeURIComponent(currentWorkspaceId)}/design` : item.label === 'Chat' ? !currentWorkspaceId ? '/chat' : currentWorkspaceId === 'isp-default' ? '/chat?original=1' : `/data-sources/${encodeURIComponent(currentWorkspaceId)}/chat${currentSourceId ? `?source=${encodeURIComponent(currentSourceId)}` : ''}` : ['Reports', 'Exports', 'Settings'].includes(item.label) ? `${item.href}${scopeQuery ? `?${scopeQuery}` : ''}` : item.href}
+                href={item.label === 'Design report' ? `/data-sources/${encodeURIComponent(designWorkspace)}/design` : item.label === 'Chat' ? !currentWorkspaceId ? '/chat' : currentWorkspaceId === 'isp-default' ? '/chat?original=1' : `/data-sources/${encodeURIComponent(currentWorkspaceId)}/chat${currentSourceId ? `?source=${encodeURIComponent(currentSourceId)}` : ''}` : ['Reports', 'Exports', 'Settings'].includes(item.label) ? `${item.href}${scopeQuery ? `?${scopeQuery}` : ''}` : item.href}
                 onClick={onNavigate}
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-semibold transition ${
                   selected
@@ -326,6 +339,26 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
                 })}
               </div>
             )}
+          </nav>
+        )}
+
+        {user && savedDesigns.length > 0 && (
+          <nav aria-label="Designed reports" className="space-y-3 border-t border-zinc-200 pt-5">
+            <div className="flex items-center justify-between px-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-zinc-500">Designed reports</p>
+              <Link href="/reports/designed" onClick={onNavigate} className="text-[11px] font-semibold text-rose-700 hover:text-rose-800">View all</Link>
+            </div>
+            <div className="max-h-56 space-y-1 overflow-y-auto">
+              {savedDesigns.slice(0, 8).map((d) => {
+                const selected = openDesignId === String(d.id);
+                return (
+                  <Link key={d.id} href={`/reports/designed/${d.id}?workspace=${encodeURIComponent(d.workspaceId)}`} onClick={onNavigate} title={d.title}
+                    className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm ${selected ? 'bg-rose-50 font-semibold text-rose-800' : 'text-zinc-600 hover:bg-zinc-50'}`}>
+                    <Sparkles size={15} className="shrink-0" /><span className="truncate">{d.title}</span>
+                  </Link>
+                );
+              })}
+            </div>
           </nav>
         )}
 
