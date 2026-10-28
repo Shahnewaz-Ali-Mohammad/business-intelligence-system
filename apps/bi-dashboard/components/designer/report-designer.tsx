@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, MessageSquare, PanelLeftClose, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Printer, Redo2, RefreshCw, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import { SidebarToggle, WorkspaceSidebar } from '@/components/workspace/workspace-sidebar';
 import { BlockBody, label, type BlockData } from './block-view';
-import type { Block, Message, Spec } from '@/lib/designer/spec';
+import { isDataBlock, type Block, type Message, type Spec } from '@/lib/designer/spec';
 import { base64ToBlob, buildWorkbookBase64, triggerDownload, XLSX_MIME_TYPE } from '@/lib/download';
 
 const STARTERS = [
@@ -41,6 +41,7 @@ function Designer({ designId }: { designId: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [data, setData] = useState<Record<string, BlockData>>({});
   const [loadingData, setLoadingData] = useState(false);
+  const [loadingBlocks, setLoadingBlocks] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -56,15 +57,24 @@ function Designer({ designId }: { designId: string }) {
   const chatEnd = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (target?: Spec) => {
+    const blocks = target?.blocks.filter(isDataBlock) || [];
+    if (!blocks.length) return;
     setLoadingData(true);
-    try { const d = await api<{ data: Record<string, BlockData> }>(`${base}/run`, { method: 'POST', body: '{}' }); setData(d.data); }
-    catch (e) { setNotice((e as Error).message); } finally { setLoadingData(false); }
+    setLoadingBlocks(new Set(blocks.map((b) => b.id)));
+    await Promise.all(blocks.map(async (block) => {
+      try {
+        const d = await api<{ blockId: string; data: BlockData }>(`${base}/run`, { method: 'POST', body: JSON.stringify({ blockId: block.id }) });
+        setData((current) => ({ ...current, [d.blockId]: d.data }));
+      } catch (e) { setData((current) => ({ ...current, [block.id]: { rows: [], hasMore: false, error: (e as Error).message } })); }
+      finally { setLoadingBlocks((current) => { const next = new Set(current); next.delete(block.id); return next; }); }
+    }));
+    setLoadingData(false);
   }, [base]);
 
   useEffect(() => {
     api<{ design: { spec: Spec; messages: Message[] }; workspace: { id: string; name: string } | null }>(base)
-      .then((d) => { setSpec(d.design.spec); setMessages(d.design.messages); setWorkspace(d.workspace); if (d.design.spec.blocks.length) refresh(); })
+      .then((d) => { setSpec(d.design.spec); setMessages(d.design.messages); setWorkspace(d.workspace); if (d.design.spec.blocks.length) refresh(d.design.spec); })
       .catch((e) => setError(e.message));
   }, [base, refresh]);
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
@@ -80,6 +90,8 @@ function Designer({ designId }: { designId: string }) {
       const d = await api<{ spec: Spec; data: Record<string, BlockData>; messages: Message[]; suggestions: string[]; changed: string[] }>(`${base}/prompt`, { method: 'POST', body: JSON.stringify({ text: prompt, selectedBlockId: selected, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
       setPast((p) => [...p.slice(-30), spec]); setFuture([]);
       setSpec(d.spec); setData(d.data); setMessages(d.messages); setSuggestions(d.suggestions || []); setChanged(new Set(d.changed));
+      // Refresh each changed block independently so the canvas can render while slower queries finish.
+      refresh(d.spec);
       if (selected && !d.spec.blocks.some((b) => b.id === selected)) setSelected(null);
     } catch (e) {
       setMessages((m) => [...m, { role: 'assistant', text: (e as Error).message, at: new Date().toISOString() }]);
@@ -201,7 +213,7 @@ function Designer({ designId }: { designId: string }) {
             <Tool title="Undo" onClick={() => past.length && jump(past[past.length - 1], 'undo')} disabled={!past.length || busy}><Undo2 size={16} /></Tool>
             <Tool title="Redo" onClick={() => future.length && jump(future[0], 'redo')} disabled={!future.length || busy}><Redo2 size={16} /></Tool>
             <Tool title="Version history" onClick={openVersions} disabled={busy}><History size={16} /></Tool>
-            <Tool title="Refresh data" onClick={refresh} disabled={busy || loadingData}><RefreshCw size={16} className={loadingData ? 'animate-spin' : ''} /></Tool>
+            <Tool title="Refresh data" onClick={() => refresh(spec || undefined)} disabled={busy || loadingData}><RefreshCw size={16} className={loadingData ? 'animate-spin' : ''} /></Tool>
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => window.print()} className="inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"><Printer size={15} />PDF</button>
@@ -229,7 +241,7 @@ function Designer({ designId }: { designId: string }) {
             ) : (
               <div className="grid grid-cols-6 gap-4 print:gap-3">
                 {spec.blocks.map((b, i) => (
-                  <BlockCard key={b.id} block={b} data={data[b.id]} loading={loadingData || (busy && changed.has(b.id))} selected={selected === b.id} fresh={changed.has(b.id)}
+                  <BlockCard key={b.id} block={b} data={data[b.id]} loading={loadingBlocks.has(b.id) || (busy && changed.has(b.id))} selected={selected === b.id} fresh={changed.has(b.id)}
                     first={i === 0} last={i === spec.blocks.length - 1}
                     onSelect={() => { setSelected(b.id); input.current?.focus(); }}
                     onMove={(d) => moveBlock(b.id, d)} onRemove={() => removeBlock(b.id)}
