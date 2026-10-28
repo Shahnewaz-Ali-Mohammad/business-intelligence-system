@@ -12,6 +12,8 @@ export const PERMISSIONS = [
   'users.manage',      // users, roles, departments, data access rules
   'audit.view',        // audit log
   'data.all',          // every row of every database, no department filter
+  'support.use',       // customer-support workspace and ticket queue
+  'support.manage',    // assign, update and resolve support tickets
 ];
 
 export const ROLES = {
@@ -19,6 +21,7 @@ export const ROLES = {
   ceo: { label: 'CEO', description: 'Sees all data in every department.', permissions: ['chat.use', 'reports.save', 'reports.export', 'reports.schedule', 'procedures.run', 'audit.view', 'data.all'] },
   manager: { label: 'Manager', description: 'Sees their departments (and departments under them).', permissions: ['chat.use', 'reports.save', 'reports.export', 'reports.schedule', 'procedures.run'] },
   executive: { label: 'Executive', description: 'Sees their department.', permissions: ['chat.use', 'reports.save', 'reports.export'] },
+  customer_support: { label: 'Customer Support', description: 'Handles the ticketing enquiry queue and customer conversations.', permissions: ['chat.use', 'support.use', 'support.manage'] },
 };
 export const ROLE_NAMES = Object.keys(ROLES);
 /** Roles that see business data (Admin alone does not). */

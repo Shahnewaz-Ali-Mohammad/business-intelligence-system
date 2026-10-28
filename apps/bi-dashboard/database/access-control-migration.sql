@@ -93,3 +93,40 @@ CREATE TABLE IF NOT EXISTS workspace_departments (
   PRIMARY KEY (workspace_id, department_id),
   KEY idx_workspace_departments_department (department_id)
 ) ENGINE=InnoDB;
+
+-- Customer-support enquiry queue. Conversations are kept separate from BI chat.
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  requester_user_id INT UNSIGNED NULL,
+  subject VARCHAR(240) NOT NULL,
+  status ENUM('open','in_progress','waiting_on_customer','resolved','closed') NOT NULL DEFAULT 'open',
+  priority ENUM('low','normal','high','urgent') NOT NULL DEFAULT 'normal',
+  assigned_to INT UNSIGNED NULL,
+  source_workspace_id VARCHAR(64) NULL,
+  language VARCHAR(20) NULL,
+  ai_summary TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_support_status (status, updated_at), KEY idx_support_assignee (assigned_to, status)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS support_ticket_messages (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  ticket_id BIGINT UNSIGNED NOT NULL,
+  author_user_id INT UNSIGNED NULL,
+  author_type ENUM('customer','ai','agent','system') NOT NULL,
+  body MEDIUMTEXT NOT NULL,
+  language VARCHAR(20) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_support_messages_ticket (ticket_id, created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS support_knowledge_entries (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  ticket_id BIGINT UNSIGNED NULL,
+  question TEXT NOT NULL,
+  approved_answer MEDIUMTEXT NOT NULL,
+  approved_by INT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_support_knowledge_ticket (ticket_id)
+) ENGINE=InnoDB;
