@@ -22,5 +22,5 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const spec = await getVersion(open.design.id, body.data.versionId);
   if (!spec) return NextResponse.json({ error: 'Version not found.' }, { status: 404 });
   await saveDesign(open.design.id, open.guard.user.id, spec, null, 'Restored an earlier version');
-  return NextResponse.json({ spec, data: await runSpec(open.design.workspaceId, spec) });
+  return NextResponse.json({ spec, data: await runSpec(open.design.workspaceId, spec, open.guard.access) });
 }

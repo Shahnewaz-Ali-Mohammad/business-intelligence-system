@@ -10,5 +10,5 @@ export const maxDuration = 60;
 export async function POST(req: NextRequest, { params }: { params: Promise<{ designId: string }> }) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const open = await openDesign((await params).designId); if (open.error) return open.error;
-  return NextResponse.json({ data: await runSpec(open.design.workspaceId, open.design.spec) });
+  return NextResponse.json({ data: await runSpec(open.design.workspaceId, open.design.spec, open.guard.access) });
 }

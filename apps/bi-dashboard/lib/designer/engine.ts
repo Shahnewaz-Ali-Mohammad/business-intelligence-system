@@ -5,6 +5,8 @@ import { discoverDatabase, executeTool } from '@/lib/tool-setup/connectors.mjs';
 import { compileTool } from '@/lib/tool-setup/model.mjs';
 import { toolContext } from '@/lib/tool-setup/chat-planning.mjs';
 import { normalizeMcpArguments } from '@/lib/tool-setup/mcp-query.mjs';
+import { runWithAccess } from '@/lib/access/data-scope.mjs';
+import type { Access } from '@/lib/access/access-db';
 import { applyOps, isDataBlock, OpSchema, type Block, type Message, type Spec } from './spec';
 
 // The designer AI never writes SQL. It returns a change list whose data
@@ -102,8 +104,9 @@ export async function runBlock(workspaceId: string, block: Block): Promise<Block
   }
 }
 
-export async function runSpec(workspaceId: string, spec: Spec) {
-  const entries = await Promise.all(spec.blocks.filter(isDataBlock).map(async (b) => [b.id, await runBlock(workspaceId, b)] as const));
+export async function runSpec(workspaceId: string, spec: Spec, access?: Access) {
+  const execute = () => Promise.all(spec.blocks.filter(isDataBlock).map(async (b) => [b.id, await runBlock(workspaceId, b)] as const));
+  const entries = await (access ? runWithAccess(access, execute) : execute());
   return Object.fromEntries(entries) as Record<string, BlockData>;
 }
 

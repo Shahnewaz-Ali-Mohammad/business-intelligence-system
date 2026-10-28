@@ -24,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ des
   try {
     const today = todayIn(timezone || 'UTC');
     const turn = await designTurn({ workspaceId: design.workspaceId, spec: design.spec, messages: design.messages, text, selectedBlockId, today: `${today.date} (${today.weekday})` });
-    const data = await runSpec(design.workspaceId, turn.spec);
+    const data = await runSpec(design.workspaceId, turn.spec, guard.access);
     const changed = new Set(turn.ops.map((o) => o.blockId));
     const spec = await writeInsights(turn.spec, data, changed);
     const messages: Message[] = [...design.messages, { role: 'user', text, at: now, blockId: selectedBlockId }, { role: 'assistant', text: turn.reply, at: new Date().toISOString() }];
