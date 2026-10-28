@@ -11,7 +11,7 @@ export default function NewDesignPage({ params }: { params: Promise<{ id: string
   useEffect(() => {
     if (started.current) return; started.current = true;
     fetch(`/api/workspaces/${encodeURIComponent(id)}/designs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Could not start a report.'); router.replace(`/reports/designed/${d.id}`); })
+      .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Could not start a report.'); router.replace(`/reports/designed/${d.id}?workspace=${encodeURIComponent(id)}`); })
       .catch((e) => setError(e.message));
   }, [id, router]);
   return <main className="flex h-screen items-center justify-center bg-[#f5f6f8] text-sm text-zinc-500">{error || 'Opening the designer…'}</main>;

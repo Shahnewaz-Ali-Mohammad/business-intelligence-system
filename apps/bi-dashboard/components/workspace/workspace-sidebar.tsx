@@ -41,7 +41,7 @@ const navItems = [
   { label: 'Chat', href: '/chat', icon: MessageSquareText },
   { label: 'Reports', href: '/reports', icon: FileText },
   { label: 'Exports', href: '/exports', icon: Download },
-  { label: 'Design report', href: '/reports/designed?new=1', icon: Sparkles, permission: 'chat.use' },
+  { label: 'Design report', href: '', icon: Sparkles, permission: 'chat.use' },
   { label: 'Settings', href: '/data-sources', icon: Settings, permission: 'setup.manage' },
   { label: 'Admin', href: '/admin', icon: ShieldCheck, permission: 'users.manage' },
 ] as { label: string; href: string; icon: typeof Settings; permission?: string }[];
@@ -280,13 +280,13 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
 
       <div className="space-y-5 px-3.5 py-5">
         <nav className="space-y-1.5">
-          {navItems.filter((item) => !item.permission || can(user, item.permission)).map((item) => {
+          {navItems.filter((item) => (!item.permission || can(user, item.permission)) && (item.label !== 'Design report' || (currentWorkspaceId && currentWorkspaceId !== 'isp-default'))).map((item) => {
             const Icon = item.icon;
             const selected = active === item.label && !(item.label === 'Chat' && pathname.startsWith('/data-sources/'));
             return (
               <Link
                 key={item.href}
-                href={item.label === 'Design report' ? (currentWorkspaceId && currentWorkspaceId !== 'isp-default' ? `/data-sources/${encodeURIComponent(currentWorkspaceId)}/design` : item.href) : item.label === 'Chat' ? !currentWorkspaceId ? '/chat' : currentWorkspaceId === 'isp-default' ? '/chat?original=1' : `/data-sources/${encodeURIComponent(currentWorkspaceId)}/chat${currentSourceId ? `?source=${encodeURIComponent(currentSourceId)}` : ''}` : ['Reports', 'Exports', 'Settings'].includes(item.label) ? `${item.href}${scopeQuery ? `?${scopeQuery}` : ''}` : item.href}
+                href={item.label === 'Design report' ? `/data-sources/${encodeURIComponent(currentWorkspaceId)}/design` : item.label === 'Chat' ? !currentWorkspaceId ? '/chat' : currentWorkspaceId === 'isp-default' ? '/chat?original=1' : `/data-sources/${encodeURIComponent(currentWorkspaceId)}/chat${currentSourceId ? `?source=${encodeURIComponent(currentSourceId)}` : ''}` : ['Reports', 'Exports', 'Settings'].includes(item.label) ? `${item.href}${scopeQuery ? `?${scopeQuery}` : ''}` : item.href}
                 onClick={onNavigate}
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-semibold transition ${
                   selected
@@ -489,14 +489,15 @@ export function useSidebarCollapsed(defaultCollapsed = false) {
 function IconRail({ active, onExpand }: { active: string; onExpand: () => void }) {
   const { user } = useAuth();
   const pathname = usePathname();
-  const ws = pathname.match(/^\/data-sources\/([^/]+)/)?.[1];
+  const search = useSearchParams();
+  const ws = pathname.match(/^\/data-sources\/([^/]+)/)?.[1] || search.get('workspace') || '';
   return (
     <div className="flex h-full flex-col items-center gap-1.5 py-4">
       <Link href="/chat" title="Business Intelligence" className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-rose-700 text-white"><LayoutDashboard size={19} /></Link>
-      {navItems.filter((item) => !item.permission || can(user, item.permission)).map((item) => {
+      {navItems.filter((item) => (!item.permission || can(user, item.permission)) && (item.label !== 'Design report' || (ws && ws !== 'isp-default'))).map((item) => {
         const Icon = item.icon; const selected = active === item.label;
         return (
-          <Link key={item.href} href={item.label === 'Design report' && ws ? `/data-sources/${ws}/design` : item.href} title={item.label} aria-label={item.label}
+          <Link key={item.href} href={item.label === 'Design report' ? `/data-sources/${ws}/design` : item.href} title={item.label} aria-label={item.label}
             className={`group relative flex h-10 w-10 items-center justify-center rounded-lg transition ${selected ? 'bg-rose-50 text-rose-700 ring-1 ring-rose-100' : 'text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700'}`}>
             <Icon size={18} />
             <span className="pointer-events-none absolute left-12 z-50 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow transition group-hover:opacity-100">{item.label}</span>
