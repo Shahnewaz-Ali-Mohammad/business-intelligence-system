@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Printer, Redo2, RefreshCw, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, MessageSquare, PanelLeftClose, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Printer, Redo2, RefreshCw, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import { WorkspaceSidebar } from '@/components/workspace/workspace-sidebar';
 import { BlockBody, label, type BlockData } from './block-view';
 import type { Block, Message, Spec } from '@/lib/designer/spec';
@@ -52,6 +52,7 @@ function Designer({ designId }: { designId: string }) {
   const [future, setFuture] = useState<Spec[]>([]);
   const [versions, setVersions] = useState<{ id: number; note: string; created_at: string }[] | null>(null);
   const [notice, setNotice] = useState('');
+  const [chatOpen, setChatOpen] = useState(true);
   const chatEnd = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
 
@@ -130,13 +131,14 @@ function Designer({ designId }: { designId: string }) {
   return (
     <>
       {/* Conversation */}
-      <section className="flex w-[360px] shrink-0 flex-col border-r border-zinc-200 bg-white print:hidden">
+      <section className={`${chatOpen ? 'flex' : 'hidden'} w-[360px] shrink-0 flex-col border-r border-zinc-200 bg-white print:hidden`}>
         <header className="flex h-16 shrink-0 items-center gap-2 border-b border-zinc-100 px-4">
           <Link href={workspace ? `/data-sources/${encodeURIComponent(workspace.id)}/chat` : '/reports/designed'} title="Back" className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><ArrowLeft size={16} /></Link>
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles size={14} className="text-rose-700" />Report designer</p>
             <p className="truncate text-xs text-zinc-400">{workspace?.name || 'Workspace'}</p>
           </div>
+          <button type="button" onClick={() => setChatOpen(false)} title="Hide chat" aria-label="Hide chat" className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><PanelLeftClose size={16} /></button>
         </header>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
           {!messages.length && (
@@ -194,6 +196,7 @@ function Designer({ designId }: { designId: string }) {
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden print:overflow-visible">
         <div className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white/80 px-5 backdrop-blur print:hidden">
           <div className="flex items-center gap-1">
+            {!chatOpen && <button type="button" onClick={() => setChatOpen(true)} className="mr-2 inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-800"><MessageSquare size={15} />Show chat</button>}
             <Tool title="Undo" onClick={() => past.length && jump(past[past.length - 1], 'undo')} disabled={!past.length || busy}><Undo2 size={16} /></Tool>
             <Tool title="Redo" onClick={() => future.length && jump(future[0], 'redo')} disabled={!future.length || busy}><Redo2 size={16} /></Tool>
             <Tool title="Version history" onClick={openVersions} disabled={busy}><History size={16} /></Tool>
