@@ -125,7 +125,7 @@ function Designer({ designId }: { designId: string }) {
 
   const selectedBlock = useMemo(() => spec?.blocks.find((b) => b.id === selected) || null, [spec, selected]);
 
-  if (error) return <div className="flex flex-1 items-center justify-center p-8"><div className="max-w-md rounded-2xl border border-zinc-200 bg-white p-8 text-center shadow-sm"><p className="font-semibold">This report could not be opened</p><p className="mt-2 text-sm text-zinc-500">{error}</p><Link href="/reports/designed" className="mt-5 inline-block text-sm font-semibold text-rose-700 hover:underline">Back to designed reports</Link></div></div>;
+  if (error) return <div className="flex flex-1 items-center justify-center p-8"><div className="max-w-md rounded-2xl border border-zinc-200 bg-white p-8 text-center shadow-sm"><p className="font-semibold">This report could not be opened</p><p className="mt-2 text-sm text-zinc-500">{error}</p><Link href="/chat" className="mt-5 inline-block text-sm font-semibold text-rose-700 hover:underline">Back to chat</Link></div></div>;
   if (!spec) return <div className="flex flex-1 items-center justify-center text-sm text-zinc-400"><Loader2 className="mr-2 animate-spin" size={16} />Opening the designer…</div>;
 
   return (
