@@ -45,6 +45,7 @@ const navItems = [
   { label: 'Settings', href: '/data-sources', icon: Settings, permission: 'setup.manage' },
   { label: 'Admin', href: '/admin', icon: ShieldCheck, permission: 'users.manage' },
   { label: 'Support', href: '/support', icon: MessageSquareText, permission: 'support.use' },
+  { label: 'Support Chat', href: '/support/chat', icon: MessageSquareText, permission: 'chat.use' },
 ] as { label: string; href: string; icon: typeof Settings; permission?: string }[];
 
 type RecentSession = {
