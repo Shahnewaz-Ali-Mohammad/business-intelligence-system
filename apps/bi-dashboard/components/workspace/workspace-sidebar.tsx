@@ -295,7 +295,9 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
         <nav className="space-y-1.5">
           {navItems.filter((item) => (!item.permission || can(user, item.permission)) && (item.label !== 'Design report' || !!designWorkspace)).map((item) => {
             const Icon = item.icon;
-            const selected = active === item.label && !(item.label === 'Chat' && pathname.startsWith('/data-sources/'));
+            // Chat transcripts belong to Chat; an opened saved design is shown selected in the Designed reports list instead.
+            const section = active === 'Sessions' ? 'Chat' : active;
+            const selected = section === item.label && !(item.label === 'Design report' && openDesignId && savedDesigns.some((d) => String(d.id) === openDesignId));
             return (
               <Link
                 key={item.href}
@@ -527,7 +529,7 @@ function IconRail({ active, onExpand }: { active: string; onExpand: () => void }
     <div className="flex h-full flex-col items-center gap-1.5 py-4">
       <Link href="/chat" title="Business Intelligence" className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-rose-700 text-white"><LayoutDashboard size={19} /></Link>
       {navItems.filter((item) => (!item.permission || can(user, item.permission)) && (item.label !== 'Design report' || (ws && ws !== 'isp-default'))).map((item) => {
-        const Icon = item.icon; const selected = active === item.label;
+        const Icon = item.icon; const selected = (active === 'Sessions' ? 'Chat' : active) === item.label;
         return (
           <Link key={item.href} href={item.label === 'Design report' ? `/data-sources/${ws}/design` : item.href} title={item.label} aria-label={item.label}
             className={`group relative flex h-10 w-10 items-center justify-center rounded-lg transition ${selected ? 'bg-rose-50 text-rose-700 ring-1 ring-rose-100' : 'text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700'}`}>
