@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from 'react';
-import { MobileSidebarTrigger, WorkspaceSidebar } from './workspace-sidebar';
+import { MobileSidebarTrigger, SidebarToggle, WorkspaceSidebar } from './workspace-sidebar';
 
 export function WorkspacePage({
   active,
@@ -35,6 +35,7 @@ export function WorkspacePage({
                   itself is a fixed, always-visible column at lg and up, so
                   this stays hidden there instead of sitting next to it
                   doing nothing. */}
+              <SidebarToggle />
               <Suspense fallback={null}>
                 <MobileSidebarTrigger active={active} />
               </Suspense>

@@ -1,7 +1,6 @@
 "use client";
 import { Suspense, use, useEffect, useState } from "react";
 import Link from "next/link";
-import { Sparkles } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { WorkspacePage } from "@/components/workspace/workspace-page";
 import { useAuth, can } from "@/components/auth/auth-provider";
@@ -58,7 +57,7 @@ function DatabaseChat({ id }: { id: string }) {
     window.addEventListener('bi:workspaces-changed',update);return()=>window.removeEventListener('bi:workspaces-changed',update);
   },[id]);
   const source = sources.find((s) => s.id === resolvedSource);
-  return <WorkspacePage active="Chat" title="Chat Workspace" subtitle={source ? `${name} · Ask questions, explore your data, and save reports.` : "Choose your connected database"} action={<Link href={`/data-sources/${encodeURIComponent(id)}/design`} className="inline-flex h-9 items-center gap-2 rounded-lg bg-zinc-900 px-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-700"><Sparkles size={15} />Design report</Link>}>
+  return <WorkspacePage active="Chat" title="Chat Workspace" subtitle={source ? `${name} · Ask questions, explore your data, and save reports.` : "Choose your connected database"}>
     <div className="flex h-full min-h-0 flex-col gap-3">
       {loaded && !error && <div className="flex flex-wrap items-end justify-between gap-3">
         {sources.length > 1 && <label className="flex min-w-0 flex-col gap-1 text-sm font-medium">Database

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, MessageSquare, PanelLeftClose, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Printer, Redo2, RefreshCw, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
-import { WorkspaceSidebar } from '@/components/workspace/workspace-sidebar';
+import { SidebarToggle, WorkspaceSidebar } from '@/components/workspace/workspace-sidebar';
 import { BlockBody, label, type BlockData } from './block-view';
 import type { Block, Message, Spec } from '@/lib/designer/spec';
 import { base64ToBlob, buildWorkbookBase64, triggerDownload, XLSX_MIME_TYPE } from '@/lib/download';
@@ -133,6 +133,7 @@ function Designer({ designId }: { designId: string }) {
       {/* Conversation */}
       <section className={`${chatOpen ? 'flex' : 'hidden'} w-[360px] shrink-0 flex-col border-r border-zinc-200 bg-white print:hidden`}>
         <header className="flex h-16 shrink-0 items-center gap-2 border-b border-zinc-100 px-4">
+          <SidebarToggle />
           <Link href={workspace ? `/data-sources/${encodeURIComponent(workspace.id)}/chat` : '/reports/designed'} title="Back" className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><ArrowLeft size={16} /></Link>
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles size={14} className="text-rose-700" />Report designer</p>

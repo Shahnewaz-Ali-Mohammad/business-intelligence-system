@@ -14,7 +14,6 @@ import {
   MessageSquareText,
   MoreVertical,
   EyeOff,
-  PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -518,6 +517,8 @@ export function useSidebarHidden() {
 
 function IconRail({ active, onExpand, onHide }: { active: string; onExpand: () => void; onHide: () => void }) {
   const { user } = useAuth();
+  const pathname = usePathname();
+  const ws = pathname.match(/^\/data-sources\/([^/]+)/)?.[1];
   return (
     <div className="flex h-full flex-col items-center gap-1.5 py-4">
       <Link href="/chat" title="Business Intelligence" className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-rose-700 text-white"><LayoutDashboard size={19} /></Link>
@@ -532,7 +533,7 @@ function IconRail({ active, onExpand, onHide }: { active: string; onExpand: () =
         );
       })}
       {user && can(user, 'chat.use') && (
-        <Link href="/reports/designed?new=1" title="Design report" aria-label="Design report" className="group relative mt-2 flex h-10 w-10 items-center justify-center rounded-lg bg-rose-700 text-white shadow-sm hover:bg-rose-800">
+        <Link href={ws ? `/data-sources/${ws}/design` : '/reports/designed?new=1'} title="Design report" aria-label="Design report" className="group relative mt-2 flex h-10 w-10 items-center justify-center rounded-lg bg-rose-700 text-white shadow-sm hover:bg-rose-800">
           <Sparkles size={18} />
           <span className="pointer-events-none absolute left-12 z-50 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow transition group-hover:opacity-100">Design report</span>
         </Link>
@@ -548,13 +549,8 @@ function IconRail({ active, onExpand, onHide }: { active: string; onExpand: () =
 // below lg, where MobileSidebarTrigger takes over.
 export function WorkspaceSidebar({ active, defaultCollapsed = false }: { active: string; defaultCollapsed?: boolean }) {
   const { collapsed, toggle } = useSidebarCollapsed(defaultCollapsed);
-  const { hidden, hide, show } = useSidebarHidden();
-  if (hidden) return (
-    <button type="button" onClick={show} title="Show left panel" aria-label="Show left panel"
-      className="fixed bottom-4 left-4 z-50 hidden h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-lg transition hover:text-rose-700 lg:flex print:hidden">
-      <PanelLeft size={18} />
-    </button>
-  );
+  const { hidden, hide } = useSidebarHidden();
+  if (hidden) return null;
   if (collapsed) return (
     <aside className="hidden h-screen w-[68px] shrink-0 border-r border-zinc-200 bg-white lg:block">
       <IconRail active={active} onExpand={toggle} onHide={hide} />
@@ -566,6 +562,17 @@ export function WorkspaceSidebar({ active, defaultCollapsed = false }: { active:
       <button type="button" onClick={hide} title="Hide left panel" aria-label="Hide left panel" className="absolute -right-3.5 top-32 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-400 shadow-sm hover:text-zinc-700"><EyeOff size={14} /></button>
       <button type="button" onClick={toggle} title="Collapse sidebar" aria-label="Collapse sidebar" className="absolute -right-3.5 top-24 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-400 shadow-sm hover:text-zinc-700"><PanelLeftClose size={16} /></button>
     </aside>
+  );
+}
+
+/** Always-visible on/off switch for the left panel, placed next to the page title. */
+export function SidebarToggle() {
+  const { hidden, hide, show } = useSidebarHidden();
+  return (
+    <button type="button" onClick={hidden ? show : hide} title={hidden ? 'Show left panel' : 'Hide left panel'} aria-label={hidden ? 'Show left panel' : 'Hide left panel'} aria-pressed={!hidden}
+      className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 shadow-sm transition hover:border-rose-200 hover:text-rose-700 lg:flex print:hidden">
+      {hidden ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+    </button>
   );
 }
 
