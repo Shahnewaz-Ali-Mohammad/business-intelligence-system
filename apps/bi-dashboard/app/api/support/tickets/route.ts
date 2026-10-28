@@ -13,7 +13,7 @@ async function answerFirst(id: number, subject: string, body: string, language?:
   const text = String(result.content).trim(); const escalate = text.includes('[ESCALATE]'); const clean = text.replace(/\s*\[ESCALATE\]\s*$/, '').trim();
   await getAppDb().execute('INSERT INTO support_ticket_messages (ticket_id,author_type,body,language) VALUES (?,?,?,?)', [id, 'ai', clean, language || null]);
   const [attemptRows] = await getAppDb().execute("SELECT COUNT(*) AS n FROM support_ticket_messages WHERE ticket_id=? AND author_type='ai'", [id]);
-  const attempts = Number((attemptRows as { n: number }[])[0]?.n || 0); const shouldEscalate = escalate || attempts >= 3;
+  const attempts = Number((attemptRows as { n: number }[])[0]?.n || 0); const shouldEscalate = attempts >= 3;
   await getAppDb().execute('UPDATE support_tickets SET status=?, ai_summary=? WHERE id=?', [shouldEscalate ? 'open' : 'in_progress', `AI attempt ${attempts}${shouldEscalate ? '; escalated to human agent' : ''}`, id]);
   return { reply: clean, attempts, escalated: shouldEscalate };
 }
