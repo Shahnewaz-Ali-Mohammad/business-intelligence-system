@@ -13,7 +13,6 @@ import {
   Menu,
   MessageSquareText,
   MoreVertical,
-  EyeOff,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -497,25 +496,7 @@ export function useSidebarCollapsed(defaultCollapsed = false) {
   return { collapsed, toggle };
 }
 
-const HIDDEN_KEY = 'bi:sidebarHidden';
-/** Turns the whole left panel off or on, remembered per browser. */
-export function useSidebarHidden() {
-  const [hidden, setHidden] = useState(false);
-  useEffect(() => {
-    const read = () => { try { setHidden(localStorage.getItem(HIDDEN_KEY) === '1'); } catch {} };
-    read();
-    window.addEventListener('bi:sidebar', read);
-    return () => window.removeEventListener('bi:sidebar', read);
-  }, []);
-  const set = (value: boolean) => {
-    try { localStorage.setItem(HIDDEN_KEY, value ? '1' : '0'); } catch {}
-    setHidden(value);
-    setTimeout(() => window.dispatchEvent(new Event('bi:sidebar')), 0);
-  };
-  return { hidden, hide: () => set(true), show: () => set(false) };
-}
-
-function IconRail({ active, onExpand, onHide }: { active: string; onExpand: () => void; onHide: () => void }) {
+function IconRail({ active, onExpand }: { active: string; onExpand: () => void }) {
   const { user } = useAuth();
   const pathname = usePathname();
   const ws = pathname.match(/^\/data-sources\/([^/]+)/)?.[1];
@@ -539,7 +520,6 @@ function IconRail({ active, onExpand, onHide }: { active: string; onExpand: () =
         </Link>
       )}
       <div className="flex-1" />
-      <button type="button" onClick={onHide} title="Hide left panel" aria-label="Hide left panel" className="flex h-10 w-10 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><EyeOff size={17} /></button>
       <button type="button" onClick={onExpand} title="Expand sidebar" aria-label="Expand sidebar" className="flex h-10 w-10 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><PanelLeftOpen size={18} /></button>
     </div>
   );
@@ -549,29 +529,25 @@ function IconRail({ active, onExpand, onHide }: { active: string; onExpand: () =
 // below lg, where MobileSidebarTrigger takes over.
 export function WorkspaceSidebar({ active, defaultCollapsed = false }: { active: string; defaultCollapsed?: boolean }) {
   const { collapsed, toggle } = useSidebarCollapsed(defaultCollapsed);
-  const { hidden, hide } = useSidebarHidden();
-  if (hidden) return null;
   if (collapsed) return (
     <aside className="hidden h-screen w-[68px] shrink-0 border-r border-zinc-200 bg-white lg:block">
-      <IconRail active={active} onExpand={toggle} onHide={hide} />
+      <IconRail active={active} onExpand={toggle} />
     </aside>
   );
   return (
     <aside className="relative hidden h-screen w-[260px] shrink-0 border-r border-zinc-200 bg-white lg:block">
       <div className="h-full overflow-y-auto"><SidebarContent active={active} /></div>
-      <button type="button" onClick={hide} title="Hide left panel" aria-label="Hide left panel" className="absolute -right-3.5 top-32 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-400 shadow-sm hover:text-zinc-700"><EyeOff size={14} /></button>
-      <button type="button" onClick={toggle} title="Collapse sidebar" aria-label="Collapse sidebar" className="absolute -right-3.5 top-24 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-400 shadow-sm hover:text-zinc-700"><PanelLeftClose size={16} /></button>
     </aside>
   );
 }
 
 /** Always-visible on/off switch for the left panel, placed next to the page title. */
 export function SidebarToggle() {
-  const { hidden, hide, show } = useSidebarHidden();
+  const { collapsed, toggle } = useSidebarCollapsed();
   return (
-    <button type="button" onClick={hidden ? show : hide} title={hidden ? 'Show left panel' : 'Hide left panel'} aria-label={hidden ? 'Show left panel' : 'Hide left panel'} aria-pressed={!hidden}
+    <button type="button" onClick={toggle} title={collapsed ? 'Show menu names' : 'Icons only'} aria-label={collapsed ? 'Show full left menu' : 'Show icons only'}
       className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 shadow-sm transition hover:border-rose-200 hover:text-rose-700 lg:flex print:hidden">
-      {hidden ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+      {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
     </button>
   );
 }
