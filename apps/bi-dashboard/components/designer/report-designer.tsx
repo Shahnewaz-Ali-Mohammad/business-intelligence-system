@@ -134,7 +134,7 @@ function Designer({ designId }: { designId: string }) {
       <section className={`${chatOpen ? 'flex' : 'hidden'} w-[360px] shrink-0 flex-col border-r border-zinc-200 bg-white print:hidden`}>
         <header className="flex h-16 shrink-0 items-center gap-2 border-b border-zinc-100 px-4">
           <SidebarToggle />
-          <Link href={workspace ? `/data-sources/${encodeURIComponent(workspace.id)}/chat` : '/reports/designed'} title="Back" className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><ArrowLeft size={16} /></Link>
+          <Link href={workspace ? `/data-sources/${encodeURIComponent(workspace.id)}/chat` : '/chat'} title="Back" className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><ArrowLeft size={16} /></Link>
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles size={14} className="text-rose-700" />Report designer</p>
             <p className="truncate text-xs text-zinc-400">{workspace?.name || 'Workspace'}</p>

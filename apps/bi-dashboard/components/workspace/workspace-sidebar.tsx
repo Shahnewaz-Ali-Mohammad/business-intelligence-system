@@ -346,10 +346,9 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
           <nav aria-label="Designed reports" className="space-y-3 border-t border-zinc-200 pt-5">
             <div className="flex items-center justify-between px-2">
               <p className="text-xs font-bold uppercase tracking-wide text-zinc-500">Designed reports</p>
-              <Link href="/reports/designed" onClick={onNavigate} className="text-[11px] font-semibold text-rose-700 hover:text-rose-800">View all</Link>
             </div>
             <div className="max-h-56 space-y-1 overflow-y-auto">
-              {savedDesigns.slice(0, 8).map((d) => {
+              {savedDesigns.slice(0, 50).map((d) => {
                 const selected = openDesignId === String(d.id);
                 return (
                   <Link key={d.id} href={`/reports/designed/${d.id}?workspace=${encodeURIComponent(d.workspaceId)}`} onClick={onNavigate} title={d.title}
