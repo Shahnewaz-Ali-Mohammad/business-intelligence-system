@@ -79,7 +79,7 @@ function ReportList() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <WorkspacePage active="Reports" title="Reports" subtitle="Generated reports saved from chat sessions." scroll>
+    <WorkspacePage active="Reports" title="Reports" subtitle="Generated reports saved from chat sessions." scroll action={<Link href="/reports/designed" className="inline-flex h-9 items-center rounded-lg border border-zinc-200 bg-white px-3.5 text-sm font-semibold text-zinc-700 shadow-sm hover:border-rose-200 hover:text-rose-800">Designed reports</Link>}>
       {!authLoading && !user ? (
         <div className="flex flex-col items-center gap-3 rounded-lg border border-zinc-200/80 bg-white p-10 text-center shadow-sm">
           <LogIn size={22} className="text-zinc-400" />

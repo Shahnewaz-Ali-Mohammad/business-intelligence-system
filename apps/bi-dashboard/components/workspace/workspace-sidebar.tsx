@@ -13,8 +13,11 @@ import {
   Menu,
   MessageSquareText,
   MoreVertical,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Plus,
+  Sparkles,
   Settings,
   ShieldCheck,
   Trash2,
@@ -38,6 +41,7 @@ const navItems = [
   { label: 'Chat', href: '/chat', icon: MessageSquareText },
   { label: 'Reports', href: '/reports', icon: FileText },
   { label: 'Exports', href: '/exports', icon: Download },
+  { label: 'Designer', href: '/reports/designed', icon: Sparkles },
   { label: 'Settings', href: '/data-sources', icon: Settings, permission: 'setup.manage' },
   { label: 'Admin', href: '/admin', icon: ShieldCheck, permission: 'users.manage' },
 ] as { label: string; href: string; icon: typeof Settings; permission?: string }[];
@@ -463,10 +467,58 @@ function SidebarContent({ active, onNavigate }: { active: string; onNavigate?: (
 // from before -- still hidden below the lg breakpoint, where
 // MobileSidebarTrigger below takes over instead of leaving small screens
 // with no way to reach this at all.
-export function WorkspaceSidebar({ active }: { active: string }) {
+const COLLAPSE_KEY = 'bi:sidebarCollapsed';
+/** Full or icons-only sidebar, remembered per browser. */
+export function useSidebarCollapsed(defaultCollapsed = false) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  useEffect(() => {
+    const read = () => { try { const v = localStorage.getItem(COLLAPSE_KEY); if (v != null) setCollapsed(v === '1'); } catch {} };
+    read();
+    window.addEventListener('bi:sidebar', read);
+    return () => window.removeEventListener('bi:sidebar', read);
+  }, []);
+  const toggle = () => setCollapsed((c) => {
+    try { localStorage.setItem(COLLAPSE_KEY, c ? '0' : '1'); } catch {}
+    setTimeout(() => window.dispatchEvent(new Event('bi:sidebar')), 0);
+    return !c;
+  });
+  return { collapsed, toggle };
+}
+
+function IconRail({ active, onExpand }: { active: string; onExpand: () => void }) {
+  const { user } = useAuth();
   return (
-    <aside className="hidden h-screen w-[260px] shrink-0 overflow-y-auto border-r border-zinc-200 bg-white lg:block">
-      <SidebarContent active={active} />
+    <div className="flex h-full flex-col items-center gap-1.5 py-4">
+      <Link href="/chat" title="Business Intelligence" className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-rose-700 text-white"><LayoutDashboard size={19} /></Link>
+      {navItems.filter((item) => !item.permission || can(user, item.permission)).map((item) => {
+        const Icon = item.icon; const selected = active === item.label;
+        return (
+          <Link key={item.href} href={item.href} title={item.label} aria-label={item.label}
+            className={`group relative flex h-10 w-10 items-center justify-center rounded-lg transition ${selected ? 'bg-rose-50 text-rose-700 ring-1 ring-rose-100' : 'text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700'}`}>
+            <Icon size={18} />
+            <span className="pointer-events-none absolute left-12 z-50 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow transition group-hover:opacity-100">{item.label}</span>
+          </Link>
+        );
+      })}
+      <div className="flex-1" />
+      <button type="button" onClick={onExpand} title="Expand sidebar" aria-label="Expand sidebar" className="flex h-10 w-10 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><PanelLeftOpen size={18} /></button>
+    </div>
+  );
+}
+
+// Desktop: full column or an icons-only rail (toggle remembered). Hidden
+// below lg, where MobileSidebarTrigger takes over.
+export function WorkspaceSidebar({ active, defaultCollapsed = false }: { active: string; defaultCollapsed?: boolean }) {
+  const { collapsed, toggle } = useSidebarCollapsed(defaultCollapsed);
+  if (collapsed) return (
+    <aside className="hidden h-screen w-[68px] shrink-0 border-r border-zinc-200 bg-white lg:block">
+      <IconRail active={active} onExpand={toggle} />
+    </aside>
+  );
+  return (
+    <aside className="relative hidden h-screen w-[260px] shrink-0 border-r border-zinc-200 bg-white lg:block">
+      <div className="h-full overflow-y-auto"><SidebarContent active={active} /></div>
+      <button type="button" onClick={toggle} title="Collapse sidebar" aria-label="Collapse sidebar" className="absolute -right-3.5 top-24 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-400 shadow-sm hover:text-zinc-700"><PanelLeftClose size={16} /></button>
     </aside>
   );
 }
