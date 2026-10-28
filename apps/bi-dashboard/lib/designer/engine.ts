@@ -34,7 +34,10 @@ export async function designTools(workspaceId: string) {
       const ctx = toolContext(t, source.catalog);
       return { id: t.id, sourceId: t.sourceId, database: source.database, definition: t.definition, catalog: source.catalog, dialect: dialectByServer.get(source.serverId) || 'sqlserver',
         context: { id: t.id, database: source.database, name: ctx.name, description: ctx.description, mode: ctx.mode, base: ctx.base,
-          fields: ctx.fields.slice(0, 160).map((f: { id: string; type: string }) => `${f.id} (${f.type})`),
+          // Do not truncate the schema sent to the designer. A truncated field
+          // list makes valid columns look unavailable and is the main cause of
+          // reports being generated with empty or unrelated blocks on wide tables.
+          fields: ctx.fields.slice(0, 1000).map((f: { id: string; type: string }) => `${f.id} (${f.type})`),
           joins: (t.definition.capabilities?.joins || []) } };
     });
 }
@@ -53,8 +56,11 @@ function checkBlock(block: Block, tools: DesignTool[]): string | null {
   if (!block.query) return `Block ${block.id}: query plan is missing.`;
   if (block.type !== 'table' && tool.definition.mode !== 'aggregate') return `Block ${block.id}: ${block.type} blocks need an aggregate tool.`;
   try {
-    block.query = normalizeQuery(tool.definition, block.query);
-    compileTool(tool.definition, tool.catalog, tool.dialect, { query: block.query }, LIMITS[block.type], 0, { maxLimit: LIMITS[block.type] });
+    // Validation must not mutate the AI answer or the saved spec. Mutating the
+    // block here used to make a later retry validate a different object than
+    // the one that was actually applied to the canvas.
+    const normalized = normalizeQuery(tool.definition, block.query);
+    compileTool(tool.definition, tool.catalog, tool.dialect, { query: normalized }, LIMITS[block.type], 0, { maxLimit: LIMITS[block.type] });
     return null;
   } catch (error) { return `Block ${block.id}: ${error instanceof Error ? error.message : 'invalid query plan'}`; }
 }
@@ -63,6 +69,17 @@ function checkBlock(block: Block, tools: DesignTool[]): string | null {
 export async function validateBlocks(workspaceId: string, blocks: Block[]) {
   const tools = await designTools(workspaceId);
   return blocks.map((b) => checkBlock(b, tools)).filter(Boolean) as string[];
+}
+
+async function sanitizeSpec(workspaceId: string, spec: Spec, previous: Spec) {
+  const tools = await designTools(workspaceId);
+  const invalid = new Set(spec.blocks.filter((b) => checkBlock(b, tools)).map((b) => b.id));
+  if (!invalid.size) return { spec, removed: [] as string[] };
+  // Never persist a block that cannot be executed. Keep the last known-good
+  // version of an existing block and drop only newly-added invalid blocks.
+  const previousIds = new Set(previous.blocks.map((b) => b.id));
+  const safe = spec.blocks.filter((b) => !invalid.has(b.id) || previousIds.has(b.id));
+  return { spec: { ...spec, blocks: safe }, removed: [...invalid] };
 }
 
 export type BlockData = { rows: Record<string, unknown>[]; hasMore: boolean; error?: string };
@@ -81,7 +98,7 @@ export async function runBlock(workspaceId: string, block: Block): Promise<Block
     return { rows: result.rows, hasMore: !!result.hasMore };
   } catch (error) {
     console.error('[designer] block failed:', error instanceof Error ? error.message : error);
-    return { rows: [], hasMore: false, error: 'Could not load this block.' };
+    return { rows: [], hasMore: false, error: error instanceof Error ? error.message.slice(0, 300) : 'Could not load this block.' };
   }
 }
 
@@ -134,7 +151,11 @@ export async function designTurn({ workspaceId, spec, messages, text, selectedBl
   let next = applyOps(spec, answer.ops);
   if (answer.title) next = { ...next, title: answer.title };
   if (answer.subtitle != null) next = { ...next, subtitle: answer.subtitle };
-  return { reply: answer.reply, spec: next, ops: answer.ops, suggestions: answer.suggestions };
+  const cleaned = await sanitizeSpec(workspaceId, next, spec);
+  const reply = cleaned.removed.length
+    ? `${answer.reply} I left out ${cleaned.removed.length} block${cleaned.removed.length === 1 ? '' : 's'} because its selected tool could not execute the requested fields.`
+    : answer.reply;
+  return { reply, spec: cleaned.spec, ops: answer.ops, suggestions: answer.suggestions };
 }
 
 /** Writes the text of insight blocks whose source data is new or changed. */
