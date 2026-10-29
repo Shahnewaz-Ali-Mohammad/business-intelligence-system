@@ -6,12 +6,18 @@ import { audit } from '@/lib/access/access-db';
 import { ChatOpenAI } from '@langchain/openai';
 
 const Create = z.object({ subject: z.string().trim().min(3).max(240), body: z.string().trim().min(1).max(20000), language: z.string().max(20).optional(), workspaceId: z.string().max(64).optional() });
+function troubleshootingOnly(text: string) {
+  return text
+    .replace(/\b(?:customer|account|ticket|subscriber)\s*(?:id|number|no\.?|#)?\s*[:#-]?\s*\d{4,}\b/gi, 'your account')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, 'your email address')
+    .replace(/\b(?:\+?\d[\d\s().-]{7,}\d)\b/g, 'your phone number');
+}
 async function answerFirst(id: number, subject: string, body: string, language?: string) {
   const [knowledge] = await getAppDb().execute('SELECT question,approved_answer FROM support_knowledge_entries ORDER BY created_at DESC LIMIT 20');
   const ai = new ChatOpenAI({ model: process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0.1, timeout: 30000, maxRetries: 0 });
   const requestedLanguage = language && language !== 'auto' ? language : /[\u0980-\u09FF]/.test(body) ? 'Bengali' : 'English';
   const result = await ai.invoke([{ role: 'system', content: `You are the first-line customer troubleshooting assistant. You must try to solve any practical troubleshooting problem the customer describes, not only a predefined category. Use the approved solution knowledge below and provide clear step-by-step guidance that is safe and relevant to the described problem. You MUST reply only in ${requestedLanguage}. Do not ask for or expose customer identity, account data, ticket details, billing records, or personal information. If the solution requires account-specific access, say a human agent must handle it and end with exactly [ESCALATE]. If the approved knowledge does not cover the problem and you cannot give a safe solution, say you need to investigate and end with exactly [ESCALATE]. Never invent ISP-specific policies or facts. Be concise and human. Approved solutions: ${JSON.stringify(knowledge)}` }, { role: 'user', content: `Subject: ${subject}\nQuestion: ${body}` }]);
-  const text = String(result.content).trim(); const escalate = text.includes('[ESCALATE]'); const clean = text.replace(/\s*\[ESCALATE\]\s*$/, '').trim();
+  const text = String(result.content).trim(); const escalate = text.includes('[ESCALATE]'); const clean = troubleshootingOnly(text.replace(/\s*\[ESCALATE\]\s*$/, '').trim());
   await getAppDb().execute('INSERT INTO support_ticket_messages (ticket_id,author_type,body,language) VALUES (?,?,?,?)', [id, 'ai', clean, language && language !== 'auto' ? language : null]);
   const [attemptRows] = await getAppDb().execute("SELECT COUNT(*) AS n FROM support_ticket_messages WHERE ticket_id=? AND author_type='ai'", [id]);
   const attempts = Number((attemptRows as { n: number }[])[0]?.n || 0); const shouldEscalate = attempts >= 3;
