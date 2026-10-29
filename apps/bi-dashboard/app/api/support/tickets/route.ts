@@ -28,7 +28,11 @@ export async function GET() {
   const guard = await requireAccess('chat.use'); if (denied(guard)) return guard;
   const isAgent = guard.access.permissions.includes('support.use');
   const db = getAppDb();
-  const [rows] = await db.execute(`SELECT t.id,t.subject,t.status,t.priority,t.requester_user_id,t.assigned_to,t.language,t.ai_summary,t.created_at,t.updated_at,(SELECT body FROM support_ticket_messages m WHERE m.ticket_id=t.id ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message FROM support_tickets t ${isAgent ? '' : 'WHERE t.requester_user_id=?'} ORDER BY FIELD(t.status,'open','in_progress','waiting_on_customer','resolved','closed'),t.updated_at DESC LIMIT 300`, isAgent ? [] : [guard.user.id]);
+  const [rows] = await db.execute(`SELECT t.id,t.subject,t.status,t.priority,t.requester_user_id,t.assigned_to,t.language,t.ai_summary,t.created_at,t.updated_at,
+    COALESCE(u.display_name,u.email,CONCAT('User #',t.requester_user_id)) AS customer_name,u.email AS customer_email,
+    CASE WHEN LOWER(t.subject) REGEXP 'bill|payment|invoice' THEN 'Billing' WHEN LOWER(t.subject) REGEXP 'account|login|password' THEN 'Account' WHEN LOWER(t.subject) REGEXP 'ticket|status' THEN 'Ticket status' ELSE 'Connectivity' END AS ticket_type,
+    (SELECT body FROM support_ticket_messages m WHERE m.ticket_id=t.id ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message
+    FROM support_tickets t LEFT JOIN users u ON u.id=t.requester_user_id ${isAgent ? '' : 'WHERE t.requester_user_id=?'} ORDER BY FIELD(t.status,'open','in_progress','waiting_on_customer','resolved','closed'),t.updated_at DESC LIMIT 300`, isAgent ? [] : [guard.user.id]);
   return NextResponse.json({ tickets: rows });
 }
 export async function POST(req: NextRequest) {
