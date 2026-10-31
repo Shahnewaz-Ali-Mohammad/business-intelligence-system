@@ -136,6 +136,13 @@ function Designer({ designId }: { designId: string }) {
   }
 
   const selectedBlock = useMemo(() => spec?.blocks.find((b) => b.id === selected) || null, [spec, selected]);
+  async function renameReport(field: 'title' | 'subtitle', value: string) {
+    if (!spec || spec[field] === value) return;
+    const next = { ...spec, [field]: value };
+    setSpec(next);
+    try { await api(base, { method: 'PUT', body: JSON.stringify({ spec: next, note: field === 'title' ? 'Renamed the report' : 'Edited the subtitle' }) }); }
+    catch (e) { setNotice((e as Error).message); }
+  }
 
   if (error) return <div className="flex flex-1 items-center justify-center p-8"><div className="max-w-md rounded-2xl border border-zinc-200 bg-white p-8 text-center shadow-sm"><p className="font-semibold">This report could not be opened</p><p className="mt-2 text-sm text-zinc-500">{error}</p><Link href="/chat" className="mt-5 inline-block text-sm font-semibold text-rose-700 hover:underline">Back to chat</Link></div></div>;
   if (!spec) return <div className="flex flex-1 items-center justify-center text-sm text-zinc-400"><Loader2 className="mr-2 animate-spin" size={16} />Opening the designer…</div>;
@@ -223,9 +230,9 @@ function Designer({ designId }: { designId: string }) {
         <div className="min-h-0 flex-1 overflow-y-auto print:overflow-visible" onClick={() => setSelected(null)}>
           <div className="mx-auto max-w-6xl px-6 py-8 print:max-w-none print:p-0">
             <div className="mb-6">
-              <input value={spec.title} onChange={(e) => setSpec({ ...spec, title: e.target.value })} onBlur={() => edit(spec, 'Renamed the report')} onClick={(e) => e.stopPropagation()}
+              <input value={spec.title} onChange={(e) => setSpec({ ...spec, title: e.target.value })} onBlur={(e) => void renameReport('title', e.currentTarget.value)} onClick={(e) => e.stopPropagation()}
                 className="w-full bg-transparent text-3xl font-bold tracking-tight text-zinc-900 outline-none placeholder:text-zinc-300 focus:rounded-md focus:ring-2 focus:ring-rose-100" placeholder="Untitled report" maxLength={200} />
-              <input value={spec.subtitle} onChange={(e) => setSpec({ ...spec, subtitle: e.target.value })} onBlur={() => edit(spec, 'Edited the subtitle')} onClick={(e) => e.stopPropagation()}
+              <input value={spec.subtitle} onChange={(e) => setSpec({ ...spec, subtitle: e.target.value })} onBlur={(e) => void renameReport('subtitle', e.currentTarget.value)} onClick={(e) => e.stopPropagation()}
                 className="mt-1 w-full bg-transparent text-sm text-zinc-500 outline-none placeholder:text-zinc-300" placeholder="Add a subtitle" maxLength={400} />
             </div>
             {!spec.blocks.length ? (
