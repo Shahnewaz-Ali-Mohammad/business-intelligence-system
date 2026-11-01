@@ -10,13 +10,14 @@ export const runtime = 'nodejs';
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const open = await openWorkspaceForDesign(id); if (open.error) return open.error;
-  return NextResponse.json({ designs: await listDesigns([id]) });
+  return NextResponse.json({ designs: await listDesigns([id], open.guard.user.id, open.guard.access.roles, open.guard.access.departmentIds, open.guard.access.permissions) });
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const { id } = await params;
   const open = await openWorkspaceForDesign(id); if (open.error) return open.error;
+  if (!open.guard.access.permissions.includes('reports.save')) return NextResponse.json({ error: 'Your role cannot create reports.' }, { status: 403 });
   if (!(await getWorkspace(id))) return NextResponse.json({ error: 'Workspace unavailable.' }, { status: 404 });
   const body = z.object({ title: z.string().trim().max(200).optional() }).safeParse(await req.json().catch(() => ({})));
   const designId = await createDesign(id, open.guard.user.id, body.success ? body.data.title : undefined);

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, MessageSquare, PanelLeftClose, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Printer, Redo2, RefreshCw, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, MessageSquare, PanelLeftClose, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Printer, Redo2, RefreshCw, Send, Share2, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import { SidebarToggle, WorkspaceSidebar } from '@/components/workspace/workspace-sidebar';
 import { BlockBody, label, type BlockData } from './block-view';
 import { isDataBlock, type Block, type Message, type Spec } from '@/lib/designer/spec';
@@ -38,6 +38,8 @@ function Designer({ designId }: { designId: string }) {
   const base = `/api/designs/${encodeURIComponent(designId)}`;
   const [spec, setSpec] = useState<Spec | null>(null);
   const [workspace, setWorkspace] = useState<{ id: string; name: string } | null>(null);
+  const [published, setPublished] = useState(false);
+  const [permissions, setPermissions] = useState<{ canEdit: boolean; canManageShare: boolean; canExport: boolean }>({ canEdit: false, canManageShare: false, canExport: false });
   const [messages, setMessages] = useState<Message[]>([]);
   const [data, setData] = useState<Record<string, BlockData>>({});
   const [loadingData, setLoadingData] = useState(false);
@@ -53,6 +55,12 @@ function Designer({ designId }: { designId: string }) {
   const [future, setFuture] = useState<Spec[]>([]);
   const [versions, setVersions] = useState<{ id: number; note: string; created_at: string }[] | null>(null);
   const [notice, setNotice] = useState('');
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareSaving, setShareSaving] = useState(false);
+  const [shareError, setShareError] = useState('');
+  const [shareConfig, setShareConfig] = useState<{ published: boolean; scope: 'private' | 'workspace' | 'selected'; allowExport: boolean; audience: { users: number[]; roles: string[]; departments: number[] } } | null>(null);
+  const [shareOptions, setShareOptions] = useState<{ users: { id: number; label: string }[]; roles: { id: string; label: string }[]; departments: { id: number; name: string }[] }>({ users: [], roles: [], departments: [] });
   const [chatOpen, setChatOpen] = useState(true);
   const chatEnd = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -73,8 +81,8 @@ function Designer({ designId }: { designId: string }) {
   }, [base]);
 
   useEffect(() => {
-    api<{ design: { spec: Spec; messages: Message[] }; workspace: { id: string; name: string } | null }>(base)
-      .then((d) => { setSpec(d.design.spec); setMessages(d.design.messages); setWorkspace(d.workspace); if (d.design.spec.blocks.length) refresh(d.design.spec); })
+    api<{ design: { spec: Spec; messages: Message[]; published: boolean }; permissions: typeof permissions; workspace: { id: string; name: string } | null }>(base)
+      .then((d) => { setSpec(d.design.spec); setMessages(d.design.messages); setPermissions(d.permissions); setWorkspace(d.workspace); setPublished(d.design.published); if (d.design.spec.blocks.length) refresh(d.design.spec); })
       .catch((e) => setError(e.message));
   }, [base, refresh]);
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
@@ -83,7 +91,7 @@ function Designer({ designId }: { designId: string }) {
   useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(''), 4000); return () => clearTimeout(t); }, [notice]);
 
   async function send(value = text) {
-    const prompt = value.trim(); if (!prompt || busy || !spec) return;
+    const prompt = value.trim(); if (!prompt || busy || !spec || !permissions.canEdit) return;
     setText(''); setBusy(true);
     setMessages((m) => [...m, { role: 'user', text: prompt, at: new Date().toISOString(), blockId: selected }]);
     try {
@@ -100,13 +108,13 @@ function Designer({ designId }: { designId: string }) {
 
   /** Hand edits: applied at once, saved in the background, undoable. */
   async function edit(next: Spec, note: string, rerun = false) {
-    if (!spec) return;
+    if (!spec || !permissions.canEdit) return;
     setPast((p) => [...p.slice(-30), spec]); setFuture([]); setSpec(next);
     try { await api(base, { method: 'PUT', body: JSON.stringify({ spec: next, note }) }); if (rerun) refresh(); }
     catch (e) { setNotice((e as Error).message); setSpec(spec); }
   }
   async function jump(target: Spec, from: 'undo' | 'redo') {
-    if (!spec) return;
+    if (!spec || !permissions.canEdit) return;
     if (from === 'undo') { setPast((p) => p.slice(0, -1)); setFuture((f) => [spec, ...f]); } else { setFuture((f) => f.slice(1)); setPast((p) => [...p, spec]); }
     setSpec(target);
     try { await api(base, { method: 'PUT', body: JSON.stringify({ spec: target, note: from === 'undo' ? 'Undo' : 'Redo' }) }); refresh(); } catch (e) { setNotice((e as Error).message); }
@@ -121,12 +129,13 @@ function Designer({ designId }: { designId: string }) {
 
   async function openVersions() { try { setVersions((await api<{ versions: typeof versions }>(`${base}/versions`)).versions || []); } catch (e) { setNotice((e as Error).message); } }
   async function restore(versionId: number) {
+    if (!permissions.canEdit) return;
     try { const d = await api<{ spec: Spec; data: Record<string, BlockData> }>(`${base}/versions`, { method: 'POST', body: JSON.stringify({ versionId }) }); if (spec) setPast((p) => [...p, spec]); setSpec(d.spec); setData(d.data); setVersions(null); setNotice('Earlier version restored.'); }
     catch (e) { setNotice((e as Error).message); }
   }
 
   function exportExcel() {
-    if (!spec) return;
+    if (!spec || !permissions.canExport) return;
     const sheets = spec.blocks.filter((b) => (b.type === 'table' || b.type === 'chart' || b.type === 'kpi') && data[b.id]?.rows?.length).map((b, i) => {
       const rows = data[b.id].rows; const headers = Object.keys(rows[0]);
       return { name: `${i + 1} ${b.title}`.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31), headers: headers.map(label), rows: rows.map((r) => headers.map((h) => (typeof r[h] === 'number' ? (r[h] as number) : r[h] == null ? '' : String(r[h])))) };
@@ -137,11 +146,33 @@ function Designer({ designId }: { designId: string }) {
 
   const selectedBlock = useMemo(() => spec?.blocks.find((b) => b.id === selected) || null, [spec, selected]);
   async function renameReport(field: 'title' | 'subtitle', value: string) {
-    if (!spec || spec[field] === value) return;
+    if (!spec || !permissions.canEdit || spec[field] === value) return;
     const next = { ...spec, [field]: value };
     setSpec(next);
     try { await api(base, { method: 'PUT', body: JSON.stringify({ spec: next, note: field === 'title' ? 'Renamed the report' : 'Edited the subtitle' }) }); }
     catch (e) { setNotice((e as Error).message); }
+  }
+
+  async function openSharing() {
+    setShareOpen(true); setShareLoading(true); setShareError('');
+    try {
+      const result = await api<{ share: NonNullable<typeof shareConfig>; options: typeof shareOptions }>(`${base}/sharing`);
+      setShareConfig(result.share); setShareOptions(result.options);
+    } catch (e) { setShareError((e as Error).message); }
+    finally { setShareLoading(false); }
+  }
+
+  async function saveSharing() {
+    if (!shareConfig || shareSaving) return;
+    setShareSaving(true); setShareError('');
+    try {
+      const result = await api<{ share: NonNullable<typeof shareConfig> }>(`${base}/sharing`, { method: 'PUT', body: JSON.stringify(shareConfig) });
+      const refreshed = await api<{ permissions: typeof permissions }>(base);
+      setPermissions(refreshed.permissions);
+      setPublished(result.share.published);
+      setShareConfig(result.share); setShareOpen(false); setNotice(result.share.published ? 'Report published. Sharing permissions are active.' : 'Report saved as a private draft.');
+    } catch (e) { setShareError((e as Error).message); }
+    finally { setShareSaving(false); }
   }
 
   if (error) return <div className="flex flex-1 items-center justify-center p-8"><div className="max-w-md rounded-2xl border border-zinc-200 bg-white p-8 text-center shadow-sm"><p className="font-semibold">This report could not be opened</p><p className="mt-2 text-sm text-zinc-500">{error}</p><Link href="/chat" className="mt-5 inline-block text-sm font-semibold text-rose-700 hover:underline">Back to chat</Link></div></div>;
@@ -150,7 +181,7 @@ function Designer({ designId }: { designId: string }) {
   return (
     <>
       {/* Conversation */}
-      <section className={`${chatOpen ? 'flex' : 'hidden'} w-[360px] shrink-0 flex-col border-r border-zinc-200 bg-white print:hidden`}>
+      {permissions.canEdit && <section className={`${chatOpen ? 'flex' : 'hidden'} w-[360px] shrink-0 flex-col border-r border-zinc-200 bg-white print:hidden`}>
         <header className="flex h-16 shrink-0 items-center gap-2 border-b border-zinc-100 px-4">
           <SidebarToggle />
           <Link href={workspace ? `/data-sources/${encodeURIComponent(workspace.id)}/chat` : '/chat'} title="Back" className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><ArrowLeft size={16} /></Link>
@@ -210,30 +241,34 @@ function Designer({ designId }: { designId: string }) {
             </button>
           </div>
         </div>
-      </section>
+      </section>}
 
       {/* Canvas */}
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden print:overflow-visible">
+      <section className={`flex min-w-0 flex-1 flex-col overflow-hidden print:overflow-visible ${permissions.canExport ? '' : 'print:hidden'}`}>
         <div className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white/80 px-5 backdrop-blur print:hidden">
           <div className="flex items-center gap-1">
-            {!chatOpen && <button type="button" onClick={() => setChatOpen(true)} className="mr-2 inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-800"><MessageSquare size={15} />Show chat</button>}
-            <Tool title="Undo" onClick={() => past.length && jump(past[past.length - 1], 'undo')} disabled={!past.length || busy}><Undo2 size={16} /></Tool>
-            <Tool title="Redo" onClick={() => future.length && jump(future[0], 'redo')} disabled={!future.length || busy}><Redo2 size={16} /></Tool>
-            <Tool title="Version history" onClick={openVersions} disabled={busy}><History size={16} /></Tool>
+            {permissions.canEdit && !chatOpen && <button type="button" onClick={() => setChatOpen(true)} className="mr-2 inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-800"><MessageSquare size={15} />Show chat</button>}
+            {permissions.canEdit && <><Tool title="Undo" onClick={() => past.length && jump(past[past.length - 1], 'undo')} disabled={!past.length || busy}><Undo2 size={16} /></Tool>
+            <Tool title="Redo" onClick={() => future.length && jump(future[0], 'redo')} disabled={!future.length || busy}><Redo2 size={16} /></Tool></>}
+            <Tool title="Version history" onClick={openVersions} disabled={busy}>
+              <History size={16} />
+            </Tool>
             <Tool title="Refresh data" onClick={() => refresh(spec || undefined)} disabled={busy || loadingData}><RefreshCw size={16} className={loadingData ? 'animate-spin' : ''} /></Tool>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => window.print()} className="inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"><Printer size={15} />PDF</button>
-            <button type="button" onClick={exportExcel} className="inline-flex h-9 items-center gap-2 rounded-lg bg-zinc-900 px-3 text-sm font-semibold text-white hover:bg-zinc-700"><Download size={15} />Excel</button>
+            {permissions.canManageShare && <button type="button" onClick={() => void openSharing()} className="inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:border-rose-200 hover:bg-rose-50"><Share2 size={15} />{published ? 'Manage sharing' : 'Publish & share'}</button>}
+            {!permissions.canEdit && <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800">Shared report · View only</span>}
+            {permissions.canExport && <><button type="button" onClick={() => window.print()} className="inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"><Printer size={15} />PDF</button>
+            <button type="button" onClick={exportExcel} className="inline-flex h-9 items-center gap-2 rounded-lg bg-zinc-900 px-3 text-sm font-semibold text-white hover:bg-zinc-700"><Download size={15} />Excel</button></>}
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto print:overflow-visible" onClick={() => setSelected(null)}>
           <div className="mx-auto max-w-6xl px-6 py-8 print:max-w-none print:p-0">
             <div className="mb-6">
-              <input value={spec.title} onChange={(e) => setSpec({ ...spec, title: e.target.value })} onBlur={(e) => void renameReport('title', e.currentTarget.value)} onClick={(e) => e.stopPropagation()}
+              {permissions.canEdit ? <><input value={spec.title} onChange={(e) => setSpec({ ...spec, title: e.target.value })} onBlur={(e) => void renameReport('title', e.currentTarget.value)} onClick={(e) => e.stopPropagation()}
                 className="w-full bg-transparent text-3xl font-bold tracking-tight text-zinc-900 outline-none placeholder:text-zinc-300 focus:rounded-md focus:ring-2 focus:ring-rose-100" placeholder="Untitled report" maxLength={200} />
               <input value={spec.subtitle} onChange={(e) => setSpec({ ...spec, subtitle: e.target.value })} onBlur={(e) => void renameReport('subtitle', e.currentTarget.value)} onClick={(e) => e.stopPropagation()}
-                className="mt-1 w-full bg-transparent text-sm text-zinc-500 outline-none placeholder:text-zinc-300" placeholder="Add a subtitle" maxLength={400} />
+                className="mt-1 w-full bg-transparent text-sm text-zinc-500 outline-none placeholder:text-zinc-300" placeholder="Add a subtitle" maxLength={400} /></> : <><h1 className="text-3xl font-bold tracking-tight text-zinc-900">{spec.title}</h1>{spec.subtitle && <p className="mt-1 text-sm text-zinc-500">{spec.subtitle}</p>}</>}
             </div>
             {!spec.blocks.length ? (
               <div className="grid grid-cols-6 gap-4">
@@ -250,7 +285,8 @@ function Designer({ designId }: { designId: string }) {
                 {spec.blocks.map((b, i) => (
                   <BlockCard key={b.id} block={b} data={data[b.id]} loading={loadingBlocks.has(b.id) || (busy && changed.has(b.id))} selected={selected === b.id} fresh={changed.has(b.id)}
                     first={i === 0} last={i === spec.blocks.length - 1}
-                    onSelect={() => { setSelected(b.id); input.current?.focus(); }}
+                    editable={permissions.canEdit}
+                    onSelect={() => { if (permissions.canEdit) { setSelected(b.id); input.current?.focus(); } }}
                     onMove={(d) => moveBlock(b.id, d)} onRemove={() => removeBlock(b.id)}
                     onWidth={() => updateBlock(b.id, { width: nextWidth[b.width] }, 'Resized a block')}
                     onKind={(chartKind) => updateBlock(b.id, { chartKind }, 'Changed the chart type')} />
@@ -266,11 +302,36 @@ function Designer({ designId }: { designId: string }) {
           <div className="h-full w-80 overflow-y-auto bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between"><p className="font-semibold">Version history</p><button type="button" onClick={() => setVersions(null)} aria-label="Close"><X size={16} /></button></div>
             {!versions.length ? <p className="text-sm text-zinc-500">No earlier versions yet.</p> : versions.map((v) => (
-              <button key={v.id} type="button" onClick={() => restore(v.id)} className="mb-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-left hover:border-rose-200 hover:bg-rose-50">
+              <button key={v.id} type="button" onClick={() => restore(v.id)} disabled={!permissions.canEdit} className="mb-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-left hover:border-rose-200 hover:bg-rose-50 disabled:cursor-default disabled:hover:border-zinc-200 disabled:hover:bg-white">
                 <p className="truncate text-sm font-medium">Before: {v.note || 'a change'}</p>
                 <p className="text-xs text-zinc-400">{new Date(v.created_at).toLocaleString()}</p>
               </button>
             ))}
+          </div>
+        </div>
+      )}
+      {shareOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4 print:hidden" onClick={() => !shareSaving && setShareOpen(false)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="share-report-title" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4"><div><h2 id="share-report-title" className="text-lg font-semibold">Publish and share report</h2><p className="mt-1 text-sm text-zinc-500">People must also have access to the <b>{workspace?.name || 'source'}</b> workspace. Sharing never overrides workspace or department access.</p></div><button type="button" onClick={() => setShareOpen(false)} aria-label="Close" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100"><X size={18} /></button></div>
+            {shareLoading ? <div className="py-12 text-center text-sm text-zinc-500"><Loader2 className="mx-auto mb-2 animate-spin" size={18} />Loading sharing options…</div> : shareConfig && <>
+              <div className="mt-5 space-y-2">
+                {([
+                  ['private', 'Private draft', 'Only you can open this report.'],
+                  ['workspace', 'Everyone with workspace access', 'All users who already have access to this workspace can view it.'],
+                  ['selected', 'Selected people, roles, or departments', 'Choose an audience below. Their existing workspace access still applies.'],
+                ] as const).map(([scope, title, description]) => <label key={scope} className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${shareConfig.scope === scope ? 'border-rose-300 bg-rose-50/50' : 'border-zinc-200 hover:bg-zinc-50'}`}><input type="radio" name="report-scope" checked={shareConfig.scope === scope} onChange={() => setShareConfig({ ...shareConfig, scope, ...(scope === 'private' ? { published: false } : {}) })} className="mt-1 accent-rose-700" /><span><b className="text-sm">{title}</b><span className="mt-0.5 block text-xs text-zinc-500">{description}</span></span></label>)}
+              </div>
+              {shareConfig.scope === 'selected' && <div className="mt-4 grid gap-4 md:grid-cols-3">
+                <AudienceChoices title="People" items={shareOptions.users.map((u) => ({ id: String(u.id), label: u.label }))} selected={shareConfig.audience.users.map(String)} onChange={(values) => setShareConfig({ ...shareConfig, audience: { ...shareConfig.audience, users: values.map(Number) } })} />
+                <AudienceChoices title="Roles" items={shareOptions.roles} selected={shareConfig.audience.roles} onChange={(values) => setShareConfig({ ...shareConfig, audience: { ...shareConfig.audience, roles: values } })} />
+                <AudienceChoices title="Departments" items={shareOptions.departments.map((d) => ({ id: String(d.id), label: d.name }))} selected={shareConfig.audience.departments.map(String)} onChange={(values) => setShareConfig({ ...shareConfig, audience: { ...shareConfig.audience, departments: values.map(Number) } })} />
+              </div>}
+              <label className="mt-5 flex items-start gap-3 rounded-xl border border-zinc-200 p-3"><input type="checkbox" checked={shareConfig.allowExport} onChange={(e) => setShareConfig({ ...shareConfig, allowExport: e.target.checked })} className="mt-0.5 accent-rose-700" /><span><b className="text-sm">Allow PDF and Excel export</b><span className="mt-0.5 block text-xs text-zinc-500">Recipients also need the report export permission for these buttons to appear.</span></span></label>
+              <p className="mt-3 text-xs text-zinc-500">Your design is saved automatically. Publishing makes this saved version visible to the selected audience.</p>
+            </>}
+            {shareError && <p role="alert" className="mt-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">{shareError}</p>}
+            <div className="mt-6 flex justify-end gap-2"><button type="button" onClick={() => setShareOpen(false)} disabled={shareSaving} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium">Cancel</button><button type="button" onClick={() => void saveSharing()} disabled={!shareConfig || shareLoading || shareSaving} className="inline-flex items-center gap-2 rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800 disabled:opacity-50">{shareSaving && <Loader2 size={14} className="animate-spin" />}{shareConfig?.scope === 'private' ? 'Save private draft' : shareConfig?.published ? 'Save sharing' : 'Publish report'}</button></div>
           </div>
         </div>
       )}
@@ -279,23 +340,27 @@ function Designer({ designId }: { designId: string }) {
   );
 }
 
+function AudienceChoices({ title, items, selected, onChange }: { title: string; items: { id: string; label: string }[]; selected: string[]; onChange: (values: string[]) => void }) {
+  return <fieldset className="min-w-0 rounded-xl border border-zinc-200 p-3"><legend className="px-1 text-sm font-semibold">{title}</legend><div className="max-h-44 space-y-1 overflow-y-auto">{items.length ? items.map((item) => <label key={item.id} className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50"><input type="checkbox" checked={selected.includes(item.id)} onChange={(e) => onChange(e.target.checked ? [...selected, item.id] : selected.filter((value) => value !== item.id))} className="mt-0.5 accent-rose-700" /><span>{item.label}</span></label>) : <p className="px-1.5 py-1 text-xs text-zinc-400">No options available.</p>}</div></fieldset>;
+}
+
 function Tool({ title, onClick, disabled, children }: { title: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return <button type="button" title={title} aria-label={title} onClick={onClick} disabled={disabled} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-30">{children}</button>;
 }
 
-function BlockCard({ block, data, loading, selected, fresh, first, last, onSelect, onMove, onRemove, onWidth, onKind }: {
-  block: Block; data?: BlockData; loading: boolean; selected: boolean; fresh: boolean; first: boolean; last: boolean;
+function BlockCard({ block, data, loading, selected, fresh, first, last, editable, onSelect, onMove, onRemove, onWidth, onKind }: {
+  block: Block; data?: BlockData; loading: boolean; selected: boolean; fresh: boolean; first: boolean; last: boolean; editable: boolean;
   onSelect: () => void; onMove: (d: -1 | 1) => void; onRemove: () => void; onWidth: () => void; onKind: (k: NonNullable<Block['chartKind']>) => void;
 }) {
   const plain = block.type === 'heading';
   return (
     <div onClick={(e) => { e.stopPropagation(); onSelect(); }}
-      className={`group relative ${span[block.width]} cursor-pointer break-inside-avoid rounded-2xl transition-all duration-300 print:cursor-auto ${plain ? 'px-1' : 'bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,.04)] ring-1'} ${selected ? 'ring-2 ring-rose-400' : plain ? '' : 'ring-zinc-200 hover:ring-zinc-300'} ${fresh ? 'animate-[pulse_1.2s_ease-in-out_1] ring-2 ring-emerald-300' : ''} ${block.type === 'insight' ? 'bg-gradient-to-br from-amber-50/60 to-white' : ''}`}>
+      className={`group relative ${span[block.width]} ${editable ? 'cursor-pointer' : ''} break-inside-avoid rounded-2xl transition-all duration-300 print:cursor-auto ${plain ? 'px-1' : 'bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,.04)] ring-1'} ${selected ? 'ring-2 ring-rose-400' : plain ? '' : 'ring-zinc-200 hover:ring-zinc-300'} ${fresh ? 'animate-[pulse_1.2s_ease-in-out_1] ring-2 ring-emerald-300' : ''} ${block.type === 'insight' ? 'bg-gradient-to-br from-amber-50/60 to-white' : ''}`}>
       {!plain && block.type !== 'insight' && (
         <p className={`mb-3 pr-24 font-semibold text-zinc-800 ${block.type === 'kpi' ? 'text-xs uppercase tracking-wide text-zinc-500' : 'text-sm'}`}>{block.title}</p>
       )}
       <BlockBody block={block} data={data} loading={loading} />
-      <div className={`absolute right-3 top-3 flex items-center gap-0.5 rounded-lg bg-white/95 p-0.5 shadow-sm ring-1 ring-zinc-200 transition print:hidden ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+      {editable && <div className={`absolute right-3 top-3 flex items-center gap-0.5 rounded-lg bg-white/95 p-0.5 shadow-sm ring-1 ring-zinc-200 transition print:hidden ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
         {block.type === 'chart' && (['bar', 'line', 'pie'] as const).map((k) => {
           const Icon = k === 'bar' ? BarChart3 : k === 'line' ? LineIcon : PieIcon;
           return <Mini key={k} title={`${k[0].toUpperCase()}${k.slice(1)} chart`} onClick={() => onKind(k)} active={block.chartKind === k}><Icon size={13} /></Mini>;
@@ -304,7 +369,7 @@ function BlockCard({ block, data, loading, selected, fresh, first, last, onSelec
         <Mini title="Move up" onClick={() => onMove(-1)} disabled={first}><ArrowUp size={13} /></Mini>
         <Mini title="Move down" onClick={() => onMove(1)} disabled={last}><ArrowDown size={13} /></Mini>
         <Mini title="Remove" onClick={onRemove}><Trash2 size={13} /></Mini>
-      </div>
+      </div>}
     </div>
   );
 }

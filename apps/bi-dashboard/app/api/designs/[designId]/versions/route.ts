@@ -17,6 +17,7 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
 export async function POST(req: NextRequest, { params }: Ctx) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const open = await openDesign((await params).designId); if (open.error) return open.error;
+  if (!open.permissions.canEdit) return NextResponse.json({ error: 'Only the report owner can restore a version.' }, { status: 403 });
   const body = z.object({ versionId: z.number().int().positive() }).safeParse(await req.json().catch(() => null));
   if (!body.success) return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   const spec = await getVersion(open.design.id, body.data.versionId);

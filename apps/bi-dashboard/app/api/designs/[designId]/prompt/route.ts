@@ -16,6 +16,7 @@ const Body = z.object({ text: z.string().trim().min(1).max(2000), selectedBlockI
 export async function POST(req: NextRequest, { params }: { params: Promise<{ designId: string }> }) {
   if (!isSameOriginRequest(req)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 });
   const open = await openDesign((await params).designId); if (open.error) return open.error;
+  if (!open.permissions.canEdit) return NextResponse.json({ error: 'Only the report owner can make design changes.' }, { status: 403 });
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   const { design, guard } = open;

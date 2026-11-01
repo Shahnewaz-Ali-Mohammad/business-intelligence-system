@@ -11,7 +11,7 @@ export async function GET() {
   const guard = await requireAccess('chat.use'); if (denied(guard)) return guard;
   if (!(await designerReady())) return NextResponse.json({ designs: [], notInstalled: true });
   const allowed = await allowedWorkspaces(guard.access);
-  const designs = await listDesigns(allowed === 'all' ? 'all' : [...allowed]);
+  const designs = await listDesigns(allowed === 'all' ? 'all' : [...allowed], guard.user.id, guard.access.roles, guard.access.departmentIds, guard.access.permissions);
   const names = new Map(((await listWorkspaces().catch(() => [])) as { id: string; name: string }[]).map((w) => [w.id, w.name]));
   return NextResponse.json({ designs: designs.map((d) => ({ ...d, workspace: names.get(d.workspaceId) || d.workspaceId })) });
 }
