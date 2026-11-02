@@ -107,7 +107,7 @@ function aggregateNarrative(rows: Record<string, unknown>[], mode: string, query
     ? String(((plan as {metrics: Array<{operation?: unknown}>}).metrics[0]?.operation) || '')
     : '';
   const text = (v: unknown) => v == null ? 'Missing' : v instanceof Date ? v.toISOString().slice(0, 10) : String(v).replace(/T00:00:00(?:\.000)?Z$/, '');
-  const name = (r: Record<string, unknown>) => labels.map((k) => text(r[k])).join(' / ') || 'All';
+  const name = (r: Record<string, unknown>) => labels.map((k) => `${readableField(k).replace(/\bid$/i, 'ID')} ${text(r[k])}`).join(' / ') || 'All';
   const value = (r: Record<string, unknown>) => Number(r[metric]) || 0;
   const metricName = readableField(metric) || (operation === 'count' ? 'count' : 'value');
   if (!labels.length && rows.length === 1) {
@@ -115,6 +115,11 @@ function aggregateNarrative(rows: Record<string, unknown>[], mode: string, query
     if (metricName.startsWith('total ')) return `There are ${formatted} ${metricName.slice(6)}.`;
     if (metricName === 'record count' || metricName === 'count') return `There are ${formatted} matching records.`;
     return `The ${metricName} is ${formatted}.`;
+  }
+  if (rows.length === 1) {
+    const amount = value(rows[0]).toLocaleString();
+    const measure = metricName.endsWith(' count') ? `${amount} ${metricName.slice(0, -6)}s` : `${metricName} of ${amount}`;
+    return `${name(rows[0])} has ${measure}.`;
   }
   const ranked = [...rows].sort((a, b) => value(b) - value(a));
   const highest = ranked[0];
@@ -485,7 +490,7 @@ export async function POST(
         // reconstructed from the agent message history.
         // When several queries ran, show the one matching the question's shape:
         // a summary for counts/totals/earliest/latest, otherwise the record list.
-        const wantsSummary = /\b(how many|count|total|sum|average|avg|earliest|latest|oldest|newest|minimum|maximum|per|by|share|percent|growth|trend)\b/i.test(input.message);
+        const wantsSummary = /\b(how many|count|total|sum|average|avg|earliest|latest|oldest|newest|minimum|maximum|most|least|highest|lowest|top|bottom|largest|smallest|per|by|share|percent|growth|trend)\b/i.test(input.message);
         const modeOf = (e: {toolId: string}) => tools.find((t) => t.id === e.toolId)?.definition.mode;
         const completed = [...completedExecutions].reverse().find((e) => (modeOf(e) === 'aggregate') === wantsSummary) || completedExecutions.at(-1);
         if (!completed) {
