@@ -16,7 +16,7 @@ const STARTERS = [
   'Trend of records per month for this year',
 ];
 const STAGES = ['Reading the approved data', 'Planning the layout', 'Checking every query', 'Running on live data', 'Writing the analysis'];
-const span: Record<Block['width'], string> = { full: 'col-span-6', half: 'col-span-6 md:col-span-3', third: 'col-span-6 md:col-span-3 xl:col-span-2' };
+const span: Record<Block['width'], string> = { full: 'col-span-6', half: 'col-span-6 @min-[700px]:col-span-3', third: 'col-span-6 @min-[700px]:col-span-3 @min-[1050px]:col-span-2' };
 const nextWidth: Record<Block['width'], Block['width']> = { full: 'half', half: 'third', third: 'full' };
 
 function promptTargetBlock(prompt: string, spec: Spec, selectedId: string | null) {
@@ -236,7 +236,7 @@ function Designer({ designId }: { designId: string }) {
 
   const selectedBlock = useMemo(() => spec?.blocks.find((b) => b.id === selected) || null, [spec, selected]);
   async function renameReport(field: 'title' | 'subtitle', value: string) {
-    if (!spec || !permissions.canEdit || spec[field] === value) return;
+    if (!spec || !permissions.canEdit) return;
     const next = { ...spec, [field]: value };
     setSpec(next);
     await persistSpec(next, field === 'title' ? 'Renamed the report' : 'Edited the subtitle');
@@ -381,7 +381,7 @@ function Designer({ designId }: { designId: string }) {
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-6 gap-4 print:gap-3">
+              <div className="@container grid grid-cols-6 gap-4 print:gap-3">
                 {spec.blocks.map((b, i) => (
                   <BlockCard key={b.id} block={b} data={data[b.id]} loading={loadingBlocks.has(b.id) || (busy && changed.has(b.id))} selected={selected === b.id} fresh={changed.has(b.id)}
                     first={i === 0} last={i === spec.blocks.length - 1}
