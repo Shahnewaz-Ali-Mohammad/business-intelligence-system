@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, MessageSquare, PanelLeftClose, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Printer, Redo2, RefreshCw, Send, Share2, Sparkles, Trash2, Undo2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, BarChart3, Check, ChevronDown, Hash, Heading, MessageSquare, PanelLeftClose, Columns2, Download, History, LineChart as LineIcon, Loader2, PieChart as PieIcon, Plus, Printer, Redo2, RefreshCw, Send, Share2, Sparkles, Table2, Trash2, Type, Undo2, X } from 'lucide-react';
 import { SidebarToggle, WorkspaceSidebar } from '@/components/workspace/workspace-sidebar';
 import { BlockBody, label, type BlockData } from './block-view';
 import { isDataBlock, type Block, type Message, type Spec } from '@/lib/designer/spec';
 import { base64ToBlob, buildWorkbookBase64, triggerDownload, XLSX_MIME_TYPE } from '@/lib/download';
+import { ArtifactEditor, newArtifact, type DesignToolOption } from './artifact-editor';
 
 const STARTERS = [
   'Build a monthly performance overview with KPIs, trends and a detail table',
@@ -17,6 +18,19 @@ const STARTERS = [
 const STAGES = ['Reading the approved data', 'Planning the layout', 'Checking every query', 'Running on live data', 'Writing the analysis'];
 const span: Record<Block['width'], string> = { full: 'col-span-6', half: 'col-span-6 md:col-span-3', third: 'col-span-6 md:col-span-3 xl:col-span-2' };
 const nextWidth: Record<Block['width'], Block['width']> = { full: 'half', half: 'third', third: 'full' };
+
+function promptTargetBlock(prompt: string, spec: Spec, selectedId: string | null) {
+  const selected = spec.blocks.find((block) => block.id === selectedId);
+  const text = prompt.toLowerCase();
+  const changing = /\b(change|modify|update|replace|edit|switch|turn|make)\b/.test(text);
+  if (!changing) return selectedId;
+  const type = /\b(chart|graph|trend|visuali[sz]ation)\b/.test(text) ? 'chart'
+    : /\b(table|records|rows)\b/.test(text) ? 'table'
+      : /\b(kpi|metric|number|total)\b/.test(text) ? 'kpi'
+        : /\b(insight|analysis|summary text)\b/.test(text) ? 'insight' : null;
+  if (!type || selected?.type === type) return selectedId;
+  return spec.blocks.find((block) => block.type === type)?.id || null;
+}
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } });
@@ -62,11 +76,19 @@ function Designer({ designId }: { designId: string }) {
   const [shareConfig, setShareConfig] = useState<{ published: boolean; scope: 'private' | 'workspace' | 'selected'; allowExport: boolean; audience: { users: number[]; roles: string[]; departments: number[] } } | null>(null);
   const [shareOptions, setShareOptions] = useState<{ users: { id: number; label: string }[]; roles: { id: string; label: string }[]; departments: { id: number; name: string }[] }>({ users: [], roles: [], departments: [] });
   const [chatOpen, setChatOpen] = useState(true);
+  const [editorBlockId, setEditorBlockId] = useState<string | null>(null);
+  const [newBlock, setNewBlock] = useState<Block | null>(null);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [designTools, setDesignTools] = useState<DesignToolOption[]>([]);
+  const [loadingDesignTools, setLoadingDesignTools] = useState(false);
+  const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const saveRevision = useRef(0);
   const chatEnd = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
 
-  const refresh = useCallback(async (target?: Spec) => {
-    const blocks = target?.blocks.filter(isDataBlock) || [];
+  const refresh = useCallback(async (target?: Spec, blockIds?: string[]) => {
+    const blocks = target?.blocks.filter((block) => isDataBlock(block) && (!blockIds || blockIds.includes(block.id))) || [];
     if (!blocks.length) return;
     setLoadingData(true);
     setLoadingBlocks(new Set(blocks.map((b) => b.id)));
@@ -90,16 +112,82 @@ function Designer({ designId }: { designId: string }) {
   useEffect(() => { if (!changed.size) return; const t = setTimeout(() => setChanged(new Set()), 2400); return () => clearTimeout(t); }, [changed]);
   useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(''), 4000); return () => clearTimeout(t); }, [notice]);
 
+  async function persistSpec(next: Spec, note: string): Promise<boolean> {
+    const revision = ++saveRevision.current;
+    let succeeded = false;
+    setSaveState('saving');
+    saveQueue.current = saveQueue.current.catch(() => undefined).then(async () => {
+      const result = await api<{ spec: Spec; data: Record<string, BlockData> }>(base, { method: 'PUT', body: JSON.stringify({ spec: next, note }) });
+      succeeded = true;
+      if (revision === saveRevision.current) {
+        setSpec(result.spec);
+        setData((current) => Object.fromEntries(result.spec.blocks.filter(isDataBlock).map((block) => [block.id, result.data[block.id] || current[block.id]]).filter((entry) => Boolean(entry[1]))));
+        setSaveState('saved');
+      }
+    }).catch((e) => {
+      if (revision === saveRevision.current) { setSaveState('error'); setNotice((e as Error).message); }
+    });
+    await saveQueue.current;
+    return succeeded;
+  }
+
+  async function openArtifactEditor(block?: Block) {
+    setEditorBlockId(block?.id || null);
+    setNewBlock(block ? null : newArtifact('heading'));
+    if (block && !isDataBlock(block)) return;
+    setLoadingDesignTools(true);
+    try {
+      const result = await api<{ tools: DesignToolOption[] }>(`${base}/catalog`);
+      setDesignTools(result.tools);
+    } catch (e) { setDesignTools([]); setNotice((e as Error).message); }
+    finally { setLoadingDesignTools(false); }
+  }
+
+  function beginAdd(type: Block['type']) {
+    if (!spec || spec.blocks.length >= 40) {
+      setAddMenuOpen(false);
+      setNotice('This report has reached the 40-block limit. Remove a block before adding another.');
+      return;
+    }
+    setAddMenuOpen(false);
+    setEditorBlockId(null);
+    setNewBlock(newArtifact(type));
+    if (type === 'chart' || type === 'table' || type === 'kpi') void openArtifactCatalog();
+  }
+
+  async function openArtifactCatalog() {
+    setLoadingDesignTools(true);
+    try { setDesignTools((await api<{ tools: DesignToolOption[] }>(`${base}/catalog`)).tools); }
+    catch (e) { setDesignTools([]); setNotice((e as Error).message); }
+    finally { setLoadingDesignTools(false); }
+  }
+
+  async function saveArtifact(block: Block, previousId?: string) {
+    if (!spec || !permissions.canEdit) return;
+    const blocks = previousId
+      ? spec.blocks.map((item) => item.id === previousId ? block : item)
+      : [...spec.blocks, block];
+    const next = { ...spec, blocks };
+    setSelected(block.id);
+    setData((current) => { const updated = { ...current }; if (previousId && previousId !== block.id) delete updated[previousId]; return updated; });
+    const saved = await edit(next, previousId ? `Edited ${block.title}` : `Added ${block.title}`, isDataBlock(block));
+    if (!saved) return;
+    setEditorBlockId(null); setNewBlock(null);
+  }
+
   async function send(value = text) {
     const prompt = value.trim(); if (!prompt || busy || !spec || !permissions.canEdit) return;
+    const targetBlockId = promptTargetBlock(prompt, spec, selected);
+    if (targetBlockId !== selected) setSelected(targetBlockId);
     setText(''); setBusy(true);
-    setMessages((m) => [...m, { role: 'user', text: prompt, at: new Date().toISOString(), blockId: selected }]);
+    setMessages((m) => [...m, { role: 'user', text: prompt, at: new Date().toISOString(), blockId: targetBlockId }]);
     try {
-      const d = await api<{ spec: Spec; data: Record<string, BlockData>; messages: Message[]; suggestions: string[]; changed: string[] }>(`${base}/prompt`, { method: 'POST', body: JSON.stringify({ text: prompt, selectedBlockId: selected, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
+      const d = await api<{ spec: Spec; data: Record<string, BlockData>; messages: Message[]; suggestions: string[]; changed: string[] }>(`${base}/prompt`, { method: 'POST', body: JSON.stringify({ text: prompt, selectedBlockId: targetBlockId, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
       setPast((p) => [...p.slice(-30), spec]); setFuture([]);
-      setSpec(d.spec); setData(d.data); setMessages(d.messages); setSuggestions(d.suggestions || []); setChanged(new Set(d.changed));
-      // Refresh each changed block independently so the canvas can render while slower queries finish.
-      refresh(d.spec);
+      setSpec(d.spec);
+      setData((current) => Object.fromEntries(d.spec.blocks.filter(isDataBlock).map((block) => [block.id, d.data[block.id] || current[block.id]]).filter((entry) => Boolean(entry[1]))));
+      setMessages(d.messages); setSuggestions(d.suggestions || []); setChanged(new Set(d.changed));
+      setSaveState('saved');
       if (selected && !d.spec.blocks.some((b) => b.id === selected)) setSelected(null);
     } catch (e) {
       setMessages((m) => [...m, { role: 'assistant', text: (e as Error).message, at: new Date().toISOString() }]);
@@ -107,17 +195,19 @@ function Designer({ designId }: { designId: string }) {
   }
 
   /** Hand edits: applied at once, saved in the background, undoable. */
-  async function edit(next: Spec, note: string, rerun = false) {
-    if (!spec || !permissions.canEdit) return;
+  async function edit(next: Spec, note: string, rerun = false): Promise<boolean> {
+    if (!spec || !permissions.canEdit) return false;
     setPast((p) => [...p.slice(-30), spec]); setFuture([]); setSpec(next);
-    try { await api(base, { method: 'PUT', body: JSON.stringify({ spec: next, note }) }); if (rerun) refresh(); }
-    catch (e) { setNotice((e as Error).message); setSpec(spec); }
+    const saved = await persistSpec(next, note);
+    if (!saved) return false;
+    void rerun;
+    return true;
   }
   async function jump(target: Spec, from: 'undo' | 'redo') {
     if (!spec || !permissions.canEdit) return;
     if (from === 'undo') { setPast((p) => p.slice(0, -1)); setFuture((f) => [spec, ...f]); } else { setFuture((f) => f.slice(1)); setPast((p) => [...p, spec]); }
     setSpec(target);
-    try { await api(base, { method: 'PUT', body: JSON.stringify({ spec: target, note: from === 'undo' ? 'Undo' : 'Redo' }) }); refresh(); } catch (e) { setNotice((e as Error).message); }
+    await persistSpec(target, from === 'undo' ? 'Undo' : 'Redo');
   }
   const updateBlock = (id: string, patch: Partial<Block>, note: string) => spec && edit({ ...spec, blocks: spec.blocks.map((b) => (b.id === id ? { ...b, ...patch } : b)) }, note);
   const moveBlock = (id: string, dir: -1 | 1) => {
@@ -149,8 +239,7 @@ function Designer({ designId }: { designId: string }) {
     if (!spec || !permissions.canEdit || spec[field] === value) return;
     const next = { ...spec, [field]: value };
     setSpec(next);
-    try { await api(base, { method: 'PUT', body: JSON.stringify({ spec: next, note: field === 'title' ? 'Renamed the report' : 'Edited the subtitle' }) }); }
-    catch (e) { setNotice((e as Error).message); }
+    await persistSpec(next, field === 'title' ? 'Renamed the report' : 'Edited the subtitle');
   }
 
   async function openSharing() {
@@ -245,9 +334,20 @@ function Designer({ designId }: { designId: string }) {
 
       {/* Canvas */}
       <section className={`flex min-w-0 flex-1 flex-col overflow-hidden print:overflow-visible ${permissions.canExport ? '' : 'print:hidden'}`}>
-        <div className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white/80 px-5 backdrop-blur print:hidden">
-          <div className="flex items-center gap-1">
-            {permissions.canEdit && !chatOpen && <button type="button" onClick={() => setChatOpen(true)} className="mr-2 inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-800"><MessageSquare size={15} />Show chat</button>}
+        <div className="relative flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white/80 px-5 backdrop-blur print:hidden">
+          {addMenuOpen && <button type="button" aria-label="Close artifact menu" className="fixed inset-0 z-30 cursor-default" onClick={() => setAddMenuOpen(false)} />}
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {permissions.canEdit && !chatOpen && <button type="button" onClick={() => setChatOpen(true)} className="mr-2 inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-800"><MessageSquare size={15} />Show chat</button>}
+            {permissions.canEdit && <div className="relative z-40 mr-2 shrink-0">
+              <button type="button" onClick={() => setAddMenuOpen((open) => !open)} aria-expanded={addMenuOpen} className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-800"><Plus size={15} />Add artifact<ChevronDown size={14} /></button>
+              {addMenuOpen && <div className="absolute left-0 top-11 z-50 w-56 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl">
+                {([
+                  ['heading', 'Section heading', Heading], ['text', 'Text / note', Type], ['kpi', 'KPI number', Hash], ['chart', 'Chart', BarChart3], ['table', 'Data table', Table2], ['insight', 'Data insight', Sparkles],
+                ] as const).map(([type, title, Icon]) => <button key={type} type="button" onClick={() => beginAdd(type)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-zinc-700 hover:bg-rose-50 hover:text-rose-800"><Icon size={15} />{title}</button>)}
+              </div>}
+            </div>}
+            {permissions.canEdit && selectedBlock && <button type="button" onClick={() => void openArtifactEditor(selectedBlock)} className="mr-1 inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"><Type size={15} />Edit selected</button>}
+            {permissions.canEdit && <span aria-live="polite" className={`mr-2 inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs ${saveState === 'error' ? 'text-rose-700' : 'text-zinc-400'}`}>{saveState === 'saving' ? <><Loader2 size={12} className="animate-spin" />Saving…</> : saveState === 'saved' ? <><Check size={12} className="text-emerald-600" />Saved</> : 'Save failed'}</span>}
             {permissions.canEdit && <><Tool title="Undo" onClick={() => past.length && jump(past[past.length - 1], 'undo')} disabled={!past.length || busy}><Undo2 size={16} /></Tool>
             <Tool title="Redo" onClick={() => future.length && jump(future[0], 'redo')} disabled={!future.length || busy}><Redo2 size={16} /></Tool></>}
             <Tool title="Version history" onClick={openVersions} disabled={busy}>
@@ -255,8 +355,8 @@ function Designer({ designId }: { designId: string }) {
             </Tool>
             <Tool title="Refresh data" onClick={() => refresh(spec || undefined)} disabled={busy || loadingData}><RefreshCw size={16} className={loadingData ? 'animate-spin' : ''} /></Tool>
           </div>
-          <div className="flex items-center gap-2">
-            {permissions.canManageShare && <button type="button" onClick={() => void openSharing()} className="inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:border-rose-200 hover:bg-rose-50"><Share2 size={15} />{published ? 'Manage sharing' : 'Publish & share'}</button>}
+          <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
+            {permissions.canManageShare && <button type="button" onClick={() => void openSharing()} className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:border-rose-200 hover:bg-rose-50"><Share2 size={15} />{published ? 'Manage sharing' : 'Publish & share'}</button>}
             {!permissions.canEdit && <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800">Shared report · View only</span>}
             {permissions.canExport && <><button type="button" onClick={() => window.print()} className="inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"><Printer size={15} />PDF</button>
             <button type="button" onClick={exportExcel} className="inline-flex h-9 items-center gap-2 rounded-lg bg-zinc-900 px-3 text-sm font-semibold text-white hover:bg-zinc-700"><Download size={15} />Excel</button></>}
@@ -287,6 +387,7 @@ function Designer({ designId }: { designId: string }) {
                     first={i === 0} last={i === spec.blocks.length - 1}
                     editable={permissions.canEdit}
                     onSelect={() => { if (permissions.canEdit) { setSelected(b.id); input.current?.focus(); } }}
+                    onEdit={() => void openArtifactEditor(b)}
                     onMove={(d) => moveBlock(b.id, d)} onRemove={() => removeBlock(b.id)}
                     onWidth={() => updateBlock(b.id, { width: nextWidth[b.width] }, 'Resized a block')}
                     onKind={(chartKind) => updateBlock(b.id, { chartKind }, 'Changed the chart type')} />
@@ -310,6 +411,17 @@ function Designer({ designId }: { designId: string }) {
           </div>
         </div>
       )}
+      {(editorBlockId || newBlock) && <ArtifactEditor
+        key={editorBlockId || newBlock?.id || 'artifact'}
+        block={editorBlockId ? spec.blocks.find((block) => block.id === editorBlockId) || null : null}
+        initialBlock={newBlock || (editorBlockId ? spec.blocks.find((block) => block.id === editorBlockId) : null) || newArtifact('heading')}
+        availableBlocks={spec.blocks}
+        tools={designTools}
+        loadingTools={loadingDesignTools}
+        saving={saveState === 'saving'}
+        onClose={() => { setEditorBlockId(null); setNewBlock(null); }}
+        onSave={(block, previousId) => void saveArtifact(block, previousId)}
+      />}
       {shareOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4 print:hidden" onClick={() => !shareSaving && setShareOpen(false)}>
           <div role="dialog" aria-modal="true" aria-labelledby="share-report-title" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -345,22 +457,23 @@ function AudienceChoices({ title, items, selected, onChange }: { title: string; 
 }
 
 function Tool({ title, onClick, disabled, children }: { title: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
-  return <button type="button" title={title} aria-label={title} onClick={onClick} disabled={disabled} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-30">{children}</button>;
+  return <button type="button" title={title} aria-label={title} onClick={onClick} disabled={disabled} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-30">{children}</button>;
 }
 
-function BlockCard({ block, data, loading, selected, fresh, first, last, editable, onSelect, onMove, onRemove, onWidth, onKind }: {
+function BlockCard({ block, data, loading, selected, fresh, first, last, editable, onSelect, onEdit, onMove, onRemove, onWidth, onKind }: {
   block: Block; data?: BlockData; loading: boolean; selected: boolean; fresh: boolean; first: boolean; last: boolean; editable: boolean;
-  onSelect: () => void; onMove: (d: -1 | 1) => void; onRemove: () => void; onWidth: () => void; onKind: (k: NonNullable<Block['chartKind']>) => void;
+  onSelect: () => void; onEdit: () => void; onMove: (d: -1 | 1) => void; onRemove: () => void; onWidth: () => void; onKind: (k: NonNullable<Block['chartKind']>) => void;
 }) {
   const plain = block.type === 'heading';
   return (
     <div onClick={(e) => { e.stopPropagation(); onSelect(); }}
-      className={`group relative ${span[block.width]} ${editable ? 'cursor-pointer' : ''} break-inside-avoid rounded-2xl transition-all duration-300 print:cursor-auto ${plain ? 'px-1' : 'bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,.04)] ring-1'} ${selected ? 'ring-2 ring-rose-400' : plain ? '' : 'ring-zinc-200 hover:ring-zinc-300'} ${fresh ? 'animate-[pulse_1.2s_ease-in-out_1] ring-2 ring-emerald-300' : ''} ${block.type === 'insight' ? 'bg-gradient-to-br from-amber-50/60 to-white' : ''}`}>
+      className={`group relative ${span[block.width]} ${editable ? 'cursor-pointer' : ''} ${editable ? 'pt-12' : ''} break-inside-avoid rounded-2xl transition-all duration-300 print:cursor-auto ${plain ? 'px-1' : 'bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,.04)] ring-1'} ${selected ? 'ring-2 ring-rose-400' : plain ? '' : 'ring-zinc-200 hover:ring-zinc-300'} ${fresh ? 'animate-[pulse_1.2s_ease-in-out_1] ring-2 ring-emerald-300' : ''} ${block.type === 'insight' ? 'bg-gradient-to-br from-amber-50/60 to-white' : ''}`}>
       {!plain && block.type !== 'insight' && (
         <p className={`mb-3 pr-24 font-semibold text-zinc-800 ${block.type === 'kpi' ? 'text-xs uppercase tracking-wide text-zinc-500' : 'text-sm'}`}>{block.title}</p>
       )}
       <BlockBody block={block} data={data} loading={loading} />
       {editable && <div className={`absolute right-3 top-3 flex items-center gap-0.5 rounded-lg bg-white/95 p-0.5 shadow-sm ring-1 ring-zinc-200 transition print:hidden ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+        <Mini title="Edit block" onClick={onEdit}><Type size={13} /></Mini>
         {block.type === 'chart' && (['bar', 'line', 'pie'] as const).map((k) => {
           const Icon = k === 'bar' ? BarChart3 : k === 'line' ? LineIcon : PieIcon;
           return <Mini key={k} title={`${k[0].toUpperCase()}${k.slice(1)} chart`} onClick={() => onKind(k)} active={block.chartKind === k}><Icon size={13} /></Mini>;

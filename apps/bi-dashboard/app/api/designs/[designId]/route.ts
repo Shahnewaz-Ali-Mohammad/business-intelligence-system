@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { openDesign } from '@/lib/designer/guard';
 import { deleteDesign, saveDesign } from '@/lib/designer/store';
-import { SpecSchema } from '@/lib/designer/spec';
-import { validateBlocks } from '@/lib/designer/engine';
+import { isDataBlock, SpecSchema } from '@/lib/designer/spec';
+import { runSpec, validateBlocks, writeInsights } from '@/lib/designer/engine';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
 import { audit } from '@/lib/access/access-db';
@@ -28,9 +28,15 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
   // Every data block is checked again against the approved tools.
   const errors = await validateBlocks(open.design.workspaceId, spec.data.blocks);
   if (errors.length) return NextResponse.json({ error: 'A block uses data that is not approved.' }, { status: 400 });
-  const safe = spec.data;
+  const changed = new Set(spec.data.blocks.filter((block) => isDataBlock(block) && !open.design.spec.blocks.some((previous) => previous.id === block.id && previous.toolId === block.toolId && previous.query === block.query)).map((block) => block.id));
+  const needed = new Set(changed);
+  for (const block of spec.data.blocks) {
+    if (block.type === 'insight' && block.sourceBlockId && (!block.text || !open.design.spec.blocks.some((previous) => previous.id === block.id && previous.sourceBlockId === block.sourceBlockId))) needed.add(block.sourceBlockId);
+  }
+  const data = needed.size ? await runSpec(open.design.workspaceId, { ...spec.data, blocks: spec.data.blocks.filter((block) => isDataBlock(block) && needed.has(block.id)) }, open.guard.access) : {};
+  const safe = await writeInsights(spec.data, data, changed);
   await saveDesign(open.design.id, open.guard.user.id, safe, null, String(body?.note || 'Edited by hand'));
-  return NextResponse.json({ spec: safe });
+  return NextResponse.json({ spec: safe, data });
 }
 
 export async function DELETE(req: NextRequest, { params }: Ctx) {
