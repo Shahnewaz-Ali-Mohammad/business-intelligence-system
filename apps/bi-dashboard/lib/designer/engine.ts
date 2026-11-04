@@ -161,8 +161,12 @@ async function sanitizeSpec(workspaceId: string, spec: Spec, previous: Spec) {
   if (!invalid.size) return { spec, removed: [] as string[] };
   // Never persist a block that cannot be executed. Keep the last known-good
   // version of an existing block and drop only newly-added invalid blocks.
-  const previousIds = new Set(previous.blocks.map((b) => b.id));
-  const safe = spec.blocks.filter((b) => !invalid.has(b.id) || previousIds.has(b.id));
+  const previousById = new Map(previous.blocks.map((b) => [b.id, b]));
+  const safe = spec.blocks.flatMap((b) => {
+    if (!invalid.has(b.id)) return [b];
+    const prior = previousById.get(b.id);
+    return prior ? [prior] : [];
+  });
   return { spec: { ...spec, blocks: safe }, removed: [...invalid] };
 }
 

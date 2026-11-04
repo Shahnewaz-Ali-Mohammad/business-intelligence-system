@@ -20,7 +20,11 @@ export async function designerReady() {
     await db.query('SELECT report_id, audience_type, audience_id FROM designed_report_audiences LIMIT 0');
     await db.query('SELECT 1 FROM designed_report_versions LIMIT 0');
     return true;
-  } catch { return false; }
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === 'ER_NO_SUCH_TABLE' || code === 'ER_BAD_FIELD_ERROR') return false;
+    throw error;
+  }
 }
 
 export async function listDesigns(workspaceIds: 'all' | string[], userId: number, roles: string[], departmentIds: number[], permissions: string[]) {
@@ -88,14 +92,18 @@ export async function updateShare(id: number, userId: number, input: { published
 
 /** Saves the spec (and chat) and keeps the previous spec as a version. */
 export async function saveDesign(id: number, userId: number, spec: Spec, messages: Message[] | null, note: string) {
-  const db = getAppDb();
   const before = await getDesign(id);
   if (!before) throw new Error('Report not found.');
-  if (JSON.stringify(before.spec) !== JSON.stringify(spec)) {
-    await db.execute('INSERT INTO designed_report_versions (report_id, spec_json, note, created_by) VALUES (?, ?, ?, ?)', [id, JSON.stringify(before.spec), note.slice(0, 300), userId]);
-    await db.execute('DELETE FROM designed_report_versions WHERE report_id=? AND id NOT IN (SELECT id FROM (SELECT id FROM designed_report_versions WHERE report_id=? ORDER BY id DESC LIMIT 50) keep)', [id, id]);
-  }
-  await db.execute('UPDATE designed_reports SET title=?, spec_json=?, messages_json=?, updated_by=? WHERE id=?', [spec.title.slice(0, 200) || 'Untitled report', JSON.stringify(spec), JSON.stringify((messages ?? before.messages).slice(-200)), userId, id]);
+  const db = await getAppDb().getConnection();
+  try {
+    await db.beginTransaction();
+    if (JSON.stringify(before.spec) !== JSON.stringify(spec)) {
+      await db.execute('INSERT INTO designed_report_versions (report_id, spec_json, note, created_by) VALUES (?, ?, ?, ?)', [id, JSON.stringify(before.spec), note.slice(0, 300), userId]);
+      await db.execute('DELETE FROM designed_report_versions WHERE report_id=? AND id NOT IN (SELECT id FROM (SELECT id FROM designed_report_versions WHERE report_id=? ORDER BY id DESC LIMIT 50) keep)', [id, id]);
+    }
+    await db.execute('UPDATE designed_reports SET title=?, spec_json=?, messages_json=?, updated_by=? WHERE id=?', [spec.title.slice(0, 200) || 'Untitled report', JSON.stringify(spec), JSON.stringify((messages ?? before.messages).slice(-200)), userId, id]);
+    await db.commit();
+  } catch (error) { await db.rollback(); throw error; } finally { db.release(); }
 }
 
 export async function listVersions(id: number) {

@@ -33,6 +33,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ des
     }
     const neededSpec = { ...turn.spec, blocks: turn.spec.blocks.filter((block) => isDataBlock(block) && neededIds.has(block.id)) };
     const data = neededSpec.blocks.length ? await runSpec(design.workspaceId, neededSpec, guard.access) : {};
+    const failedBlocks = Object.entries(data).filter(([, result]) => result.error);
+    if (failedBlocks.length) {
+      const reply = `I couldn't verify ${failedBlocks.length} report block${failedBlocks.length === 1 ? '' : 's'} against the database. ${failedBlocks[0][1].error} The saved report is unchanged.`;
+      const messages: Message[] = [...design.messages, { role: 'user', text, at: now, blockId: selectedBlockId }, { role: 'assistant', text: reply, at: new Date().toISOString() }];
+      await saveDesign(design.id, guard.user.id, design.spec, messages, text);
+      return NextResponse.json({ spec: design.spec, data: {}, reply, suggestions: turn.suggestions, changed: [], messages });
+    }
     const spec = await writeInsights(turn.spec, data, changed);
     const messages: Message[] = [...design.messages, { role: 'user', text, at: now, blockId: selectedBlockId }, { role: 'assistant', text: turn.reply, at: new Date().toISOString() }];
     await saveDesign(design.id, guard.user.id, spec, messages, text);
