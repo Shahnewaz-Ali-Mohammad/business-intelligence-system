@@ -25,10 +25,11 @@ import type {
 } from "@/lib/tool-setup/store";
 
 // One line describing what a generation run did to the saved tools.
-function generationSummary(data: { added?: number; updated?: number; unchanged?: number; removed?: number; aiCount?: number; genericCount?: number; coverage?: {totalFields:number;verifiedRelationships:number;inferredRelationships:number} }) {
+function generationSummary(data: { added?: number; updated?: number; unchanged?: number; removed?: number; rejectedCount?: number; rejectedNames?: string[]; aiCount?: number; genericCount?: number; coverage?: {totalFields:number;verifiedRelationships:number;inferredRelationships:number} }) {
   if (typeof data.added !== "number") return `${data.aiCount ?? 0} business tools saved for review.`;
   const coverage=data.coverage?` Coverage: ${data.coverage.totalFields} selected fields, ${data.coverage.verifiedRelationships} available relationship paths (${data.coverage.inferredRelationships} inferred from named primary keys).`:'';
-  return `Generation finished: ${data.added} new, ${data.updated ?? 0} updated, ${data.unchanged ?? 0} already existed, ${data.removed ?? 0} old drafts removed. Approved tools were not changed.${coverage} Review and approve the tools you want in chat.`;
+  const rejected=data.rejectedCount?` ${data.rejectedCount} suggested ${data.rejectedCount === 1 ? "tool was" : "tools were"} rejected because the database preflight failed${data.rejectedNames?.length?`: ${data.rejectedNames.join(", ")}`:""}.`:"";
+  return `Generation finished: ${data.added} new, ${data.updated ?? 0} updated, ${data.unchanged ?? 0} already existed, ${data.removed ?? 0} old drafts removed. Approved tools were not changed.${rejected}${coverage} Review and approve the tools you want in chat.`;
 }
 
 
