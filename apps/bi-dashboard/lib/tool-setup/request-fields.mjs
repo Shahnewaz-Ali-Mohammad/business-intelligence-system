@@ -15,7 +15,7 @@ export function mentionedFields(message,fields){
 export const identifierField=field=>/(?:id|no|number|key|code)$/i.test(field.split(':').at(-1));
 export function isAggregateRequest(message) {
  const intent = message.replace(/\b(?:do not|don't)\s+limit\b[^.!?]*/gi, '');
- return /\b(count|number of|total|totals|how many|average|sum|summary|summari[sz]e|breakdown|trend|statistics|most|fewest|highest|lowest)\b/i.test(intent);
+ return /\b(count|number of|total|totals|how many|average|sum|summary|summari[sz]e|breakdown|trend|statistics|insights?|analysis|analytics|distribution|compare|comparison|most|fewest|highest|lowest)\b/i.test(intent);
 }
 export function requestRequirements(message,registry){
  const definitions=registry.map(t=>t.definition||t);
@@ -30,6 +30,7 @@ export function requestRequirements(message,registry){
 export function validateReportSelection(message,definition,registry){
  const requested=requestRequirements(message,registry);
  if(requested.aggregate&&definition.mode!=='aggregate')throw Error('This request needs an aggregate report, not a record list.');
+ if(requested.aggregate&&!/\b(?:by|per|each|group(?:ed)?\s+by|breakdown)\b/i.test(message)&&definition.mode==='aggregate'&&definition.groupBy.length)throw Error('This request needs one overall total. A grouped report cannot answer it; use an approved aggregate query tool without grouping.');
  if(requested.grouping.length&&!requested.grouping.every(field=>definition.groupBy.includes(field)))throw Error('Choose the stored report grouped by '+requested.grouping.join(', ')+'. Do not substitute unrelated totals.');
  if(requested.identifiers.length&&requested.values.length){
   const names=new Set(requested.identifiers.map(f=>f.split(':').at(-1).toLowerCase()));

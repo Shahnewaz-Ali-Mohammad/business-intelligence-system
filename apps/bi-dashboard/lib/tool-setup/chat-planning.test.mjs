@@ -4,6 +4,7 @@ import { coverageTools } from './coverage.mjs';
 import { requiresDetailedReport, checkReportPlan, toolContext, candidateTools } from './chat-planning.mjs';
 import { callWorkspaceMcp } from './chat-mcp.mjs';
 import { validateExecutionRequest } from './execution-request.mjs';
+import { validateReportSelection } from './request-fields.mjs';
 const catalog = { objects: [{ id: 'customers', name: 'CustomerMaster', schema: 'dbo', kind: 'table', columns: [{name: 'CustomerID', dataType: 'int', isPrimaryKey: true}, {name: 'Name', dataType: 'varchar'}] }], relationships: [] };
 const definitions = coverageTools(catalog);
 const tools = definitions.map((definition, i) => ({ id: String(i), sourceId: 'customer-db', status: 'approved', definition }));
@@ -15,7 +16,8 @@ test('customer report is detail; explicit counts and summaries remain aggregates
 test('an unlimited detail follow-up cannot become grouped counts because it mentions the total report', () => {
  const message = 'Now list all customers. Return only CustomerID and Name, with no other columns. Do not limit the total report.';
  assert.equal(requiresDetailedReport(message), true);
- assert.ok(candidateTools(message, tools).every(t => t.definition.mode === 'rows'));
+ assert.equal(candidateTools(message, tools)[0].definition.mode, 'rows');
+ assert.equal(candidateTools(message, tools).length, 2);
  assert.throws(() => validateExecutionRequest(message, definitions[1], catalog, 'sqlserver', {query:'{}'}), /record list/);
  validateExecutionRequest(message, definitions[0], catalog, 'sqlserver', {query:'{"columns":["customers:CustomerID","customers:Name"]}'});
  assert.equal(requiresDetailedReport('Show total customers grouped by Name'), false);
@@ -57,9 +59,19 @@ test('AI business output schema has no optional capabilities rejected by strict 
  assert.deepEqual(new Set(tool.required), new Set(Object.keys(tool.properties)));
 });
 
-test('explicit customer counts cannot select a row tool; global totals exclude fixed grouped reports', () => {
- assert.ok(candidateTools('how many customers are there?', tools).every(t => t.definition.mode === 'aggregate'));
+test('explicit counts prefer aggregates without hiding record tools needed for mixed questions', () => {
+ assert.equal(candidateTools('how many customers are there?', tools)[0].definition.mode, 'aggregate');
+ assert.equal(candidateTools('how many customers are there?', tools).length, 2);
  const grouped = {...tools[1], definition:{...definitions[1],capabilities:undefined,groupBy:['customers:Name']}};
- assert.equal(candidateTools('total billed amount',[grouped]).length,0);
+ assert.equal(candidateTools('total billed amount',[grouped]).length,1);
  assert.equal(candidateTools('billing totals by customer',[grouped]).length,1);
+});
+test('insights and mixed details plus totals retain both modes', () => {
+ assert.equal(candidateTools('Give me customer insights', tools)[0].definition.mode, 'aggregate');
+ assert.deepEqual(new Set(candidateTools('Show customer details and total billing', tools).map(t => t.definition.mode)), new Set(['rows','aggregate']));
+});
+test('a fixed count grouped by customer ID cannot answer an overall customer count', () => {
+ const grouped = {...definitions[1], capabilities: undefined, groupBy: ['customers:CustomerID']};
+ assert.throws(() => validateReportSelection('How many customers do we have?', grouped, tools), /one overall total/);
+ assert.doesNotThrow(() => validateReportSelection('How many customers by CustomerID?', grouped, tools));
 });

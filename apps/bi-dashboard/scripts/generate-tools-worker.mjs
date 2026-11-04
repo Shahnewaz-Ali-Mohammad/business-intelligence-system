@@ -29,17 +29,27 @@ try{
  const validationCatalog=await discoverDatabase(config);
  if(validationCatalog.fingerprint!==job.input.catalog.fingerprint)throw new Error('Database structure changed during generation. Discover objects again.');
  let checked=0;
+ const validated=[];
+ const rejected=[];
  await withDatabase(config,async query=>{
   for(const definition of definitions){
    controller.signal.throwIfAborted();
-   const compiled=compileTemplateCheck(definition,validationCatalog,config.dialect);
-   try{await query(compiled.sql,compiled.values);}catch(error){console.error('[template preflight]',definition.name,error instanceof Error?error.message:error);throw new Error(`Report ${definition.name} failed database preflight. No new drafts were saved.`);}
+   try{
+    const compiled=compileTemplateCheck(definition,validationCatalog,config.dialect);
+    await query(compiled.sql,compiled.values);
+    validated.push(definition);
+   }catch(error){
+    console.error('[template preflight]',definition.name,error instanceof Error?error.message:error);
+    if(definition.capabilities)throw new Error(`Reusable query tool ${definition.name} failed database preflight. No new drafts were saved.`);
+    rejected.push(definition.name);
+   }
    checked++;
    if(checked%10===0)await updateJob(workspaceId,jobId,current=>mine(current)?{...current,progress:`Database preflight ${checked} of ${definitions.length} saved templates`}:null);
   }
  });
- let saved;const connection=await db.getConnection();try{saved=await saveDraftDefinitions(connection,job.sourceId,job.input.catalog.fingerprint,definitions,{additive:!!job.input.missingOnly});}finally{connection.release();}
- const result={preflightCount:checked,coverage:coverageReport(job.input.catalog,definitions),count:definitions.length,genericCount:definitions.filter(t=>t.name.startsWith('schema_')).length,templateCount:definitions.filter(t=>t.template).length,aiCount:definitions.filter(t=>!t.name.startsWith('schema_')&&!t.name.startsWith('scenario_')).length,...saved};
+ if(!validated.length)throw new Error('No generated tools passed database preflight. Previously saved tools are unchanged.');
+ let saved;const connection=await db.getConnection();try{saved=await saveDraftDefinitions(connection,job.sourceId,job.input.catalog.fingerprint,validated,{additive:!!job.input.missingOnly});}finally{connection.release();}
+ const result={preflightCount:checked,rejectedCount:rejected.length,rejectedNames:rejected.slice(0,20),coverage:coverageReport(job.input.catalog,validated),count:validated.length,genericCount:validated.filter(t=>t.name.startsWith('schema_')).length,templateCount:validated.filter(t=>t.template).length,aiCount:validated.filter(t=>!t.name.startsWith('schema_')&&!t.name.startsWith('scenario_')).length,...saved};
  await updateJob(workspaceId,jobId,current=>mine(current)?{...current,status:'completed',progress:'Database-preflighted report templates saved for approval',result,heartbeatAt:Date.now()}:null);
 }catch(error){if(owned)await updateJob(workspaceId,jobId,current=>mine(current)?{...current,status:'failed',error:error instanceof Error?error.message:'Generation failed',progress:'Stopped; completed schema groups kept for retry'}:null).catch(()=>{});}
 finally{clearInterval(heartbeat);await db.end();}

@@ -228,8 +228,7 @@ export async function POST(
       t.sourceId === input.sourceId &&
       t.status === "approved",
   );
-  const requestedMode = requiresDetailedReport(input.message) ? 'rows' : isAggregateRequest(input.message) ? 'aggregate' : null;
-  const tools = candidateTools(input.message, approvedTools).filter((tool) => !requestedMode || tool.definition.mode === requestedMode);
+  const tools = candidateTools(input.message, approvedTools);
   let lastFailureReason = '';
   // Stages of this answer (name and duration), saved with the message.
   let runSteps: () => { name: string; ms: number }[] = () => [];

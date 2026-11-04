@@ -25,12 +25,10 @@ export function candidateTools(message, tools) {
   // covers the same table; hiding them keeps the planner's choice focused.
   const covered = new Set(tools.filter((t) => t.definition.capabilities).map((t) => t.definition.base));
   tools = tools.filter((t) => !(t.definition.name?.startsWith('scenario_') && covered.has(t.definition.base)));
-  if (requiresDetailedReport(message)) return tools.filter((t) => t.definition.mode === 'rows');
-  if (isAggregateRequest(message)) {
-    const global = !/\b(by|per|each|breakdown)\b/i.test(message);
-    return tools.filter((t) => t.definition.mode === 'aggregate' && (!global || t.definition.capabilities || !t.definition.groupBy.length));
-  }
-  return tools;
+  // A question may require both records and a summary. Keywords are useful
+  // for ordering, but must never hide an approved capability from the planner.
+  const preferred = requiresDetailedReport(message) ? 'rows' : isAggregateRequest(message) ? 'aggregate' : null;
+  return preferred ? [...tools].sort((a, b) => Number(b.definition.mode === preferred) - Number(a.definition.mode === preferred)) : tools;
 }
 /** @param {{message: string, definition: any, catalog: any, dialect: string, query: string, requiredFields?: string[]}} input */
 export function checkReportPlan({ message, definition, catalog, dialect, query, requiredFields = [] }) {

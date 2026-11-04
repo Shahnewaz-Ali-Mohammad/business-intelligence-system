@@ -52,8 +52,12 @@ export async function generateTools(
   // them and crowded the chat's tool choice.
   const definitions = options.missingOnly ? [] as ToolDefinition[] : [...coverageTools(selectedCatalog)] as ToolDefinition[];
   const generationRequest = request.trim() || 'Generate useful business reports for the selected tables: detailed record lists, grouped summaries and totals supported by the actual columns and verified relationships. Use descriptive names. Do not infer business formulas or status meanings from ambiguous columns; describe those limitations.';
-  if (!process.env.OPENAI_API_KEY)
-    throw new Error("Configure the OpenAI key on the application server.");
+  if (!process.env.OPENAI_API_KEY && !Object.keys(options.completedBatches || {}).length) {
+    if (options.missingOnly) throw new Error("Configure the OpenAI key on the application server.");
+    await options.onProgress?.('AI report suggestions are unavailable; reusable schema tools are ready for validation.');
+    assertCapabilityCoverage(selectedCatalog, definitions);
+    return definitions;
+  }
   const makeModel=(budget:number)=>{const settings=generationSettings();return new ChatOpenAI({...settings,model,modelKwargs:{...settings.modelKwargs,max_completion_tokens:budget}}).withStructuredOutput(BusinessDraftSchema,{method:'jsonSchema',strict:true});};
   const batches = generationBatches(selectedCatalog);
   let completed = 0;
@@ -94,7 +98,14 @@ export async function generateTools(
   };
   const results: ToolDefinition[][] = [];
   for (let offset = 0; offset < batches.length; offset += 2) {
-    const group = await Promise.all(batches.slice(offset, offset + 2).map((batch, i) => generateBatch(batch as Catalog, offset + i)));
+    const group = await Promise.all(batches.slice(offset, offset + 2).map(async (batch, i) => {
+      try { return await generateBatch(batch as Catalog, offset + i); }
+      catch (error) {
+        if (signal.aborted || options.missingOnly) throw error;
+        await options.onProgress?.(`AI suggestions for schema group ${offset + i + 1} failed; reusable schema coverage will still be saved.`);
+        return [] as ToolDefinition[];
+      }
+    }));
     results.push(...group as ToolDefinition[][]);
   }
   signal.throwIfAborted();
@@ -102,7 +113,7 @@ export async function generateTools(
     if (tool.name.startsWith('auto_')) throw new Error('Reserved tool name returned by model.');
     if (!definitions.some((t) => t.name === tool.name)) { definitions.push({...tool,template:{projection:tool.mode==='rows',limit:true,sortFields:tool.mode==='rows'?tool.columns:[...tool.groupBy,...tool.metrics.map(m=>m.alias)],sort:[],dateGroups:[]}}); }
   }
-  if (!results.some(group=>group.length)) throw new Error('AI generation produced no business tools. Previously saved tools are unchanged.');
+  if (options.missingOnly && !results.some(group=>group.length)) throw new Error('AI generation produced no report for the missing scenario. Previously saved tools are unchanged.');
   if (!options.missingOnly) assertCapabilityCoverage(selectedCatalog, definitions);
   return definitions;
 }
