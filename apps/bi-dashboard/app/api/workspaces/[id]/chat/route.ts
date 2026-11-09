@@ -1,4 +1,5 @@
 import { enterAccess } from '@/lib/access/data-scope.mjs';
+import { cachedCatalog } from '@/lib/tool-setup/catalog-cache.mjs';
 import { runWithAccess, AccessDenied } from '@/lib/access/data-scope.mjs';
 import { audit } from '@/lib/access/access-db';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
@@ -28,7 +29,6 @@ import { z } from "zod";
 import { getWorkspace } from "@/lib/workspaces/workspaceDb";
 import { listSetup, getTool, getSource } from "@/lib/tool-setup/store";
 import {
-  discoverDatabase,
   executeTool,
   summarizeTool,
 } from "@/lib/tool-setup/connectors.mjs";
@@ -325,7 +325,7 @@ export async function POST(
           return;
         }
         const source = await getSource(id, input.sourceId);
-        const catalog = await discoverDatabase(source.config);
+        const catalog = await cachedCatalog(input.sourceId, source.config);
         const queryFor = (definition: { capabilities?: unknown }, args: Record<string, unknown>) =>
           definition.capabilities
             ? (typeof args.query === 'string' ? args.query : JSON.stringify({}))
@@ -535,7 +535,7 @@ export async function POST(
           const records = result.rows.length && result.rows.length <= 5 && !result.hasMore ? result.rows : undefined;
           let insight = '';
           try {
-            if (summary) insight = await writeAnalyticalInsight({ question: input.message, summary, records, currency: undefined, signal, onText: (text: string) => run.text(countLine ? `${countLine} ${text}` : text) });
+            if (summary) insight = await writeAnalyticalInsight({ question: input.message, summary, records, currency: process.env.BI_CURRENCY || undefined, signal, onText: (text: string) => run.text(countLine ? `${countLine} ${text}` : text) });
           } catch (error) {
             console.error('[workspace insight] unavailable:', error instanceof Error ? error.message : error);
           }

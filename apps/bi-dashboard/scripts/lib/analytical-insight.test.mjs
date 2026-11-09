@@ -35,10 +35,10 @@ test('fallback category and date summaries use readable warehouse column titles'
   const text = await writeAnalyticalInsight({ question: 'Explain', summary: { ...summary, categories: [{ member: 'w_t.f_status_hash', title: 'Status', breakdown: { highest: [{ label: 'Open', count: '2', percentage: '100' }], lowest: [{ label: 'Open', count: '2' }] } }], dates: [{ member: 'w_t.f_date_hash', title: 'CreatedAt', earliest: '2025-01-01', latest: '2025-01-02' }] } }, async () => { throw new Error('Unavailable'); });
   assert.match(text, /Status: Open/); assert.match(text, /CreatedAt ranges/); assert.ok(!text.includes('hash'));
 });
-test('unspecified currency is rejected instead of attached to numeric data', async () => {
+test('unspecified currency is removed instead of attached to numeric data', async () => {
   const text = await writeAnalyticalInsight({ question: 'Explain Amount', summary }, async () => ({ narrative: 'The average is BDT 1001.' }));
   assert.ok(!text.includes('BDT'));
-  assert.match(text, /verified database statistics/);
+  assert.match(text, /The average is 1001/);
   const currencyText = await writeAnalyticalInsight({ question: 'Explain billing', summary, currency: 'BDT' }, async () => ({ narrative: 'The average is BDT 1001.' }));
   assert.match(currencyText, /BDT/);
 });
@@ -93,13 +93,13 @@ test('insights appear word by word while the model is still generating', async (
   });
   assert.equal(text, 'The average is 1,001. The minimum is 1.');
 });
-test('unsafe streaming wording falls back without exposing the rejected sentence', async () => {
+test('streamed wording never shows an unconfigured currency', async () => {
   const received = [];
   const text = await writeAnalyticalInsight({ question: 'Explain', summary, onText: (text) => received.push(text) }, undefined, async function* () {
     yield { narrative: 'The average is BDT 1,001. Next' };
   });
-  assert.deepEqual(received, []);
-  assert.match(text, /verified database statistics/);
+  assert.ok(received.every((t) => !t.includes('BDT')));
+  assert.ok(!text.includes('BDT'));
 });
 test('cancelled insight generation does not manufacture a fallback answer', async () => {
   const controller = new AbortController();

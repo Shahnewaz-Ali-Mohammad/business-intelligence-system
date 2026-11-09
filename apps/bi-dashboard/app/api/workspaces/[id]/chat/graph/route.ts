@@ -1,4 +1,5 @@
 import { enterAccess } from '@/lib/access/data-scope.mjs';
+import { cachedCatalog } from '@/lib/tool-setup/catalog-cache.mjs';
 import { requireAccess, denied, canOpenWorkspace } from '@/lib/access/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -6,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getWorkspace } from '@/lib/workspaces/workspaceDb';
 import { getTool, getSource, listSetup } from '@/lib/tool-setup/store';
 import { recordGraphPlan } from '@/lib/tool-setup/graph-plan.mjs';
-import { discoverDatabase, executeTool } from '@/lib/tool-setup/connectors.mjs';
+import { executeTool } from '@/lib/tool-setup/connectors.mjs';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const tool = await getTool(id, parsed.data.toolId);
     if (tool.status !== 'approved' || tool.definition.mode !== 'rows' || !tool.definition.capabilities) throw new Error('Unavailable');
     const source = await getSource(id, tool.source_id);
-    const catalog = await discoverDatabase(source.config);
+    const catalog = await cachedCatalog(tool.source_id, source.config);
     if (catalog.fingerprint !== tool.catalog_fingerprint) throw new Error('Schema changed');
     const query = recordGraphPlan(tool.definition, catalog, source.config.dialect, parsed.data.query, parsed.data.groupBy);
     const setup = await listSetup(id);

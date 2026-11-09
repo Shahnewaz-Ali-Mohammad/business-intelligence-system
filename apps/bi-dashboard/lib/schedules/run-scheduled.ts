@@ -114,7 +114,7 @@ export async function rerunReport(report: ReportRow, runAt = Date.now()) {
   try { summary = await summarizeTool(source.config, tool.definition, catalog, { query }); } catch { summary = undefined; }
   const countLine = tool.definition.mode === 'rows' ? recordNarrative(result, summary, query) : '';
   let insight = '';
-  try { if (summary) insight = await (writeAnalyticalInsight as unknown as (input: Record<string, unknown>) => Promise<string>)({ question: baseTitle, summary, records: result.rows.length <= 5 && !result.hasMore ? result.rows : undefined, currency: undefined, signal: AbortSignal.timeout(30000) }); } catch { insight = ''; }
+  try { if (summary) insight = await (writeAnalyticalInsight as unknown as (input: Record<string, unknown>) => Promise<string>)({ question: baseTitle, summary, records: result.rows.length <= 5 && !result.hasMore ? result.rows : undefined, currency: process.env.BI_CURRENCY || undefined, signal: AbortSignal.timeout(30000) }); } catch { insight = ''; }
   const narrative = [countLine, insight].filter(Boolean).join(' ') || 'The verified database results are shown in the table below.';
   const headers = Object.keys(result.rows[0] || {});
   const runAnswer = { ...answer, title, narrative, ...result, query, summary, page: 1, totalCount: summary ? Number(summary.population) || result.rows.length : undefined };

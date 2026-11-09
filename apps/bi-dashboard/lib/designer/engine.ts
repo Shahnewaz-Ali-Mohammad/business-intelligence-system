@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ChatOpenAI } from '@langchain/openai';
 import { getTool, getSource, listSetup } from '@/lib/tool-setup/store';
 import { discoverDatabase, executeTool } from '@/lib/tool-setup/connectors.mjs';
+import { cachedCatalog } from '@/lib/tool-setup/catalog-cache.mjs';
 import { compileTool } from '@/lib/tool-setup/model.mjs';
 import { toolContext } from '@/lib/tool-setup/chat-planning.mjs';
 import { normalizeMcpArguments } from '@/lib/tool-setup/mcp-query.mjs';
@@ -14,25 +15,7 @@ import { applyOps, isDataBlock, OpSchema, type Block, type Message, type Spec } 
 // plan is compiled by the same validator the chat uses before it is kept.
 
 const LIMITS: Record<string, number> = { kpi: 1, chart: 60, table: 200 };
-const catalogs = new Map<string, { at: number; catalog: Awaited<ReturnType<typeof discoverDatabase>> }>();
-const pendingCatalogs = new Map<string, Promise<Awaited<ReturnType<typeof discoverDatabase>>>>();
-
-async function liveCatalog(sourceId: string, config: Parameters<typeof discoverDatabase>[0]) {
-  const hit = catalogs.get(sourceId);
-  if (hit && Date.now() - hit.at < 5 * 60000) return hit.catalog;
-  let pending = pendingCatalogs.get(sourceId);
-  if (!pending) {
-    pending = discoverDatabase(config);
-    pendingCatalogs.set(sourceId, pending);
-  }
-  try {
-    const catalog = await pending;
-    catalogs.set(sourceId, { at: Date.now(), catalog });
-    return catalog;
-  } finally {
-    if (pendingCatalogs.get(sourceId) === pending) pendingCatalogs.delete(sourceId);
-  }
-}
+const liveCatalog = (sourceId: string, config: Parameters<typeof discoverDatabase>[0]) => cachedCatalog(sourceId, config);
 
 /** Approved query tools the designer may use, with the fields each one allows. */
 export async function designTools(workspaceId: string) {
@@ -170,6 +153,15 @@ async function sanitizeSpec(workspaceId: string, spec: Spec, previous: Spec) {
   return { spec: { ...spec, blocks: safe }, removed: [...invalid] };
 }
 
+/** Saves each data block with the same normalized plan the validator checked. */
+function normalizeSpec(spec: Spec, tools: DesignTool[]): Spec {
+  return { ...spec, blocks: spec.blocks.map((b) => {
+    const tool = isDataBlock(b) && b.query ? tools.find((t) => t.id === b.toolId) : null;
+    if (!tool || !b.query) return b;
+    try { return { ...b, query: normalizeQuery(tool.definition, b.query) }; } catch { return b; }
+  }) };
+}
+
 export type BlockData = { rows: Record<string, unknown>[]; hasMore: boolean; error?: string };
 
 /** Runs one data block against the live database, inside the person's access. */
@@ -198,7 +190,8 @@ export async function runBlock(workspaceId: string, block: Block): Promise<Block
     return { rows: result.rows, hasMore: !!result.hasMore };
   } catch (error) {
     console.error('[designer] block failed:', error instanceof Error ? error.message : error);
-    return { rows: [], hasMore: false, error: error instanceof Error ? error.message.slice(0, 300) : 'Could not load this block.' };
+    // Database and compiler details stay in the server log, never on screen.
+    return { rows: [], hasMore: false, error: 'Could not load this block. Ask the designer to rebuild it, or refresh.' };
   }
 }
 
@@ -257,7 +250,8 @@ export async function designTurn({ workspaceId, spec, messages, text, selectedBl
     .map((op) => op.blockId));
   const coverageError = semanticCoverageError(text, next, tools, changedDataBlockIds);
   if (coverageError) return { reply: coverageError, spec, ops: [], suggestions: answer.suggestions };
-  const cleaned = await sanitizeSpec(workspaceId, next, spec);
+  const sanitized = await sanitizeSpec(workspaceId, next, spec);
+  const cleaned = { ...sanitized, spec: normalizeSpec(sanitized.spec, await designTools(workspaceId)) };
   const reply = cleaned.removed.length
     ? `${answer.reply} I left out ${cleaned.removed.length} block${cleaned.removed.length === 1 ? '' : 's'} because its selected tool could not execute the requested fields.`
     : answer.reply;

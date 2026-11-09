@@ -10,7 +10,7 @@ export function toolContext(tool, catalog) {
     relationships: catalog.relationships.filter((j) => (definition.capabilities?.joins || definition.joins).includes(j.id)) };
 }
 export function requiresDetailedReport(message) {
-  return /\b(details|list|records|directory)\b/i.test(message) && !isAggregateRequest(message)
+  return (/\b(details|list|records|directory|dekhao|dao)\b/i.test(message) || /(তালিকা|লিস্ট|বিস্তারিত|দেখাও)/.test(message)) && !isAggregateRequest(message)
     || /\b(?:show|give|get|find|display)\b[^?.!]*\b(?:tickets?|customers?|orders?|invoices?|payments?|employees?|users?|accounts?|rows?)\b/i.test(message) && !isAggregateRequest(message)
     || /\breport\b/i.test(message) && !isAggregateRequest(message) && !/\b(by|per|trend)\b/i.test(message);
 }

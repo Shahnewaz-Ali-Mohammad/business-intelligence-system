@@ -42,6 +42,7 @@ export function validateConnection(input) {
     );
   return config;
 }
+const SINGLE_RESULT_ERROR = 'This procedure returns multiple result sets. Use a single-result reporting procedure; no result has been discarded.';
 export async function withDatabase(input, fn, { requestTimeout = 30000 } = {}) {
   const c = validateConnection(input);
   if (c.dialect === "postgres") {
@@ -97,6 +98,37 @@ export async function withDatabase(input, fn, { requestTimeout = 30000 } = {}) {
       await client.end();
     }
   }
+  // One shared, already-connected pool per SQL Server connection, instead of
+  // a new TCP + TLS + login handshake for every query.
+  const pool = await sqlServerPool(c, requestTimeout);
+  try {
+    return await fn(async (sql, values = [], { singleResult = false } = {}) => {
+      const request = pool.request();
+      values.forEach((value, index) => request.input(`p${index + 1}`, value));
+      const result = await request.query(sql);
+      if (singleResult && result.recordsets.length > 1) throw new Error(SINGLE_RESULT_ERROR);
+      return result.recordset || [];
+    });
+  } catch (error) {
+    // A broken connection is dropped so the next call opens a fresh one.
+    if (!pool.connected) dropSqlServerPool(pool);
+    throw error;
+  }
+}
+
+const sqlServerPools = new Map();
+function dropSqlServerPool(pool) {
+  for (const [key, value] of sqlServerPools) if (value.pool === pool) sqlServerPools.delete(key);
+  pool.close().catch(() => {});
+}
+async function sqlServerPool(c, requestTimeout) {
+  const key = JSON.stringify([c.host, c.port, c.username, c.password, c.database || '', c.tls, c.trustServerCertificate, requestTimeout]);
+  const cached = sqlServerPools.get(key);
+  if (cached) {
+    const pool = await cached.connecting;
+    if (pool.connected) return pool;
+    dropSqlServerPool(pool);
+  }
   const pool = new mssql.ConnectionPool({
     server: c.host,
     port: c.port,
@@ -110,20 +142,13 @@ export async function withDatabase(input, fn, { requestTimeout = 30000 } = {}) {
     },
     connectionTimeout: 10000,
     requestTimeout,
-    pool: { max: 1, min: 0 },
+    pool: { max: 5, min: 0, idleTimeoutMillis: 60000 },
   });
-  try {
-    await pool.connect();
-    return await fn(async (sql, values = [], { singleResult = false } = {}) => {
-      const request = pool.request();
-      values.forEach((value, index) => request.input(`p${index + 1}`, value));
-      const result = await request.query(sql);
-      if (singleResult && result.recordsets.length > 1) throw new Error('This procedure returns multiple result sets. Use a single-result reporting procedure; no result has been discarded.');
-      return result.recordset || [];
-    });
-  } finally {
-    await pool.close();
-  }
+  pool.on('error', () => dropSqlServerPool(pool));
+  const connecting = pool.connect().then(() => pool);
+  sqlServerPools.set(key, { pool, connecting });
+  try { return await connecting; }
+  catch (error) { sqlServerPools.delete(key); throw error; }
 }
 export async function listDatabases(config) {
   return withDatabase(config, async (query) => {
