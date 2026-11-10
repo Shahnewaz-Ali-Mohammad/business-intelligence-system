@@ -11,12 +11,17 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(directory, '..', '.env.local');
 if (fs.existsSync(envPath)) (await import('dotenv')).config({ path: envPath });
 
+if (!process.env.SCHEMA_ADMIN_USER || !process.env.SCHEMA_ADMIN_PASSWORD) {
+  console.error('Set SCHEMA_ADMIN_USER and SCHEMA_ADMIN_PASSWORD to a MySQL account with ALTER/CREATE rights, then retry.');
+  process.exit(1);
+}
+
 const connection = await mysql.createConnection({
   host: process.env.DB_APP_HOST ?? 'localhost',
   port: Number(process.env.DB_APP_PORT ?? 3306),
   database: process.env.DB_APP_NAME ?? 'bi_app',
-  user: process.env.SCHEMA_ADMIN_USER ?? process.env.DB_APP_USER ?? 'bi_app_user',
-  password: process.env.SCHEMA_ADMIN_PASSWORD ?? process.env.DB_APP_PASSWORD ?? '',
+  user: process.env.SCHEMA_ADMIN_USER,
+  password: process.env.SCHEMA_ADMIN_PASSWORD,
   multipleStatements: true,
 });
 

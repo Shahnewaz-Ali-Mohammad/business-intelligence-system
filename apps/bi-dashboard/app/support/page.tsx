@@ -1,14 +1,364 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { WorkspacePage } from '@/components/workspace/workspace-page';
-import { useAuth, can } from '@/components/auth/auth-provider';
-type Ticket = { id:number; subject:string; status:string; priority:string; requester_user_id?:number; customer_name?:string|null; customer_email?:string|null; ticket_type?:string|null; language?:string|null; last_message?:string; updated_at:string; created_at?:string; ai_summary?:string|null };
-type Message = { id:number; author_type:string; body:string; created_at:string };
-const statusLabel=(v:string)=>v.replaceAll('_',' '); const timeLabel=(v?:string)=>v?new Date(v).toLocaleString([], {dateStyle:'medium',timeStyle:'short'}):'—';
-export default function SupportPage(){const {user,loading}=useAuth();const [tickets,setTickets]=useState<Ticket[]>([]);const [selected,setSelected]=useState<Ticket|null>(null);const [messages,setMessages]=useState<Message[]>([]);const [reply,setReply]=useState('');const [busy,setBusy]=useState(false);const [loadingTicket,setLoadingTicket]=useState(false);const [error,setError]=useState('');
-useEffect(()=>{if(!user||!can(user,'support.use'))return;fetch('/api/support/tickets').then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error);setTickets(d.tickets||[])}).catch(e=>setError(e.message))},[user]);
-async function selectTicket(ticket:Ticket){setSelected(ticket);setMessages([]);setError('');setLoadingTicket(true);try{const r=await fetch(`/api/support/tickets/${ticket.id}`);const d=await r.json();if(!r.ok)throw new Error(d.error);setSelected({...ticket,...d.ticket});setMessages(d.messages||[])}catch(e){setError((e as Error).message)}finally{setLoadingTicket(false)}}
-async function update(id:number,patch:Record<string,unknown>){setBusy(true);try{const r=await fetch(`/api/support/tickets/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});const d=await r.json();if(!r.ok)throw new Error(d.error);if(patch.message)setMessages(ms=>[...ms,{id:Date.now(),author_type:'agent',body:String(patch.message),created_at:new Date().toISOString()}]);setTickets(ts=>ts.map(t=>t.id===id?{...t,...patch} as Ticket:t));setSelected(s=>s&&s.id===id?{...s,...patch} as Ticket:s);setReply('')}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
-if(loading)return null;if(!user||!can(user,'support.use'))return <WorkspacePage active="Support" title="Support" subtitle="Customer support access required."><p className="rounded-xl bg-white p-6 text-sm text-zinc-600">This panel is available only to Customer Support users.</p></WorkspacePage>;
-return <WorkspacePage active="Support" title="Customer Support" subtitle="Review every customer conversation and resolve enquiries." scroll>{error&&<p className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}<div className="grid gap-5 xl:grid-cols-[430px_minmax(0,1fr)]"><section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-zinc-200"><div className="border-b px-5 py-4"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold text-zinc-900">Ticket queue</h2><span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">{tickets.length} tickets</span></div><p className="mt-1 text-xs text-zinc-500">Select a ticket to see the complete conversation.</p></div><div className="max-h-[calc(100vh-260px)] space-y-2 overflow-y-auto p-3">{tickets.length?tickets.map(t=><button key={t.id} onClick={()=>void selectTicket(t)} className={`w-full rounded-xl border p-4 text-left transition ${selected?.id===t.id?'border-rose-300 bg-rose-50 shadow-sm':'border-zinc-200 hover:border-rose-200 hover:bg-zinc-50'}`}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-zinc-900">#{t.id} · {t.subject}</p><p className="mt-1 truncate text-xs text-zinc-500">{t.customer_name||`Customer #${t.requester_user_id||'—'}`}{t.customer_email?` · ${t.customer_email}`:''}</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium capitalize ${t.status==='resolved'||t.status==='closed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{statusLabel(t.status)}</span></div><div className="mt-3 flex flex-wrap gap-2 text-[11px] text-zinc-500"><span className="rounded bg-zinc-100 px-2 py-1">{t.ticket_type||'Support'}</span><span className="rounded bg-zinc-100 px-2 py-1 capitalize">{t.priority} priority</span><span>{timeLabel(t.updated_at)}</span></div><p className="mt-3 line-clamp-2 text-xs leading-5 text-zinc-600">{t.ai_summary||t.last_message||'No summary yet.'}</p></button>):<p className="py-12 text-center text-sm text-zinc-500">No tickets in the queue.</p>}</div></section><section className="min-h-[620px] overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-zinc-200">{selected?<><div className="border-b px-6 py-5"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="mb-1 text-xs font-medium uppercase tracking-wide text-rose-700">Ticket #{selected.id} · {selected.ticket_type||'Support enquiry'}</p><h2 className="truncate text-xl font-semibold text-zinc-900">{selected.subject}</h2><p className="mt-1 text-sm text-zinc-500">{selected.customer_name||`Customer #${selected.requester_user_id||'—'}`}{selected.customer_email?` · ${selected.customer_email}`:''}</p></div><select value={selected.status} onChange={e=>void update(selected.id,{status:e.target.value})} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm capitalize"><option>open</option><option>in_progress</option><option>waiting_on_customer</option><option>resolved</option><option>closed</option></select></div><div className="mt-4 grid gap-3 sm:grid-cols-4"><div><p className="text-[11px] uppercase text-zinc-400">Priority</p><p className="mt-1 text-sm font-medium capitalize">{selected.priority}</p></div><div><p className="text-[11px] uppercase text-zinc-400">Language</p><p className="mt-1 text-sm font-medium">{selected.language||'Auto'}</p></div><div><p className="text-[11px] uppercase text-zinc-400">Created</p><p className="mt-1 text-sm font-medium">{timeLabel(selected.created_at)}</p></div><div><p className="text-[11px] uppercase text-zinc-400">Updated</p><p className="mt-1 text-sm font-medium">{timeLabel(selected.updated_at)}</p></div></div>{selected.ai_summary&&<div className="mt-4 rounded-xl bg-rose-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">AI summary</p><p className="mt-1 text-sm leading-5 text-zinc-700">{selected.ai_summary}</p></div>}</div><div className="max-h-[calc(100vh-530px)] min-h-[300px] space-y-4 overflow-y-auto bg-zinc-50/60 px-6 py-5">{loadingTicket?<p className="py-16 text-center text-sm text-zinc-500">Loading full conversation…</p>:messages.length?messages.map(m=><div key={m.id} className={`flex ${m.author_type==='customer'?'justify-end':'justify-start'}`}><div className={`max-w-[82%] rounded-2xl px-4 py-3 text-sm ${m.author_type==='customer'?'bg-rose-700 text-white':m.author_type==='ai'?'bg-white ring-1 ring-zinc-200':'bg-emerald-50 ring-1 ring-emerald-200'}`}><div className={`mb-1 text-[10px] font-semibold uppercase tracking-wide ${m.author_type==='customer'?'text-rose-100':'text-zinc-500'}`}>{m.author_type==='customer'?'Customer':m.author_type==='ai'?'AI assistant':'Support agent'} · {timeLabel(m.created_at)}</div><p className="whitespace-pre-wrap leading-6">{m.body}</p></div></div>):<p className="py-16 text-center text-sm text-zinc-500">No messages found for this ticket.</p>}</div><div className="border-t bg-white p-5"><textarea value={reply} onChange={e=>setReply(e.target.value)} rows={3} placeholder="Write a human reply to the customer…" className="w-full rounded-xl border border-zinc-300 p-3 text-sm outline-none focus:border-rose-400"/><div className="mt-3 flex flex-wrap gap-2"><button disabled={busy||!reply.trim()} onClick={()=>void update(selected.id,{message:reply,status:'in_progress'})} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-zinc-300">Send reply</button><button disabled={busy||!reply.trim()} onClick={()=>void update(selected.id,{message:reply,status:'resolved',knowledge:true})} className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium">Reply & save solution</button></div></div></>:<div className="flex min-h-[620px] items-center justify-center p-8 text-center"><div><h2 className="text-lg font-semibold text-zinc-900">Select a ticket</h2><p className="mt-1 max-w-sm text-sm text-zinc-500">Choose a ticket from the queue to view its customer, summary, metadata, and entire chat.</p></div></div>}</section></div></WorkspacePage>;
+"use client";
+import { useEffect, useState } from "react";
+import { WorkspacePage } from "@/components/workspace/workspace-page";
+import { useAuth, can } from "@/components/auth/auth-provider";
+type Ticket = {
+  id: number;
+  subject: string;
+  status: string;
+  priority: string;
+  requester_user_id?: number;
+  customer_name?: string | null;
+  customer_email?: string | null;
+  ticket_type?: string | null;
+  language?: string | null;
+  last_message?: string;
+  issue_summary?: string | null;
+  updated_at: string;
+  created_at?: string;
+  ai_summary?: string | null;
+};
+type Message = {
+  id: number;
+  author_type: string;
+  body: string;
+  created_at: string;
+};
+const statusLabel = (v: string) => v.replaceAll("_", " ");
+const timeLabel = (v?: string) =>
+  v
+    ? new Date(v).toLocaleString([], {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })
+    : "—";
+export default function SupportPage() {
+  const { user, loading } = useAuth();
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [selected, setSelected] = useState<Ticket | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [reply, setReply] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loadingTicket, setLoadingTicket] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!user || !can(user, "support.use")) return;
+    fetch("/api/support/tickets")
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        const items = d.tickets || [];
+        setTickets(items);
+        if (items[0]) void selectTicket(items[0]);
+      })
+      .catch((e) => setError(e.message));
+  }, [user]);
+  async function selectTicket(ticket: Ticket) {
+    setSelected(ticket);
+    setMessages([]);
+    setError("");
+    setLoadingTicket(true);
+    try {
+      const r = await fetch(`/api/support/tickets/${ticket.id}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      setSelected({ ...ticket, ...d.ticket });
+      setMessages(d.messages || []);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoadingTicket(false);
+    }
+  }
+  async function update(id: number, patch: Record<string, unknown>) {
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/support/tickets/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      if (patch.message)
+        setMessages((ms) => [
+          ...ms,
+          {
+            id: Date.now(),
+            author_type: "agent",
+            body: String(patch.message),
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      setTickets((ts) =>
+        ts.map((t) => (t.id === id ? ({ ...t, ...patch } as Ticket) : t)),
+      );
+      setSelected((s) =>
+        s && s.id === id ? ({ ...s, ...patch } as Ticket) : s,
+      );
+      setReply("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (loading) return null;
+  if (!user || !can(user, "support.use"))
+    return (
+      <WorkspacePage
+        active="Support"
+        title="Support"
+        subtitle="Customer support access required."
+      >
+        <p className="rounded-xl bg-white p-6 text-sm text-zinc-600">
+          This panel is available only to Customer Support users.
+        </p>
+      </WorkspacePage>
+    );
+  return (
+    <WorkspacePage
+      active="Support"
+      title="Customer Support"
+      subtitle="Review every customer conversation and resolve enquiries."
+      scroll
+    >
+      {error && (
+        <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </p>
+      )}
+      <div className="grid gap-5 xl:grid-cols-[430px_minmax(0,1fr)]">
+        <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-zinc-200">
+          <div className="border-b px-5 py-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-zinc-900">
+                Ticket queue
+              </h2>
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">
+                {tickets.length} tickets
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-zinc-500">
+              Select a ticket to see the complete conversation.
+            </p>
+          </div>
+          <div className="max-h-[calc(100vh-260px)] space-y-2 overflow-y-auto p-3">
+            {tickets.length ? (
+              tickets.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => void selectTicket(t)}
+                  className={`w-full rounded-xl border p-4 text-left transition ${selected?.id === t.id ? "border-rose-300 bg-rose-50 shadow-sm" : "border-zinc-200 hover:border-rose-200 hover:bg-zinc-50"}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-zinc-900">
+                        #{t.id} · {t.subject}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-zinc-500">
+                        {t.customer_name ||
+                          `Customer #${t.requester_user_id || "—"}`}
+                        {t.customer_email ? ` · ${t.customer_email}` : ""}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium capitalize ${t.status === "resolved" || t.status === "closed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}
+                    >
+                      {statusLabel(t.status)}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-zinc-500">
+                    <span className="rounded bg-zinc-100 px-2 py-1">
+                      {t.ticket_type || "Support"}
+                    </span>
+                    <span className="rounded bg-zinc-100 px-2 py-1 capitalize">
+                      {t.priority} priority
+                    </span>
+                    <span>{timeLabel(t.updated_at)}</span>
+                  </div>
+                  <p className="mt-3 line-clamp-2 text-xs leading-5 text-zinc-600">
+                    {t.issue_summary ||
+                      t.last_message ||
+                      "No customer message yet."}
+                  </p>
+                </button>
+              ))
+            ) : (
+              <p className="py-12 text-center text-sm text-zinc-500">
+                No tickets in the queue.
+              </p>
+            )}
+          </div>
+        </section>
+        <section className="min-h-[620px] overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-zinc-200">
+          {selected ? (
+            <>
+              <div className="border-b px-6 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="mb-1 text-xs font-medium uppercase tracking-wide text-rose-700">
+                      Ticket #{selected.id} ·{" "}
+                      {selected.ticket_type || "Support enquiry"}
+                    </p>
+                    <h2 className="truncate text-xl font-semibold text-zinc-900">
+                      {selected.subject}
+                    </h2>
+                    <p className="mt-1 text-sm text-zinc-500">
+                      {selected.customer_name ||
+                        `Customer #${selected.requester_user_id || "—"}`}
+                      {selected.customer_email
+                        ? ` · ${selected.customer_email}`
+                        : ""}
+                    </p>
+                  </div>
+                  <select
+                    value={selected.status}
+                    onChange={(e) =>
+                      void update(selected.id, { status: e.target.value })
+                    }
+                    className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm capitalize"
+                  >
+                    <option>open</option>
+                    <option>in_progress</option>
+                    <option>waiting_on_customer</option>
+                    <option>resolved</option>
+                    <option>closed</option>
+                  </select>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                  <div>
+                    <p className="text-[11px] uppercase text-zinc-400">
+                      Priority
+                    </p>
+                    <p className="mt-1 text-sm font-medium capitalize">
+                      {selected.priority}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] uppercase text-zinc-400">
+                      Language
+                    </p>
+                    <p className="mt-1 text-sm font-medium">
+                      {selected.language || "Auto"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] uppercase text-zinc-400">
+                      Created
+                    </p>
+                    <p className="mt-1 text-sm font-medium">
+                      {timeLabel(selected.created_at)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] uppercase text-zinc-400">
+                      Updated
+                    </p>
+                    <p className="mt-1 text-sm font-medium">
+                      {timeLabel(selected.updated_at)}
+                    </p>
+                  </div>
+                </div>
+                {selected.ai_summary && (
+                  <div className="mt-4 rounded-xl bg-rose-50 px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
+                      AI summary
+                    </p>
+                    <p className="mt-1 text-sm leading-5 text-zinc-700">
+                      {selected.ai_summary}
+                    </p>
+                  </div>
+                )}
+              </div>
+              <div className="max-h-[calc(100vh-530px)] min-h-[300px] space-y-4 overflow-y-auto bg-zinc-50/60 px-6 py-5">
+                {loadingTicket ? (
+                  <p className="py-16 text-center text-sm text-zinc-500">
+                    Loading full conversation…
+                  </p>
+                ) : messages.length ? (
+                  messages.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`flex ${m.author_type === "customer" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[82%] rounded-2xl px-4 py-3 text-sm ${m.author_type === "customer" ? "bg-rose-700 text-white" : m.author_type === "ai" ? "bg-white ring-1 ring-zinc-200" : "bg-emerald-50 ring-1 ring-emerald-200"}`}
+                      >
+                        <div
+                          className={`mb-1 text-[10px] font-semibold uppercase tracking-wide ${m.author_type === "customer" ? "text-rose-100" : "text-zinc-500"}`}
+                        >
+                          {m.author_type === "customer"
+                            ? "Customer"
+                            : m.author_type === "ai"
+                              ? "AI assistant"
+                              : "Support agent"}{" "}
+                          · {timeLabel(m.created_at)}
+                        </div>
+                        <p className="whitespace-pre-wrap leading-6">
+                          {m.body}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="py-16 text-center text-sm text-zinc-500">
+                    No messages found for this ticket.
+                  </p>
+                )}
+              </div>
+              <div className="border-t bg-white p-5">
+                <textarea
+                  value={reply}
+                  onChange={(e) => setReply(e.target.value)}
+                  rows={3}
+                  placeholder="Write a human reply to the customer…"
+                  className="w-full rounded-xl border border-zinc-300 p-3 text-sm outline-none focus:border-rose-400"
+                />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    disabled={busy || !reply.trim()}
+                    onClick={() =>
+                      void update(selected.id, {
+                        message: reply,
+                        status: "in_progress",
+                      })
+                    }
+                    className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-zinc-300"
+                  >
+                    Send reply
+                  </button>
+                  <button
+                    disabled={busy || !reply.trim()}
+                    onClick={() =>
+                      void update(selected.id, {
+                        message: reply,
+                        status: "resolved",
+                        knowledge: true,
+                      })
+                    }
+                    className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium"
+                  >
+                    Reply & save solution
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex min-h-[620px] items-center justify-center p-8 text-center">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-900">
+                  Select a ticket
+                </h2>
+                <p className="mt-1 max-w-sm text-sm text-zinc-500">
+                  Choose a ticket from the queue to view its customer, summary,
+                  metadata, and entire chat.
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+    </WorkspacePage>
+  );
 }

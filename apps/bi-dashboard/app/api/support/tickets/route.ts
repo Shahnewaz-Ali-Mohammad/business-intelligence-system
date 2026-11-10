@@ -1,43 +1,130 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
-import { getAppDb } from '@/lib/db/app-db';
-import { requireAccess, denied } from '@/lib/access/guard';
-import { audit } from '@/lib/access/access-db';
-import { ChatOpenAI } from '@langchain/openai';
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { getAppDb } from "@/lib/db/app-db";
+import { requireAccess, denied } from "@/lib/access/guard";
+import { audit } from "@/lib/access/access-db";
+import {
+  generateSupportAnswer,
+  shouldEscalateRepeatedIssue,
+} from "@/lib/support/assistant";
 
-const Create = z.object({ subject: z.string().trim().min(3).max(240), body: z.string().trim().min(1).max(20000), language: z.string().max(20).optional(), workspaceId: z.string().max(64).optional() });
-function troubleshootingOnly(text: string) {
-  return text
-    .replace(/\b(?:customer|account|ticket|subscriber)\s*(?:id|number|no\.?|#)?\s*[:#-]?\s*\d{4,}\b/gi, 'your account')
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, 'your email address')
-    .replace(/\b(?:\+?\d[\d\s().-]{7,}\d)\b/g, 'your phone number');
-}
-async function answerFirst(id: number, subject: string, body: string, language?: string) {
-  const [knowledge] = await getAppDb().execute('SELECT question,approved_answer FROM support_knowledge_entries ORDER BY created_at DESC LIMIT 20');
-  const ai = new ChatOpenAI({ model: process.env.OPENAI_MODEL || 'gpt-4o', temperature: 0.1, timeout: 30000, maxRetries: 0, maxTokens: 120 });
-  const requestedLanguage = language && language !== 'auto' ? language : /[\u0980-\u09FF]/.test(body) ? 'Bengali' : 'English';
-  const result = await ai.invoke([{ role: 'system', content: `You are the first-line customer troubleshooting assistant. Solve the current practical problem with clear, safe steps using approved solutions. Reply only in ${requestedLanguage}. Be brief and conversational: maximum 2 short steps and 40 words. No progress messages. Never expose customer, account, ticket, or billing information, or invent ISP policies. If an account lookup is needed or no safe fix is known, tell the customer a human agent will help and end with [ESCALATE]. Approved solutions: ${JSON.stringify(knowledge)}` }, { role: 'user', content: `Subject: ${subject}\nQuestion: ${body}` }]);
-  const text = String(result.content).trim(); const escalate = text.includes('[ESCALATE]'); const clean = troubleshootingOnly(text.replace(/\s*\[ESCALATE\]\s*$/, '').trim());
-  await getAppDb().execute('INSERT INTO support_ticket_messages (ticket_id,author_type,body,language) VALUES (?,?,?,?)', [id, 'ai', clean, language && language !== 'auto' ? language : null]);
-  const [attemptRows] = await getAppDb().execute("SELECT COUNT(*) AS n FROM support_ticket_messages WHERE ticket_id=? AND author_type='ai'", [id]);
-  const attempts = Number((attemptRows as { n: number }[])[0]?.n || 0); const shouldEscalate = attempts >= 3;
-  await getAppDb().execute('UPDATE support_tickets SET status=?, ai_summary=? WHERE id=?', [shouldEscalate ? 'open' : 'in_progress', `AI attempt ${attempts}${shouldEscalate ? '; escalated to human agent' : ''}`, id]);
-  return { reply: clean, attempts, escalated: shouldEscalate };
+const Create = z.object({
+  subject: z.string().trim().min(1).max(240).optional(),
+  body: z.string().trim().min(1).max(20000),
+  language: z.enum(["auto", "en", "bn"]).optional(),
+  workspaceId: z.string().max(64).optional(),
+});
+async function answerFirst(
+  id: number,
+  subject: string,
+  body: string,
+  language?: string,
+) {
+  const { reply, escalationRequested, knowledgeUsed } =
+    await generateSupportAnswer(subject, body, language);
+  await getAppDb().execute(
+    "INSERT INTO support_ticket_messages (ticket_id,author_type,body,language) VALUES (?,?,?,?)",
+    [id, "ai", reply, language && language !== "auto" ? language : null],
+  );
+  const [attemptRows] = await getAppDb().execute(
+    "SELECT COUNT(*) AS n FROM support_ticket_messages WHERE ticket_id=? AND author_type='ai'",
+    [id],
+  );
+  const attempts = Number((attemptRows as { n: number }[])[0]?.n || 0);
+  const shouldEscalate = await shouldEscalateRepeatedIssue(id, body);
+  await getAppDb().execute(
+    "UPDATE support_tickets SET status=?, ai_summary=? WHERE id=?",
+    [
+      shouldEscalate ? "open" : "in_progress",
+      `AI attempt ${attempts}; ${knowledgeUsed ? `used ${knowledgeUsed} approved solution(s)` : "no approved solution matched"}${shouldEscalate ? "; escalated to human agent" : ""}`,
+      id,
+    ],
+  );
+  return {
+    reply,
+    attempts,
+    escalated: shouldEscalate,
+    knowledgeUsed,
+    escalationRequested,
+  };
 }
 export async function GET() {
-  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard;
-  const isAgent = guard.access.permissions.includes('support.use');
+  const guard = await requireAccess("chat.use");
+  if (denied(guard)) return guard;
+  const isAgent = guard.access.permissions.includes("support.use");
   const db = getAppDb();
-  const [rows] = await db.execute(`SELECT t.id,t.subject,t.status,t.priority,t.requester_user_id,t.assigned_to,t.language,t.ai_summary,t.created_at,t.updated_at,
+  const [rows] = await db.execute(
+    `SELECT t.id,t.subject,t.status,t.priority,t.requester_user_id,t.assigned_to,t.language,t.ai_summary,t.created_at,t.updated_at,
     COALESCE(u.display_name,u.email,CONCAT('User #',t.requester_user_id)) AS customer_name,u.email AS customer_email,
     CASE WHEN LOWER(t.subject) REGEXP 'bill|payment|invoice' THEN 'Billing' WHEN LOWER(t.subject) REGEXP 'account|login|password' THEN 'Account' WHEN LOWER(t.subject) REGEXP 'ticket|status' THEN 'Ticket status' ELSE 'Connectivity' END AS ticket_type,
-    (SELECT body FROM support_ticket_messages m WHERE m.ticket_id=t.id ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message
-    FROM support_tickets t LEFT JOIN users u ON u.id=t.requester_user_id ${isAgent ? '' : 'WHERE t.requester_user_id=?'} ORDER BY FIELD(t.status,'open','in_progress','waiting_on_customer','resolved','closed'),t.updated_at DESC LIMIT 300`, isAgent ? [] : [guard.user.id]);
+    (SELECT body FROM support_ticket_messages m WHERE m.ticket_id=t.id ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message,
+    (SELECT body FROM support_ticket_messages m WHERE m.ticket_id=t.id AND m.author_type='customer' ORDER BY m.id ASC LIMIT 1) AS issue_summary
+    FROM support_tickets t LEFT JOIN users u ON u.id=t.requester_user_id ${isAgent ? "" : "WHERE t.requester_user_id=?"} ORDER BY FIELD(t.status,'open','in_progress','waiting_on_customer','resolved','closed'),t.updated_at DESC LIMIT 300`,
+    isAgent ? [] : [guard.user.id],
+  );
   return NextResponse.json({ tickets: rows });
 }
 export async function POST(req: NextRequest) {
-  const guard = await requireAccess('chat.use'); if (denied(guard)) return guard;
-  const parsed = Create.safeParse(await req.json().catch(() => null)); if (!parsed.success) return NextResponse.json({ error: 'Subject and message are required.' }, { status: 400 });
-  const db = getAppDb(); const [result] = await db.execute('INSERT INTO support_tickets (requester_user_id,subject,language,source_workspace_id) VALUES (?,?,?,?)', [guard.user.id, parsed.data.subject, parsed.data.language || null, parsed.data.workspaceId || null]);
-  const id = (result as { insertId: number }).insertId; await db.execute('INSERT INTO support_ticket_messages (ticket_id,author_user_id,author_type,body,language) VALUES (?,?,?,?,?)', [id, guard.user.id, 'customer', parsed.data.body, parsed.data.language || null]); let ai: { reply: string; attempts: number; escalated: boolean } | null = null; try { ai = await answerFirst(id, parsed.data.subject, parsed.data.body, parsed.data.language); } catch { const fallback = 'Thanks for contacting support. I could not complete the automated lookup, so your request has been sent to a human support agent.'; await db.execute('INSERT INTO support_ticket_messages (ticket_id,author_type,body,language) VALUES (?,?,?,?)', [id, 'ai', fallback, parsed.data.language && parsed.data.language !== 'auto' ? parsed.data.language : null]); await db.execute('UPDATE support_tickets SET status=?,ai_summary=? WHERE id=?', ['open', 'AI unavailable; escalated to human agent', id]); ai = { reply: fallback, attempts: 0, escalated: true }; } await audit(guard.user.id, 'support.ticket_created', String(id), { subject: parsed.data.subject, ai: !!ai, escalated: !!ai?.escalated }); return NextResponse.json({ id, ai, escalated: !!ai?.escalated }, { status: 201 });
+  const guard = await requireAccess("chat.use");
+  if (denied(guard)) return guard;
+  const parsed = Create.safeParse(await req.json().catch(() => null));
+  if (!parsed.success)
+    return NextResponse.json(
+      { error: "Subject and message are required." },
+      { status: 400 },
+    );
+  const subject = parsed.data.subject || parsed.data.body.slice(0, 80);
+  const db = getAppDb();
+  const [result] = await db.execute(
+    "INSERT INTO support_tickets (requester_user_id,subject,language,source_workspace_id) VALUES (?,?,?,?)",
+    [
+      guard.user.id,
+      subject,
+      parsed.data.language || null,
+      parsed.data.workspaceId || null,
+    ],
+  );
+  const id = (result as { insertId: number }).insertId;
+  await db.execute(
+    "INSERT INTO support_ticket_messages (ticket_id,author_user_id,author_type,body,language) VALUES (?,?,?,?,?)",
+    [
+      id,
+      guard.user.id,
+      "customer",
+      parsed.data.body,
+      parsed.data.language || null,
+    ],
+  );
+  let ai: { reply: string; attempts: number; escalated: boolean } | null = null;
+  try {
+    ai = await answerFirst(id, subject, parsed.data.body, parsed.data.language);
+  } catch {
+    const fallback =
+      "I couldn’t verify a fix automatically. A support agent will take a look and reply here.";
+    await db.execute(
+      "INSERT INTO support_ticket_messages (ticket_id,author_type,body,language) VALUES (?,?,?,?)",
+      [
+        id,
+        "ai",
+        fallback,
+        parsed.data.language && parsed.data.language !== "auto"
+          ? parsed.data.language
+          : null,
+      ],
+    );
+    await db.execute(
+      "UPDATE support_tickets SET status=?,ai_summary=? WHERE id=?",
+      ["open", "AI unavailable; escalated to human agent", id],
+    );
+    ai = { reply: fallback, attempts: 0, escalated: true };
+  }
+  await audit(guard.user.id, "support.ticket_created", String(id), {
+    subject,
+    ai: !!ai,
+    escalated: !!ai?.escalated,
+  });
+  return NextResponse.json(
+    { id, ai, escalated: !!ai?.escalated },
+    { status: 201 },
+  );
 }

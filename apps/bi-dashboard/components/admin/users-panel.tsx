@@ -47,6 +47,7 @@ export function UsersPanel() {
   const [departments, setDepartments] = useState<number[]>([]);
   const [link, setLink] = useState('');
   const [editing, setEditing] = useState<{ id: number; roles: string[]; departments: number[] } | null>(null);
+  const [passwordReset, setPasswordReset] = useState<{ id: number; password: string } | null>(null);
 
   const load = useCallback(() => fetch('/api/admin/users').then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); setData(d); }).catch((e) => setError(e.message)), []);
   useEffect(() => { void load(); }, [load]);
@@ -109,6 +110,13 @@ export function UsersPanel() {
                   <td className="px-3 py-2 text-right">
                     {editing?.id !== u.id && <div className="flex justify-end gap-1">
                       <button className={ghostClass} disabled={busy} onClick={() => setEditing({ id: u.id, roles: u.roles, departments: u.departmentIds })}>Edit access</button>
+                      {passwordReset?.id === u.id ? (
+                        <div className="flex items-center gap-1">
+                          <input type="password" autoComplete="new-password" minLength={10} maxLength={128} aria-label={`New password for ${u.displayName || u.email}`} placeholder="New password (10+ chars)" value={passwordReset.password} onChange={(e) => setPasswordReset({ ...passwordReset, password: e.target.value })} className={`${inputClass} w-48`} />
+                          <button className={buttonClass} disabled={busy || passwordReset.password.length < 10} onClick={() => void run({ action: 'resetPassword', userId: u.id, password: passwordReset.password }, () => { setPasswordReset(null); setNotice(`Password reset for ${u.displayName || u.email}; they must sign in again.`); })}>Reset</button>
+                          <button className={ghostClass} onClick={() => setPasswordReset(null)}>Cancel</button>
+                        </div>
+                      ) : <button className={ghostClass} disabled={busy} onClick={() => setPasswordReset({ id: u.id, password: '' })}>Reset password</button>}
                       {u.mfa && u.id !== data.me && <button className={ghostClass} disabled={busy} onClick={() => { if (window.confirm(`Reset two-step sign-in for ${u.email}? They are signed out and set it up again.`)) void run({ action: 'resetMfa', userId: u.id }); }}>Reset 2-step</button>}
                       {u.id !== data.me && <button className={ghostClass} disabled={busy} onClick={() => { if (u.disabledAt || window.confirm(`Disable ${u.email}? They are signed out everywhere immediately.`)) void run({ action: u.disabledAt ? 'enable' : 'disable', userId: u.id }); }}>{u.disabledAt ? 'Enable' : 'Disable'}</button>}
                     </div>}

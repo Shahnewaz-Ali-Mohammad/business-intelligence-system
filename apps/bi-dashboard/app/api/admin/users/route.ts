@@ -7,6 +7,7 @@ import { requireAccess, denied } from '@/lib/access/guard';
 import { audit, listDepartments } from '@/lib/access/access-db';
 import { ROLES, ROLE_NAMES, validRoles } from '@/lib/access/permissions.mjs';
 import { isSameOriginRequest } from '@/lib/tool-setup/request-origin.mjs';
+import { hashPassword } from '@/lib/auth/session';
 
 export const runtime = 'nodejs';
 const parse = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
@@ -37,7 +38,8 @@ const Update = z.object({ action: z.literal('update'), userId: z.number().int().
 const Disable = z.object({ action: z.enum(['disable', 'enable']), userId: z.number().int().positive() }).strict();
 const Revoke = z.object({ action: z.literal('revokeInvite'), inviteId: z.number().int().positive() }).strict();
 const ResetMfa = z.object({ action: z.literal('resetMfa'), userId: z.number().int().positive() }).strict();
-const Body = z.union([Invite, Update, Disable, Revoke, ResetMfa]);
+const ResetPassword = z.object({ action: z.literal('resetPassword'), userId: z.number().int().positive(), password: z.string().min(10).max(128) }).strict();
+const Body = z.union([Invite, Update, Disable, Revoke, ResetMfa, ResetPassword]);
 
 /** The admin's actions on people: invite, change roles/departments, disable, revoke an invitation. */
 export async function POST(req: NextRequest) {
@@ -88,6 +90,13 @@ export async function POST(req: NextRequest) {
       await db.execute('DELETE FROM user_mfa WHERE user_id=?', [body.userId]);
       await db.execute('DELETE FROM sessions WHERE user_id=?', [body.userId]);
       await audit(me, 'user.mfa_reset', String(body.userId));
+    } else if (body.action === 'resetPassword') {
+      const [users] = await db.execute('SELECT id FROM users WHERE id=?', [body.userId]);
+      if (!(users as unknown[]).length) throw new Error('User not found.');
+      await db.execute('UPDATE users SET password_hash=? WHERE id=?', [await hashPassword(body.password), body.userId]);
+      // A password reset signs the account out everywhere so old sessions cannot bypass it.
+      await db.execute('DELETE FROM sessions WHERE user_id=?', [body.userId]);
+      await audit(me, 'user.password_reset', String(body.userId));
     } else if (body.action === 'revokeInvite') {
       await db.execute('UPDATE invitations SET expires_at=NOW() WHERE id=? AND used_at IS NULL', [body.inviteId]);
       await audit(me, 'user.invite_revoked', String(body.inviteId));
